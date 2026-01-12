@@ -15,12 +15,10 @@ type ProblemDetail struct {
 	Instance string `json:"instance,omitempty"`
 }
 
-// Common problem types.
+// Problem types (relative paths, resolved against API base URL).
 const (
-	ProblemTypeNotFound       = "https://pluto.dev/problems/not-found"
-	ProblemTypeBadRequest     = "https://pluto.dev/problems/bad-request"
-	ProblemTypeInternalError  = "https://pluto.dev/problems/internal-error"
-	ProblemTypeMethodNotAllow = "https://pluto.dev/problems/method-not-allowed"
+	ProblemTypeNotFound   = "/problems/not-found"
+	ProblemTypeBadRequest = "/problems/bad-request"
 )
 
 // writeJSON writes a JSON response with the given status code.
@@ -51,11 +49,6 @@ func writeNotFound(w http.ResponseWriter, logger logger, detail string) {
 // writeBadRequest writes a 400 Bad Request error response.
 func writeBadRequest(w http.ResponseWriter, logger logger, detail string) {
 	writeError(w, logger, http.StatusBadRequest, ProblemTypeBadRequest, "Bad Request", detail)
-}
-
-// writeInternalError writes a 500 Internal Server Error response.
-func writeInternalError(w http.ResponseWriter, logger logger, detail string) {
-	writeError(w, logger, http.StatusInternalServerError, ProblemTypeInternalError, "Internal Server Error", detail)
 }
 
 // logger is a minimal interface for logging errors.

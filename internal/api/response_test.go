@@ -47,8 +47,8 @@ func TestWriteError(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if problem.Type != ProblemTypeNotFound {
-		t.Errorf("type = %q, want %q", problem.Type, ProblemTypeNotFound)
+	if problem.Type != "/problems/not-found" {
+		t.Errorf("type = %q, want %q", problem.Type, "/problems/not-found")
 	}
 	if problem.Title != "Not Found" {
 		t.Errorf("title = %q, want %q", problem.Title, "Not Found")
