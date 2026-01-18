@@ -1,18 +1,16 @@
+mod agent;
 mod build_info;
 mod config;
 mod handlers;
 mod response;
+mod server;
 
-use axum::Router;
-use axum::http::StatusCode;
-use axum::routing::get;
 use clap::{Parser, Subcommand};
 use config::Config;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 use tokio::signal;
-use tower_http::timeout::TimeoutLayer;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 /// Agnx - A minimal and fast self-hosted runtime for durable and portable AI agents
@@ -38,6 +36,10 @@ enum Commands {
         /// Host to bind to (overrides config file)
         #[arg(long)]
         host: Option<IpAddr>,
+
+        /// Agents directory (overrides config file). If relative, it is resolved relative to the config file directory.
+        #[arg(long)]
+        agents_dir: Option<PathBuf>,
     },
 }
 
@@ -58,7 +60,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Serve { config, port, host } => run_server(config, port, host).await,
+        Commands::Serve {
+            config,
+            port,
+            host,
+            agents_dir,
+        } => run_server(config, port, host, agents_dir).await,
     }
 }
 
@@ -66,6 +73,7 @@ async fn run_server(
     config_path: String,
     port_override: Option<u16>,
     host_override: Option<IpAddr>,
+    agents_dir_override: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::load(&config_path)?;
 
@@ -76,24 +84,17 @@ async fn run_server(
     if let Some(host) = host_override {
         config.server.host = host.to_string();
     }
+    if let Some(dir) = agents_dir_override {
+        config.agents_dir = dir;
+    }
 
-    let api_v1 = Router::new().route("/agents", get(handlers::list_agents));
+    // Load agents from configured directory
+    let agents_dir = agent::resolve_agents_dir(Path::new(&config_path), &config.agents_dir);
+    let scan = agent::AgentStore::scan(&agents_dir);
+    info!(agents_dir = %agents_dir.display(), agents = scan.store.len(), "Loaded agents");
+    agent::log_scan_warnings(&scan.warnings);
 
-    let app = Router::new()
-        .route("/livez", get(handlers::livez))
-        .route("/readyz", get(handlers::readyz))
-        .route("/version", get(handlers::version))
-        .nest("/api/v1", api_v1)
-        .route("/example-bad-request", get(handlers::example_bad_request))
-        .route("/example-not-found", get(handlers::example_not_found))
-        .route(
-            "/example-internal-error",
-            get(handlers::example_internal_error),
-        )
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(config.server.request_timeout),
-        ));
+    let app = server::build_app(scan.store, config.server.request_timeout);
 
     let ip: IpAddr = config.server.host.parse()?;
     let addr = SocketAddr::new(ip, config.server.port);

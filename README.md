@@ -52,7 +52,7 @@ cargo install --git https://github.com/giosakti/agnx.git
 mkdir -p .agnx/agents/my-assistant
 
 cat > .agnx/agents/my-assistant/agent.yaml << 'EOF'
-apiVersion: agnx/v1
+apiVersion: agnx/v1alpha1
 kind: Agent
 metadata:
   name: my-assistant

@@ -2,11 +2,23 @@ use serde::Deserialize;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
+use std::path::PathBuf;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default = "default_agents_dir")]
+    pub agents_dir: PathBuf,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig::default(),
+            agents_dir: default_agents_dir(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +41,10 @@ fn default_port() -> u16 {
 
 fn default_timeout() -> u64 {
     30
+}
+
+fn default_agents_dir() -> PathBuf {
+    PathBuf::from(".agnx/agents")
 }
 
 impl Default for ServerConfig {
@@ -89,6 +105,7 @@ mod tests {
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.request_timeout, 30);
+        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents"));
     }
 
     #[test]
@@ -110,6 +127,7 @@ server:
   host: "127.0.0.1"
   port: 3000
   request_timeout: 60
+agents_dir: ".agnx/agents-custom"
 "#
         )
         .unwrap();
@@ -118,6 +136,7 @@ server:
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.server.request_timeout, 60);
+        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents-custom"));
     }
 
     #[test]
@@ -136,6 +155,7 @@ server:
         assert_eq!(config.server.host, "0.0.0.0"); // default
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.server.request_timeout, 30); // default
+        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents")); // default
     }
 
     #[test]
