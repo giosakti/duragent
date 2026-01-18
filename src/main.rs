@@ -12,6 +12,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::signal;
 use tower_http::timeout::TimeoutLayer;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 
 /// Agnx - A minimal and fast self-hosted runtime for durable and portable AI agents
 #[derive(Parser, Debug)]
@@ -41,10 +43,12 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    init_tracing();
+
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {e}");
+            error!("{e}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -95,12 +99,20 @@ async fn run_server(
     let addr = SocketAddr::new(ip, config.server.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    println!("Starting server on {addr}");
+    info!(addr = %addr, "Starting server");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    println!("Server stopped");
+    info!("Server stopped");
     Ok(())
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
 }
 
 async fn shutdown_signal() {
@@ -122,7 +134,7 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => println!("\nReceived Ctrl+C, shutting down..."),
-        _ = terminate => println!("\nReceived SIGTERM, shutting down..."),
+        _ = ctrl_c => info!("Received Ctrl+C, shutting down..."),
+        _ = terminate => info!("Received SIGTERM, shutting down..."),
     }
 }
