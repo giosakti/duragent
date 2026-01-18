@@ -5,6 +5,12 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub server: ServerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
     #[serde(default = "default_port")]
@@ -19,11 +25,21 @@ fn default_port() -> u16 {
     8080
 }
 
-impl Default for Config {
+
+impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: default_host(),
             port: default_port(),
+            request_timeout: default_timeout(),
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig::default(),
         }
     }
 }
@@ -49,8 +65,8 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigError::Io(e) => write!(f, "failed to read config file: {}", e),
-            ConfigError::Yaml(e) => write!(f, "failed to parse config file: {}", e),
+            ConfigError::Io(e) => write!(f, "failed to read config file: {e}"),
+            ConfigError::Yaml(e) => write!(f, "failed to parse config file: {e}"),
         }
     }
 }

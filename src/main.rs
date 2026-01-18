@@ -41,7 +41,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // CLI port overrides config
     if let Some(port) = args.port {
-        config.port = port;
+        config.server.port = port;
     }
 
     let api_v1 = Router::new().route("/agents", get(handlers::list_agents));
@@ -58,8 +58,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             get(handlers::example_internal_error),
         );
 
-    let ip: IpAddr = config.host.parse()?;
-    let addr = SocketAddr::new(ip, config.port);
+    let ip: IpAddr = config.server.host.parse()?;
+    let addr = SocketAddr::new(ip, config.server.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     println!("Starting server on {addr}");
