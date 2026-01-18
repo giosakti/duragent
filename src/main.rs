@@ -3,27 +3,40 @@ mod config;
 mod handlers;
 mod response;
 
+use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::Config;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::signal;
-use axum::http::StatusCode;
 use tower_http::timeout::TimeoutLayer;
 
 /// Agnx - A minimal and fast self-hosted runtime for durable and portable AI agents
 #[derive(Parser, Debug)]
 #[command(version = build_info::VERSION_STRING, about, long_about = None)]
-struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "config.yaml")]
-    config: String,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Port to listen on (overrides config file)
-    #[arg(short, long)]
-    port: Option<u16>,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Start the HTTP server
+    Serve {
+        /// Path to configuration file
+        #[arg(short, long, default_value = "agnx.yaml")]
+        config: String,
+
+        /// Port to listen on (overrides config file)
+        #[arg(short, long)]
+        port: Option<u16>,
+
+        /// Host to bind to (overrides config file)
+        #[arg(long)]
+        host: Option<IpAddr>,
+    },
 }
 
 #[tokio::main]
@@ -38,13 +51,28 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    let mut config = Config::load(&args.config)?;
+    match cli.command {
+        Commands::Serve { config, port, host } => {
+            run_server(config, port, host).await
+        }
+    }
+}
 
-    // CLI port overrides config
-    if let Some(port) = args.port {
+async fn run_server(
+    config_path: String,
+    port_override: Option<u16>,
+    host_override: Option<IpAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config::load(&config_path)?;
+
+    // CLI overrides config
+    if let Some(port) = port_override {
         config.server.port = port;
+    }
+    if let Some(host) = host_override {
+        config.server.host = host.to_string();
     }
 
     let api_v1 = Router::new().route("/agents", get(handlers::list_agents));
