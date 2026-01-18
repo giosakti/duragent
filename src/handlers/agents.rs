@@ -76,10 +76,7 @@ pub async fn list_agents(State(store): State<AgentStore>) -> Json<AgentsResponse
     Json(AgentsResponse { agents })
 }
 
-pub async fn get_agent(
-    State(store): State<AgentStore>,
-    Path(name): Path<String>,
-) -> Response {
+pub async fn get_agent(State(store): State<AgentStore>, Path(name): Path<String>) -> Response {
     let Some(agent) = store.get(&name) else {
         return response::not_found(format!("Agent '{name}' not found")).into_response();
     };
