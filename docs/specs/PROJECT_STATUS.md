@@ -93,6 +93,7 @@ Key specs and design docs:
 - [ ] Supervisor agent pattern (review worker output before committing)
 - [ ] Async notifications (Slack, email, webhook)
 - [ ] Worker session management (track/resume worker sessions)
+- [ ] Inbound webhooks (trigger agent from external events like GitHub, CI)
 
 ### v0.8.0 — Production Ready
 - [ ] Comprehensive test suite
