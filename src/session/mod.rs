@@ -3,14 +3,22 @@
 //! v0.1.0: In-memory session store.
 //! v0.2.0: Persistent storage with JSONL event log + YAML snapshots.
 
+mod event_reader;
+mod event_writer;
 mod events;
 mod snapshot;
+mod snapshot_loader;
+mod snapshot_writer;
 
+pub use event_reader::EventReader;
+pub use event_writer::EventWriter;
 pub use events::{
     SessionEndReason, SessionEvent, SessionEventPayload, SessionStatusValue, TokenUsage,
     ToolResultData,
 };
 pub use snapshot::{OnDisconnect, SessionConfig, SessionSnapshot, SnapshotStatus};
+pub use snapshot_loader::load_snapshot;
+pub use snapshot_writer::write_snapshot;
 
 use std::collections::HashMap;
 use std::sync::Arc;

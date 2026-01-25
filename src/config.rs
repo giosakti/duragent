@@ -1,8 +1,12 @@
-use serde::Deserialize;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+// -----------------------------------------------------------------------------
+// Config (root)
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -10,6 +14,8 @@ pub struct Config {
     pub server: ServerConfig,
     #[serde(default = "default_agents_dir")]
     pub agents_dir: PathBuf,
+    #[serde(default)]
+    pub services: ServicesConfig,
 }
 
 impl Default for Config {
@@ -17,42 +23,7 @@ impl Default for Config {
         Self {
             server: ServerConfig::default(),
             agents_dir: default_agents_dir(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServerConfig {
-    #[serde(default = "default_host")]
-    pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    #[serde(default = "default_timeout")]
-    pub request_timeout: u64,
-}
-
-fn default_host() -> String {
-    "0.0.0.0".to_string()
-}
-
-fn default_port() -> u16 {
-    8080
-}
-
-fn default_timeout() -> u64 {
-    30
-}
-
-fn default_agents_dir() -> PathBuf {
-    PathBuf::from(".agnx/agents")
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: default_host(),
-            port: default_port(),
-            request_timeout: default_timeout(),
+            services: ServicesConfig::default(),
         }
     }
 }
@@ -68,6 +39,82 @@ impl Config {
         serde_saphyr::from_str(&contents).map_err(ConfigError::Yaml)
     }
 }
+
+fn default_agents_dir() -> PathBuf {
+    PathBuf::from(".agnx/agents")
+}
+
+// -----------------------------------------------------------------------------
+// ServerConfig
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_timeout")]
+    pub request_timeout: u64,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+            request_timeout: default_timeout(),
+        }
+    }
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+fn default_timeout() -> u64 {
+    30
+}
+
+// -----------------------------------------------------------------------------
+// ServicesConfig
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ServicesConfig {
+    #[serde(default)]
+    pub session: SessionServiceConfig,
+}
+
+// -----------------------------------------------------------------------------
+// SessionServiceConfig
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SessionServiceConfig {
+    #[serde(default = "default_session_path")]
+    pub path: PathBuf,
+}
+
+impl Default for SessionServiceConfig {
+    fn default() -> Self {
+        Self {
+            path: default_session_path(),
+        }
+    }
+}
+
+fn default_session_path() -> PathBuf {
+    PathBuf::from(".agnx/sessions")
+}
+
+// -----------------------------------------------------------------------------
+// ConfigError
+// -----------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum ConfigError {
@@ -93,6 +140,10 @@ impl std::error::Error for ConfigError {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +157,10 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.request_timeout, 30);
         assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents"));
+        assert_eq!(
+            config.services.session.path,
+            PathBuf::from(".agnx/sessions")
+        );
     }
 
     #[test]
