@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use tokio::signal;
 use tracing::info;
 
-use crate::agent;
-use crate::config::Config;
-use crate::llm;
-use crate::server;
-use crate::session;
+use agnx::agent;
+use agnx::config::Config;
+use agnx::llm;
+use agnx::server;
+use agnx::session;
 
 pub async fn run(
     config_path: String,

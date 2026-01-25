@@ -1,12 +1,4 @@
-mod agent;
-mod build_info;
 mod commands;
-mod config;
-mod handlers;
-mod llm;
-mod response;
-mod server;
-mod session;
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -17,7 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 /// Agnx - A minimal and fast self-hosted runtime for durable and portable AI agents
 #[derive(Parser, Debug)]
-#[command(version = build_info::VERSION_STRING, about, long_about = None)]
+#[command(version = agnx::build_info::VERSION_STRING, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

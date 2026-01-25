@@ -3,9 +3,9 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::agent;
-use crate::config::Config;
-use crate::llm::{self, ChatRequest, Message, Role};
+use agnx::agent;
+use agnx::config::Config;
+use agnx::llm::{self, ChatRequest, Message, Role};
 
 pub async fn run(
     agent_name: String,

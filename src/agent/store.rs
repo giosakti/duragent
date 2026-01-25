@@ -87,6 +87,11 @@ impl AgentStore {
         self.agents.len()
     }
 
+    /// Check if the store is empty.
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+    }
+
     /// Iterate over all agents.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &AgentSpec)> {
         self.agents.iter()
