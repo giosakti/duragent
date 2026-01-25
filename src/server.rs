@@ -16,10 +16,21 @@ pub struct AppState {
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
     pub sessions: SessionStore,
+    pub idle_timeout_seconds: u64,
+    pub keep_alive_interval_seconds: u64,
 }
 
-pub fn build_app(state: AppState, request_timeout_secs: u64) -> Router {
-    let api_v1 = Router::new()
+pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
+    // SSE streaming routes - no request timeout (uses idle timeout internally)
+    let streaming_routes = Router::new()
+        .route(
+            "/sessions/{session_id}/stream",
+            post(handlers::v1::stream_session),
+        )
+        .with_state(state.clone());
+
+    // Regular API routes - with request timeout
+    let api_routes = Router::new()
         .route("/agents", get(handlers::v1::list_agents))
         .route("/agents/{name}", get(handlers::v1::get_agent))
         .route("/sessions", post(handlers::v1::create_session))
@@ -28,11 +39,13 @@ pub fn build_app(state: AppState, request_timeout_secs: u64) -> Router {
             "/sessions/{session_id}/messages",
             post(handlers::v1::send_message),
         )
-        .route(
-            "/sessions/{session_id}/stream",
-            post(handlers::v1::stream_session),
-        )
-        .with_state(state);
+        .with_state(state)
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(request_timeout_seconds),
+        ));
+
+    let api_v1 = Router::new().merge(streaming_routes).merge(api_routes);
 
     Router::new()
         .route("/livez", get(handlers::livez))
@@ -45,8 +58,4 @@ pub fn build_app(state: AppState, request_timeout_secs: u64) -> Router {
             "/example-internal-error",
             get(handlers::example_internal_error),
         )
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(request_timeout_secs),
-        ))
 }

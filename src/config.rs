@@ -54,8 +54,12 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_timeout")]
-    pub request_timeout: u64,
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_seconds: u64,
+    #[serde(default = "default_keep_alive_interval")]
+    pub keep_alive_interval_seconds: u64,
 }
 
 impl Default for ServerConfig {
@@ -63,7 +67,9 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            request_timeout: default_timeout(),
+            request_timeout_seconds: default_request_timeout(),
+            idle_timeout_seconds: default_idle_timeout(),
+            keep_alive_interval_seconds: default_keep_alive_interval(),
         }
     }
 }
@@ -76,8 +82,16 @@ fn default_port() -> u16 {
     8080
 }
 
-fn default_timeout() -> u64 {
-    30
+fn default_request_timeout() -> u64 {
+    300
+}
+
+fn default_idle_timeout() -> u64 {
+    60
+}
+
+fn default_keep_alive_interval() -> u64 {
+    15
 }
 
 // -----------------------------------------------------------------------------
@@ -155,7 +169,9 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8080);
-        assert_eq!(config.server.request_timeout, 30);
+        assert_eq!(config.server.request_timeout_seconds, 300);
+        assert_eq!(config.server.idle_timeout_seconds, 60);
+        assert_eq!(config.server.keep_alive_interval_seconds, 15);
         assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents"));
         assert_eq!(
             config.services.session.path,
@@ -181,7 +197,9 @@ mod tests {
 server:
   host: "127.0.0.1"
   port: 3000
-  request_timeout: 60
+  request_timeout_seconds: 60
+  idle_timeout_seconds: 120
+  keep_alive_interval_seconds: 30
 agents_dir: ".agnx/agents-custom"
 "#
         )
@@ -190,7 +208,9 @@ agents_dir: ".agnx/agents-custom"
         let config = Config::load(file.path().to_str().unwrap()).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
-        assert_eq!(config.server.request_timeout, 60);
+        assert_eq!(config.server.request_timeout_seconds, 60);
+        assert_eq!(config.server.idle_timeout_seconds, 120);
+        assert_eq!(config.server.keep_alive_interval_seconds, 30);
         assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents-custom"));
     }
 
@@ -209,7 +229,9 @@ server:
         let config = Config::load(file.path().to_str().unwrap()).unwrap();
         assert_eq!(config.server.host, "0.0.0.0"); // default
         assert_eq!(config.server.port, 9000);
-        assert_eq!(config.server.request_timeout, 30); // default
+        assert_eq!(config.server.request_timeout_seconds, 300); // default
+        assert_eq!(config.server.idle_timeout_seconds, 60); // default
+        assert_eq!(config.server.keep_alive_interval_seconds, 15); // default
         assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents")); // default
     }
 

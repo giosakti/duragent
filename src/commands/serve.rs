@@ -48,9 +48,11 @@ pub async fn run(
         agents: scan.store,
         providers,
         sessions,
+        idle_timeout_seconds: config.server.idle_timeout_seconds,
+        keep_alive_interval_seconds: config.server.keep_alive_interval_seconds,
     };
 
-    let app = server::build_app(state, config.server.request_timeout);
+    let app = server::build_app(state, config.server.request_timeout_seconds);
 
     let ip: IpAddr = config.server.host.parse()?;
     let addr = SocketAddr::new(ip, config.server.port);

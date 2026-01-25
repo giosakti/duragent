@@ -13,9 +13,11 @@ pub fn test_app() -> Router {
         agents: empty_agent_store(),
         providers: ProviderRegistry::new(),
         sessions: SessionStore::new(),
+        idle_timeout_seconds: 60,
+        keep_alive_interval_seconds: 15,
     };
 
-    server::build_app(state, 30)
+    server::build_app(state, 300)
 }
 
 /// Create an empty agent store.
