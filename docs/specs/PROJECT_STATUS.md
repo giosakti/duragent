@@ -3,7 +3,7 @@
 > **Purpose:** Living status + session context. The stable vision and principles live in the [Project Charter](./202601111100.project-charter.md).
 
 ## Last Updated
-2026-01-24
+2026-01-25
 
 ## Strategic Direction
 
@@ -49,12 +49,14 @@ Key specs and design docs:
 
 ## Roadmap / Milestones
 
-### v0.1.0 — Foundation
-- [ ] Agent spec loader (AAF: YAML + Markdown)
-- [ ] Single LLM provider (OpenRouter)
-- [ ] Basic agent executor (prompt → response)
-- [ ] Core gateways: CLI, HTTP REST
-- [ ] CLI: `agnx serve`, `agnx chat`
+### v0.1.0 — Foundation ✓
+- [x] Agent spec loader (AAF: YAML + Markdown)
+- [x] LLM providers (OpenRouter, OpenAI, Anthropic, Ollama)
+- [x] Basic agent executor (prompt → response)
+- [x] Core gateways: CLI, HTTP REST
+- [x] CLI: `agnx serve`, `agnx chat`
+- [x] Sessions API (in-memory)
+- [x] Integration tests
 
 ### v0.2.0 — Sessions & Durability
 - [ ] Session persistence (JSONL events + YAML snapshots)
@@ -115,25 +117,23 @@ Key specs and design docs:
 
 ## Current Focus
 
-**v0.1.0 — Foundation**: Agent spec loader + basic agent executor + minimal API/CLI.
+**v0.2.0 — Sessions & Durability**: Session persistence, resume on reconnect, SSE streaming.
 
 ## Recent Accomplishments
 
-- Added agent routing table (first match wins; extensible match fields)
-- Added session compaction policy (auto-compact, archive old events)
-- Added tool approval workflow (optional, for dangerous operations)
-- Added observability section (structured logging, metrics, tracing)
-- Refined strategic direction: session persistence + terminal attachment
-- Decided on storage formats: JSONL for events, YAML for state, Markdown for prose
-- Decided on sandbox approach: bubblewrap (lightweight), Docker/trust-mode as fallbacks
-- Finalized gateway architecture: core protocols (CLI, HTTP, SSE) built-in; platform integrations via subprocess plugins
-- Decided on session disconnect behavior: configurable `continue` (async) vs `pause` (interactive)
-- Removed WebSocket in favor of SSE-only streaming (simpler, sufficient for agent use case)
+- **v0.1.0 released** — Foundation complete
+- Implemented agent spec loader (AAF: YAML + Markdown)
+- Added LLM provider abstraction (OpenRouter, OpenAI, Anthropic, Ollama)
+- Implemented basic agent executor (prompt → response)
+- Added `agnx serve` and `agnx chat` CLI commands
+- Added Sessions API (create, get, send message)
+- Added integration tests for HTTP API
+- Refactored codebase into library + binary structure
 
 ## Next Action
 
-- Complete basic agent executor (prompt → response)
-- Wire LLM client to chat endpoint
+- Implement session persistence (JSONL events + YAML snapshots)
+- Add SSE streaming for LLM responses
 
 ## Blockers / Known Issues / Decisions Needed
 
