@@ -6,7 +6,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::llm::{Message, Role};
+use crate::api::SessionStatus;
+use crate::llm::{Message, Role, Usage};
 
 /// A session event that can be persisted to the event log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +36,7 @@ pub enum SessionEventPayload {
         content: String,
         /// Token usage for this response, if available.
         #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<TokenUsage>,
+        usage: Option<Usage>,
     },
     /// Agent requested a tool call.
     ToolCall {
@@ -50,8 +51,8 @@ pub enum SessionEventPayload {
     },
     /// Session status changed.
     StatusChange {
-        from: SessionStatusValue,
-        to: SessionStatusValue,
+        from: SessionStatus,
+        to: SessionStatus,
     },
     /// An error occurred (recoverable).
     Error { code: String, message: String },
@@ -71,24 +72,6 @@ pub enum SessionEndReason {
     Error,
 }
 
-/// Session status values for status change events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatusValue {
-    Active,
-    Paused,
-    Running,
-    Completed,
-}
-
-/// Token usage statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-}
-
 /// Result of a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultData {
@@ -100,6 +83,7 @@ pub struct ToolResultData {
 
 impl SessionEvent {
     /// Create a new event with the given sequence number and payload.
+    #[must_use]
     pub fn new(seq: u64, payload: SessionEventPayload) -> Self {
         Self {
             seq,
@@ -149,7 +133,7 @@ mod tests {
             2,
             SessionEventPayload::AssistantMessage {
                 content: "Hi there!".to_string(),
-                usage: Some(TokenUsage {
+                usage: Some(Usage {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,

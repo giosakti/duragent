@@ -5,10 +5,10 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
 use tokio::fs;
 
 use super::SessionSnapshot;
+use super::error::{Result, SessionError};
 
 /// Load a session snapshot from disk.
 ///
@@ -28,20 +28,16 @@ pub async fn load_snapshot(
     let contents = match fs::read_to_string(&path).await {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read snapshot: {}", path.display()));
-        }
+        Err(e) => return Err(SessionError::io(&path, e)),
     };
 
-    let snapshot: SessionSnapshot = serde_saphyr::from_str(&contents)
-        .with_context(|| format!("failed to parse snapshot YAML: {}", path.display()))?;
+    let snapshot: SessionSnapshot = serde_saphyr::from_str(&contents)?;
 
     if !snapshot.is_compatible() {
-        bail!(
-            "incompatible snapshot schema version: expected {}, got {}",
-            SessionSnapshot::SCHEMA_VERSION,
-            snapshot.schema_version
-        );
+        return Err(SessionError::IncompatibleSchema {
+            expected: SessionSnapshot::SCHEMA_VERSION.to_string(),
+            actual: snapshot.schema_version,
+        });
     }
 
     Ok(Some(snapshot))
@@ -51,7 +47,7 @@ pub async fn load_snapshot(
 mod tests {
     use super::*;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SnapshotStatus};
+    use crate::session::{SessionConfig, SessionStatus};
     use chrono::Utc;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -64,7 +60,7 @@ mod tests {
         SessionSnapshot::new(
             session_id.to_string(),
             "test-agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             42,
             vec![
@@ -105,7 +101,7 @@ mod tests {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.session_id, "session_abc123");
         assert_eq!(loaded.agent, "test-agent");
-        assert_eq!(loaded.status, SnapshotStatus::Active);
+        assert_eq!(loaded.status, SessionStatus::Active);
         assert_eq!(loaded.last_event_seq, 42);
         assert_eq!(loaded.conversation.len(), 2);
     }
@@ -133,7 +129,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("failed to parse snapshot YAML"));
+        assert!(err.to_string().contains("yaml parse error"));
     }
 
     #[tokio::test]

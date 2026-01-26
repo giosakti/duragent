@@ -5,10 +5,10 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
 use tokio::fs;
 
 use super::SessionSnapshot;
+use super::error::{Result, SessionError};
 
 /// Write a session snapshot atomically.
 ///
@@ -25,30 +25,22 @@ pub async fn write_snapshot(
     snapshot: &SessionSnapshot,
 ) -> Result<()> {
     let session_dir = sessions_dir.join(session_id);
-    fs::create_dir_all(&session_dir).await.with_context(|| {
-        format!(
-            "failed to create session directory: {}",
-            session_dir.display()
-        )
-    })?;
+    fs::create_dir_all(&session_dir)
+        .await
+        .map_err(|e| SessionError::io(&session_dir, e))?;
 
     let final_path = session_dir.join("state.yaml");
     let temp_path = session_dir.join("state.yaml.tmp");
 
-    let yaml = serde_saphyr::to_string(snapshot)
-        .with_context(|| format!("failed to serialize snapshot for session {}", session_id))?;
+    let yaml = serde_saphyr::to_string(snapshot)?;
 
     fs::write(&temp_path, yaml.as_bytes())
         .await
-        .with_context(|| format!("failed to write temp file: {}", temp_path.display()))?;
+        .map_err(|e| SessionError::io(&temp_path, e))?;
 
-    fs::rename(&temp_path, &final_path).await.with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            temp_path.display(),
-            final_path.display()
-        )
-    })?;
+    fs::rename(&temp_path, &final_path)
+        .await
+        .map_err(|e| SessionError::io(&final_path, e))?;
 
     Ok(())
 }
@@ -57,7 +49,7 @@ pub async fn write_snapshot(
 mod tests {
     use super::*;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SnapshotStatus};
+    use crate::session::{SessionConfig, SessionStatus};
     use chrono::Utc;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -80,7 +72,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "test_session".to_string(),
             "test-agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             0,
             vec![],
@@ -102,7 +94,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "test_session".to_string(),
             "my-agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             42,
             vec![
@@ -135,7 +127,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "roundtrip_test".to_string(),
             "test-agent".to_string(),
-            SnapshotStatus::Paused,
+            SessionStatus::Paused,
             Utc::now(),
             100,
             vec![Message {
@@ -154,7 +146,7 @@ mod tests {
 
         assert_eq!(parsed.session_id, "roundtrip_test");
         assert_eq!(parsed.agent, "test-agent");
-        assert_eq!(parsed.status, SnapshotStatus::Paused);
+        assert_eq!(parsed.status, SessionStatus::Paused);
         assert_eq!(parsed.last_event_seq, 100);
         assert_eq!(parsed.conversation.len(), 1);
     }
@@ -167,7 +159,7 @@ mod tests {
         let snapshot1 = SessionSnapshot::new(
             "test_session".to_string(),
             "agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             10,
             vec![],
@@ -181,7 +173,7 @@ mod tests {
         let snapshot2 = SessionSnapshot::new(
             "test_session".to_string(),
             "agent".to_string(),
-            SnapshotStatus::Completed,
+            SessionStatus::Completed,
             Utc::now(),
             50,
             vec![],
@@ -194,7 +186,7 @@ mod tests {
         let contents = std::fs::read_to_string(state_path(&temp_dir, "test_session")).unwrap();
         let parsed: SessionSnapshot = serde_saphyr::from_str(&contents).unwrap();
 
-        assert_eq!(parsed.status, SnapshotStatus::Completed);
+        assert_eq!(parsed.status, SessionStatus::Completed);
         assert_eq!(parsed.last_event_seq, 50);
     }
 
@@ -204,7 +196,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "test_session".to_string(),
             "agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             0,
             vec![],
@@ -215,9 +207,7 @@ mod tests {
             .await
             .unwrap();
 
-        let temp_path = temp_dir
-            .path()
-            .join(".agnx/sessions/test_session/state.yaml.tmp");
+        let temp_path = temp_dir.path().join("sessions/test_session/state.yaml.tmp");
         assert!(!temp_path.exists());
     }
 }

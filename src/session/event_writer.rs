@@ -5,11 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 use super::SessionEvent;
+use super::error::{Result, SessionError};
 
 /// Writes session events to a JSONL file.
 pub struct EventWriter {
@@ -28,12 +28,9 @@ impl EventWriter {
     /// * `session_id` - The session ID
     pub async fn new(sessions_dir: &Path, session_id: &str) -> Result<Self> {
         let session_dir = sessions_dir.join(session_id);
-        fs::create_dir_all(&session_dir).await.with_context(|| {
-            format!(
-                "failed to create session directory: {}",
-                session_dir.display()
-            )
-        })?;
+        fs::create_dir_all(&session_dir)
+            .await
+            .map_err(|e| SessionError::io(&session_dir, e))?;
 
         let path = session_dir.join("events.jsonl");
         let file = OpenOptions::new()
@@ -41,7 +38,7 @@ impl EventWriter {
             .append(true)
             .open(&path)
             .await
-            .with_context(|| format!("failed to open events file: {}", path.display()))?;
+            .map_err(|e| SessionError::io(&path, e))?;
 
         Ok(Self { file, path })
     }
@@ -50,19 +47,18 @@ impl EventWriter {
     ///
     /// Serializes the event as JSON, writes it as a single line, and calls fsync.
     pub async fn append(&mut self, event: &SessionEvent) -> Result<()> {
-        let mut line = serde_json::to_string(event)
-            .with_context(|| format!("failed to serialize event seq={}", event.seq))?;
+        let mut line = serde_json::to_string(event)?;
         line.push('\n');
 
         self.file
             .write_all(line.as_bytes())
             .await
-            .with_context(|| format!("failed to write to {}", self.path.display()))?;
+            .map_err(|e| SessionError::io(&self.path, e))?;
 
         self.file
             .sync_all()
             .await
-            .with_context(|| format!("failed to fsync {}", self.path.display()))?;
+            .map_err(|e| SessionError::io(&self.path, e))?;
 
         Ok(())
     }
@@ -71,7 +67,8 @@ impl EventWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{SessionEventPayload, TokenUsage};
+    use crate::llm::Usage;
+    use crate::session::SessionEventPayload;
     use tempfile::TempDir;
 
     fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
@@ -163,7 +160,7 @@ mod tests {
                 3,
                 SessionEventPayload::AssistantMessage {
                     content: "Hi there!".to_string(),
-                    usage: Some(TokenUsage {
+                    usage: Some(Usage {
                         prompt_tokens: 10,
                         completion_tokens: 5,
                         total_tokens: 15,

@@ -7,6 +7,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::OnDisconnect;
+use crate::api::SessionStatus;
 use crate::llm::Message;
 
 /// A snapshot of session state for fast resume.
@@ -19,7 +21,7 @@ pub struct SessionSnapshot {
     /// The agent this session is using.
     pub agent: String,
     /// Current session status.
-    pub status: SnapshotStatus,
+    pub status: SessionStatus,
     /// When the session was created.
     pub created_at: DateTime<Utc>,
     /// When this snapshot was taken.
@@ -32,20 +34,6 @@ pub struct SessionSnapshot {
     pub config: SessionConfig,
 }
 
-/// Session status in a snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SnapshotStatus {
-    /// Session is active and ready for messages.
-    Active,
-    /// Session is paused (client disconnected with on_disconnect: pause).
-    Paused,
-    /// Session is running in background (client disconnected with on_disconnect: continue).
-    Running,
-    /// Session has completed.
-    Completed,
-}
-
 /// Session configuration stored in the snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -54,26 +42,16 @@ pub struct SessionConfig {
     pub on_disconnect: OnDisconnect,
 }
 
-/// Behavior when client disconnects from a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnDisconnect {
-    /// Pause the session and wait for reconnect (default).
-    #[default]
-    Pause,
-    /// Continue executing in the background.
-    Continue,
-}
-
 impl SessionSnapshot {
     /// Current schema version.
     pub const SCHEMA_VERSION: &'static str = "1";
 
     /// Create a new snapshot from session state.
+    #[must_use]
     pub fn new(
         session_id: String,
         agent: String,
-        status: SnapshotStatus,
+        status: SessionStatus,
         created_at: DateTime<Utc>,
         last_event_seq: u64,
         conversation: Vec<Message>,
@@ -108,7 +86,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "session_abc123".to_string(),
             "my-agent".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             42,
             vec![
@@ -132,7 +110,7 @@ mod tests {
         let parsed: SessionSnapshot = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed.session_id, "session_abc123");
         assert_eq!(parsed.agent, "my-agent");
-        assert_eq!(parsed.status, SnapshotStatus::Active);
+        assert_eq!(parsed.status, SessionStatus::Active);
         assert_eq!(parsed.last_event_seq, 42);
         assert_eq!(parsed.conversation.len(), 2);
     }
@@ -142,7 +120,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "session_xyz".to_string(),
             "background-agent".to_string(),
-            SnapshotStatus::Running,
+            SessionStatus::Running,
             Utc::now(),
             100,
             vec![],
@@ -161,19 +139,19 @@ mod tests {
     #[test]
     fn snapshot_status_values() {
         assert_eq!(
-            serde_json::to_string(&SnapshotStatus::Active).unwrap(),
+            serde_json::to_string(&SessionStatus::Active).unwrap(),
             "\"active\""
         );
         assert_eq!(
-            serde_json::to_string(&SnapshotStatus::Paused).unwrap(),
+            serde_json::to_string(&SessionStatus::Paused).unwrap(),
             "\"paused\""
         );
         assert_eq!(
-            serde_json::to_string(&SnapshotStatus::Running).unwrap(),
+            serde_json::to_string(&SessionStatus::Running).unwrap(),
             "\"running\""
         );
         assert_eq!(
-            serde_json::to_string(&SnapshotStatus::Completed).unwrap(),
+            serde_json::to_string(&SessionStatus::Completed).unwrap(),
             "\"completed\""
         );
     }
@@ -189,7 +167,7 @@ mod tests {
         let snapshot = SessionSnapshot::new(
             "s".to_string(),
             "a".to_string(),
-            SnapshotStatus::Active,
+            SessionStatus::Active,
             Utc::now(),
             0,
             vec![],

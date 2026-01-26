@@ -5,11 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::SessionEvent;
+use super::error::{Result, SessionError};
 
 /// Reads session events from a JSONL file.
 pub struct EventReader {
@@ -31,9 +31,7 @@ impl EventReader {
         let file = match File::open(&path).await {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(e).with_context(|| format!("failed to open {}", path.display()));
-            }
+            Err(e) => return Err(SessionError::io(&path, e)),
         };
 
         let reader = BufReader::new(file);
@@ -53,7 +51,7 @@ impl EventReader {
                 .reader
                 .read_line(&mut line)
                 .await
-                .with_context(|| format!("failed to read from {}", self.path.display()))?;
+                .map_err(|e| SessionError::io(&self.path, e))?;
 
             if bytes_read == 0 {
                 return Ok(None);
@@ -100,7 +98,8 @@ impl EventReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{EventWriter, SessionEventPayload, TokenUsage};
+    use crate::llm::Usage;
+    use crate::session::{EventWriter, SessionEventPayload};
     use tempfile::TempDir;
 
     fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
@@ -176,7 +175,7 @@ mod tests {
                 3,
                 SessionEventPayload::AssistantMessage {
                     content: "Hi!".to_string(),
-                    usage: Some(TokenUsage {
+                    usage: Some(Usage {
                         prompt_tokens: 10,
                         completion_tokens: 5,
                         total_tokens: 15,
