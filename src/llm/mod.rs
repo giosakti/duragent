@@ -10,6 +10,6 @@ mod types;
 pub use anthropic::AnthropicProvider;
 pub use error::LLMError;
 pub use openai::OpenAICompatibleProvider;
-pub use provider::LLMProvider;
+pub use provider::{LLMProvider, Provider};
 pub use registry::ProviderRegistry;
 pub use types::{ChatRequest, ChatStream, Message, Role, StreamEvent, Usage};

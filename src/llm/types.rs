@@ -1,8 +1,11 @@
 //! Common types for LLM chat completions.
 
+use std::pin::Pin;
+
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
+
+use super::error::LLMError;
 
 /// A chat completion request (OpenAI-compatible format).
 #[derive(Debug, Serialize)]
@@ -13,6 +16,23 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+}
+
+impl ChatRequest {
+    #[must_use]
+    pub fn new(
+        model: impl Into<String>,
+        messages: Vec<Message>,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            messages,
+            temperature,
+            max_tokens,
+        }
+    }
 }
 
 /// A message in a chat conversation.
@@ -29,6 +49,16 @@ pub enum Role {
     System,
     User,
     Assistant,
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Role::System => write!(f, "system"),
+            Role::User => write!(f, "user"),
+            Role::Assistant => write!(f, "assistant"),
+        }
+    }
 }
 
 /// A chat completion response.
@@ -48,7 +78,7 @@ pub struct Choice {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -62,11 +92,12 @@ pub enum StreamEvent {
     Token(String),
     /// The stream is complete with optional usage stats.
     Done { usage: Option<Usage> },
+    /// The stream was cancelled (e.g., client disconnected).
+    Cancelled,
 }
 
 /// A boxed stream of streaming events.
-pub type ChatStream =
-    Pin<Box<dyn Stream<Item = Result<StreamEvent, super::error::LLMError>> + Send>>;
+pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>;
 
 #[cfg(test)]
 mod tests {

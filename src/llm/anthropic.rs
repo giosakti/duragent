@@ -1,6 +1,10 @@
 //! Anthropic LLM provider with native API format.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use async_trait::async_trait;
+use futures::Stream;
 use reqwest::Client;
 
 use super::error::LLMError;
@@ -8,6 +12,7 @@ use super::provider::LLMProvider;
 use super::types::{
     ChatRequest, ChatResponse, ChatStream, Choice, Message, Role, StreamEvent, Usage,
 };
+use crate::sse::SseEventStream;
 
 /// Anthropic provider with native API format.
 pub struct AnthropicProvider {
@@ -20,9 +25,10 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub const DEFAULT_API_VERSION: &'static str = "2023-06-01";
 
-    pub fn new(api_key: String, base_url: String) -> Self {
+    #[must_use]
+    pub fn new(client: Client, api_key: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client,
             base_url,
             api_key,
             api_version: Self::DEFAULT_API_VERSION.to_string(),
@@ -34,7 +40,7 @@ impl AnthropicProvider {
 impl LLMProvider for AnthropicProvider {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let anthropic_request = to_request(&request);
+        let anthropic_request = to_request(&request, None);
 
         let response = self
             .client
@@ -58,7 +64,7 @@ impl LLMProvider for AnthropicProvider {
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LLMError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let anthropic_request = to_stream_request(&request);
+        let anthropic_request = to_request(&request, Some(true));
 
         let response = self
             .client
@@ -77,13 +83,16 @@ impl LLMProvider for AnthropicProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let event_stream = StreamParser::new(byte_stream);
+        let sse_stream = SseEventStream::new(byte_stream);
+        let event_stream = AnthropicStreamAdapter::new(sse_stream);
 
         Ok(Box::pin(event_stream))
     }
 }
 
-// --- Request/Response types ---
+// ============================================================================
+// Request/Response Types
+// ============================================================================
 
 #[derive(serde::Serialize)]
 struct Request {
@@ -94,18 +103,8 @@ struct Request {
     messages: Vec<RequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-}
-
-#[derive(serde::Serialize)]
-struct StreamRequest {
-    model: String,
-    max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
-    messages: Vec<RequestMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f32>,
-    stream: bool,
+    stream: Option<bool>,
 }
 
 #[derive(serde::Serialize)]
@@ -135,9 +134,11 @@ struct ResponseUsage {
     output_tokens: u32,
 }
 
-// --- Conversions ---
+// ============================================================================
+// Conversions
+// ============================================================================
 
-fn to_request(request: &ChatRequest) -> Request {
+fn to_request(request: &ChatRequest, stream: Option<bool>) -> Request {
     let mut system = None;
     let mut messages = Vec::new();
 
@@ -167,18 +168,7 @@ fn to_request(request: &ChatRequest) -> Request {
         system,
         messages,
         temperature: request.temperature,
-    }
-}
-
-fn to_stream_request(request: &ChatRequest) -> StreamRequest {
-    let base = to_request(request);
-    StreamRequest {
-        model: base.model,
-        max_tokens: base.max_tokens,
-        system: base.system,
-        messages: base.messages,
-        temperature: base.temperature,
-        stream: true,
+        stream,
     }
 }
 
@@ -209,85 +199,77 @@ fn from_response(response: Response) -> ChatResponse {
     }
 }
 
-// --- Streaming ---
+// ============================================================================
+// Streaming
+// ============================================================================
 
-struct StreamParser<S> {
-    inner: S,
-    buffer: String,
+/// Adapter that converts SSE lines into Anthropic StreamEvents.
+struct AnthropicStreamAdapter<S> {
+    inner: SseEventStream<S>,
     done: bool,
     usage: Option<Usage>,
 }
 
-impl<S> StreamParser<S> {
-    fn new(inner: S) -> Self {
+impl<S> AnthropicStreamAdapter<S> {
+    fn new(inner: SseEventStream<S>) -> Self {
         Self {
             inner,
-            buffer: String::new(),
             done: false,
             usage: None,
         }
     }
 }
 
-impl<S> futures::Stream for StreamParser<S>
+impl<S> Stream for AnthropicStreamAdapter<S>
 where
-    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
+    S: Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
 {
     type Item = Result<StreamEvent, LLMError>;
 
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use std::task::Poll;
-
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.done {
             return Poll::Ready(None);
         }
 
         loop {
-            if let Some(line_end) = self.buffer.find('\n') {
-                let line = self.buffer[..line_end].trim().to_string();
-                self.buffer = self.buffer[line_end + 1..].to_string();
-
-                if line.is_empty() || line.starts_with("event:") {
-                    continue;
-                }
-
-                if let Some(data) = line.strip_prefix("data: ")
-                    && let Ok(event) = serde_json::from_str::<StreamEvent_>(data)
-                {
-                    match event {
-                        StreamEvent_::ContentBlockDelta { delta } => {
-                            if let Some(text) = delta.text
-                                && !text.is_empty()
-                            {
-                                return Poll::Ready(Some(Ok(StreamEvent::Token(text))));
-                            }
-                        }
-                        StreamEvent_::MessageDelta { usage: Some(u), .. } => {
-                            self.usage = Some(Usage {
-                                prompt_tokens: 0,
-                                completion_tokens: u.output_tokens,
-                                total_tokens: u.output_tokens,
-                            });
-                        }
-                        StreamEvent_::MessageStop => {
-                            self.done = true;
-                            return Poll::Ready(Some(Ok(StreamEvent::Done {
-                                usage: self.usage.take(),
-                            })));
-                        }
-                        _ => {}
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => {
+                    if event.data.is_empty() {
+                        continue;
                     }
-                }
-                continue;
-            }
 
-            match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        self.buffer.push_str(text);
+                    // Parse Anthropic event JSON
+                    match serde_json::from_str::<AnthropicStreamEvent>(&event.data) {
+                        Ok(parsed) => match parsed {
+                            AnthropicStreamEvent::ContentBlockDelta { delta } => {
+                                if let Some(text) = delta.text
+                                    && !text.is_empty()
+                                {
+                                    return Poll::Ready(Some(Ok(StreamEvent::Token(text))));
+                                }
+                            }
+                            AnthropicStreamEvent::MessageDelta { usage: Some(u), .. } => {
+                                self.usage = Some(Usage {
+                                    prompt_tokens: 0,
+                                    completion_tokens: u.output_tokens,
+                                    total_tokens: u.output_tokens,
+                                });
+                            }
+                            AnthropicStreamEvent::MessageStop => {
+                                self.done = true;
+                                return Poll::Ready(Some(Ok(StreamEvent::Done {
+                                    usage: self.usage.take(),
+                                })));
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            tracing::debug!(
+                                data = %event.data,
+                                error = %e,
+                                "failed to parse Anthropic SSE event"
+                            );
+                        }
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -305,10 +287,14 @@ where
     }
 }
 
+/// Anthropic SSE stream events.
+///
+/// Many fields are present in the API response but only some are used for streaming.
+/// The unused fields are kept for complete deserialization.
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)] // Fields needed for serde deserialization
-enum StreamEvent_ {
+#[expect(dead_code, reason = "fields required for serde deserialization")]
+enum AnthropicStreamEvent {
     MessageStart {
         message: Option<serde_json::Value>,
     },

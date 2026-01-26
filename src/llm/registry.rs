@@ -3,17 +3,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use reqwest::Client;
 use tracing::{info, warn};
 
 use super::anthropic::AnthropicProvider;
 use super::openai::OpenAICompatibleProvider;
-use super::provider::LLMProvider;
-use crate::agent::Provider;
+use super::provider::{LLMProvider, Provider};
 
 /// Default base URLs for each provider.
 pub mod defaults {
     pub const ANTHROPIC: &str = "https://api.anthropic.com";
-    pub const OLLAMA: &str = "http://localhost:11434/api";
+    pub const OLLAMA: &str = "http://localhost:11434/v1";
     pub const OPENAI: &str = "https://api.openai.com/v1";
     pub const OPENROUTER: &str = "https://openrouter.ai/api/v1";
 }
@@ -22,12 +22,26 @@ pub mod defaults {
 ///
 /// Stores API keys from environment variables and creates provider instances
 /// on-demand with optional base_url overrides from agent configuration.
-#[derive(Clone, Default)]
+///
+/// The registry holds a shared `reqwest::Client` that is passed to all providers,
+/// enabling connection pooling across requests.
+#[derive(Clone)]
 pub struct ProviderRegistry {
     api_keys: HashMap<Provider, String>,
+    client: Client,
+}
+
+impl Default for ProviderRegistry {
+    fn default() -> Self {
+        Self {
+            api_keys: HashMap::new(),
+            client: Client::new(),
+        }
+    }
 }
 
 impl ProviderRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -76,12 +90,15 @@ impl ProviderRegistry {
     ///
     /// The base_url comes from the agent's model configuration. If not specified,
     /// the default URL for that provider is used.
+    ///
+    /// All providers share the registry's `reqwest::Client` for connection pooling.
     pub fn get(&self, provider: &Provider, base_url: Option<&str>) -> Option<Arc<dyn LLMProvider>> {
         match provider {
             Provider::Anthropic => {
                 let api_key = self.api_keys.get(provider)?;
                 let url = base_url.unwrap_or(defaults::ANTHROPIC);
                 Some(Arc::new(AnthropicProvider::new(
+                    self.client.clone(),
                     api_key.clone(),
                     url.to_string(),
                 )))
@@ -92,6 +109,7 @@ impl ProviderRegistry {
                 }
                 let url = base_url.unwrap_or(defaults::OLLAMA);
                 Some(Arc::new(OpenAICompatibleProvider::new(
+                    self.client.clone(),
                     url.to_string(),
                     None,
                 )))
@@ -100,6 +118,7 @@ impl ProviderRegistry {
                 let api_key = self.api_keys.get(provider)?;
                 let url = base_url.unwrap_or(defaults::OPENAI);
                 Some(Arc::new(OpenAICompatibleProvider::new(
+                    self.client.clone(),
                     url.to_string(),
                     Some(api_key.clone()),
                 )))
@@ -108,6 +127,7 @@ impl ProviderRegistry {
                 let api_key = self.api_keys.get(provider)?;
                 let url = base_url.unwrap_or(defaults::OPENROUTER);
                 Some(Arc::new(OpenAICompatibleProvider::new(
+                    self.client.clone(),
                     url.to_string(),
                     Some(api_key.clone()),
                 )))

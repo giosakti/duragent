@@ -2,12 +2,17 @@
 //!
 //! Works with OpenAI, OpenRouter, Ollama, and other compatible APIs.
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use async_trait::async_trait;
+use futures::Stream;
 use reqwest::Client;
 
 use super::error::LLMError;
 use super::provider::LLMProvider;
 use super::types::{ChatRequest, ChatResponse, ChatStream, Message, StreamEvent, Usage};
+use crate::sse::SseEventStream;
 
 /// OpenAI-compatible provider (works for OpenAI, OpenRouter, Ollama).
 pub struct OpenAICompatibleProvider {
@@ -17,9 +22,10 @@ pub struct OpenAICompatibleProvider {
 }
 
 impl OpenAICompatibleProvider {
-    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+    #[must_use]
+    pub fn new(client: Client, base_url: String, api_key: Option<String>) -> Self {
         Self {
-            client: Client::new(),
+            client,
             base_url,
             api_key,
         }
@@ -80,13 +86,16 @@ impl LLMProvider for OpenAICompatibleProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let event_stream = StreamParser::new(byte_stream);
+        let sse_stream = SseEventStream::new(byte_stream);
+        let event_stream = OpenAIStreamAdapter::new(sse_stream);
 
         Ok(Box::pin(event_stream))
     }
 }
 
-// --- Streaming types ---
+// ============================================================================
+// Streaming Types
+// ============================================================================
 
 #[derive(serde::Serialize)]
 struct StreamRequest {
@@ -99,75 +108,57 @@ struct StreamRequest {
     stream: bool,
 }
 
-struct StreamParser<S> {
-    inner: S,
-    buffer: String,
+/// Adapter that converts SSE lines into OpenAI StreamEvents.
+struct OpenAIStreamAdapter<S> {
+    inner: SseEventStream<S>,
     done: bool,
 }
 
-impl<S> StreamParser<S> {
-    fn new(inner: S) -> Self {
-        Self {
-            inner,
-            buffer: String::new(),
-            done: false,
-        }
+impl<S> OpenAIStreamAdapter<S> {
+    fn new(inner: SseEventStream<S>) -> Self {
+        Self { inner, done: false }
     }
 }
 
-impl<S> futures::Stream for StreamParser<S>
+impl<S> Stream for OpenAIStreamAdapter<S>
 where
-    S: futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
+    S: Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin,
 {
     type Item = Result<StreamEvent, LLMError>;
 
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use std::task::Poll;
-
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.done {
             return Poll::Ready(None);
         }
 
         loop {
-            // Try to parse a complete line from buffer
-            if let Some(line_end) = self.buffer.find('\n') {
-                let line = self.buffer[..line_end].trim().to_string();
-                self.buffer = self.buffer[line_end + 1..].to_string();
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => {
+                    let data = event.data;
+                    if data.is_empty() {
+                        continue;
+                    }
 
-                if line.is_empty() {
-                    continue;
-                }
-
-                // Handle SSE data lines
-                if let Some(data) = line.strip_prefix("data: ") {
+                    // Handle OpenAI's [DONE] marker
                     if data == "[DONE]" {
                         self.done = true;
                         return Poll::Ready(Some(Ok(StreamEvent::Done { usage: None })));
                     }
 
-                    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(data) {
-                        if let Some(choice) = chunk.choices.first()
-                            && let Some(ref content) = choice.delta.content
-                            && !content.is_empty()
-                        {
-                            return Poll::Ready(Some(Ok(StreamEvent::Token(content.clone()))));
+                    // Parse JSON chunk
+                    match serde_json::from_str::<StreamChunk>(&data) {
+                        Ok(chunk) => {
+                            if let Some(choice) = chunk.choices.first()
+                                && let Some(ref content) = choice.delta.content
+                                && !content.is_empty()
+                            {
+                                return Poll::Ready(Some(Ok(StreamEvent::Token(content.clone()))));
+                            }
+                            // Skip chunks without content (e.g., role-only or usage-only)
                         }
-                        if chunk.usage.is_some() {
-                            continue;
+                        Err(e) => {
+                            tracing::debug!(data = %data, error = %e, "failed to parse SSE chunk");
                         }
-                    }
-                }
-                continue;
-            }
-
-            // Need more data
-            match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        self.buffer.push_str(text);
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -175,9 +166,6 @@ where
                 }
                 Poll::Ready(None) => {
                     self.done = true;
-                    if !self.buffer.is_empty() {
-                        continue;
-                    }
                     return Poll::Ready(Some(Ok(StreamEvent::Done { usage: None })));
                 }
                 Poll::Pending => return Poll::Pending,
@@ -186,10 +174,13 @@ where
     }
 }
 
+/// OpenAI SSE stream chunk.
 #[derive(serde::Deserialize)]
 struct StreamChunk {
     choices: Vec<StreamChoice>,
+    /// Usage is present in the API but not used during streaming.
     #[serde(default)]
+    #[expect(dead_code, reason = "field required for serde deserialization")]
     usage: Option<Usage>,
 }
 
