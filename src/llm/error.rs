@@ -1,38 +1,15 @@
 //! LLM error types.
 
-use std::fmt;
+use thiserror::Error;
 
 /// Errors that can occur when making LLM API calls.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum LLMError {
     /// HTTP request failed
-    Request(reqwest::Error),
+    #[error("http request failed: {0}")]
+    Request(#[from] reqwest::Error),
+
     /// API returned an error response
+    #[error("api error (status {status}): {message}")]
     Api { status: u16, message: String },
-}
-
-impl fmt::Display for LLMError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LLMError::Request(e) => write!(f, "HTTP request failed: {e}"),
-            LLMError::Api { status, message } => {
-                write!(f, "API error (status {status}): {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for LLMError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            LLMError::Request(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<reqwest::Error> for LLMError {
-    fn from(err: reqwest::Error) -> Self {
-        LLMError::Request(err)
-    }
 }
