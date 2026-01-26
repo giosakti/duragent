@@ -11,8 +11,9 @@ repository = "https://github.com/giosakti/agnx"
 async-trait = "0.1"
 bytes = "1"
 futures = "0.3"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["fs", "io-util", "io-std", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = "0.1.18"
+tokio-util = "0.7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -37,6 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+thiserror = "2.0"
 
 [dev-dependencies]
 http-body-util = "0.1"
@@ -50,3 +52,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "agnx"
 path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
