@@ -1,154 +1,58 @@
 //! Interactive chat command implementation.
 
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use agnx::agent;
+use anyhow::{Context, Result};
+
 use agnx::config::Config;
-use agnx::llm::{self, ChatRequest, Message, Role};
+use agnx::launcher::{LaunchOptions, ensure_server_running};
+
+use super::interactive::run_interactive_loop;
 
 pub async fn run(
-    agent_name: String,
-    config_path: String,
-    agents_dir_override: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = Config::load(&config_path)?;
+    agent_name: &str,
+    config_path: &str,
+    agents_dir_override: Option<&Path>,
+    server_url: Option<&str>,
+) -> Result<()> {
+    let config = Config::load(config_path).await?;
 
-    if let Some(dir) = agents_dir_override {
-        config.agents_dir = dir;
-    }
+    // Get client (auto-starts server if needed)
+    let client = ensure_server_running(LaunchOptions {
+        server_url,
+        config_path: Path::new(config_path),
+        config: &config,
+        agents_dir: agents_dir_override,
+    })
+    .await
+    .context("Failed to connect to server")?;
 
-    // Load agents
-    let agents_dir = agent::resolve_agents_dir(Path::new(&config_path), &config.agents_dir);
-    let scan = agent::AgentStore::scan(&agents_dir);
+    // Get agent info to display model details
+    let agent = client
+        .get_agent(agent_name)
+        .await
+        .with_context(|| format!("Failed to get agent '{}'", agent_name))?;
 
-    agent::log_scan_warnings(&scan.warnings);
+    // Create a new session
+    let session = client
+        .create_session(agent_name)
+        .await
+        .context("Failed to create session")?;
 
-    // Get the specified agent
-    let Some(agent_spec) = scan.store.get(&agent_name) else {
-        let available: Vec<_> = scan.store.iter().map(|(name, _)| name.as_str()).collect();
-        let available_str = if available.is_empty() {
-            "none".to_string()
-        } else {
-            available.join(", ")
-        };
-        return Err(format!(
-            "Agent '{}' not found. Available agents: {}",
-            agent_name, available_str
-        )
-        .into());
-    };
-
-    // Initialize LLM providers
-    let providers = llm::ProviderRegistry::from_env();
-
-    // Get the provider for this agent (with optional base_url from agent config)
-    let Some(provider) = providers.get(
-        &agent_spec.model.provider,
-        agent_spec.model.base_url.as_deref(),
-    ) else {
-        return Err(format!(
-            "Provider '{}' not configured. Set the appropriate API key environment variable.",
-            agent_spec.model.provider
-        )
-        .into());
-    };
-
-    // Build system message
-    let mut system_content = String::new();
-    if let Some(ref prompt) = agent_spec.system_prompt {
-        system_content.push_str(prompt);
-    }
-    if let Some(ref instructions) = agent_spec.instructions {
-        if !system_content.is_empty() {
-            system_content.push_str("\n\n");
-        }
-        system_content.push_str(instructions);
-    }
-
-    // Conversation history
-    let mut messages: Vec<Message> = Vec::new();
-    if !system_content.is_empty() {
-        messages.push(Message {
-            role: Role::System,
-            content: system_content,
-        });
-    }
-
-    println!("Chat with {} (Ctrl+C to exit)", agent_name);
+    println!("Chat with {} (Ctrl+C or /exit to detach)", agent_name);
     println!(
         "Model: {} via {}",
-        agent_spec.model.name, agent_spec.model.provider
+        agent.spec.model.name, agent.spec.model.provider
     );
+    println!("Session: {}", session.session_id);
     println!();
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    run_interactive_loop(&client, &session.session_id).await?;
 
-    loop {
-        // Print prompt
-        print!("> ");
-        stdout.flush()?;
-
-        // Read user input
-        let mut input = String::new();
-        if stdin.read_line(&mut input)? == 0 {
-            // EOF
-            println!();
-            break;
-        }
-
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-
-        // Handle exit commands
-        if input == "/exit" || input == "/quit" {
-            break;
-        }
-
-        // Add user message
-        messages.push(Message {
-            role: Role::User,
-            content: input.to_string(),
-        });
-
-        // Build request
-        let request = ChatRequest {
-            model: agent_spec.model.name.clone(),
-            messages: messages.clone(),
-            temperature: agent_spec.model.temperature,
-            max_tokens: agent_spec.model.max_output_tokens,
-        };
-
-        // Call LLM
-        match provider.chat(request).await {
-            Ok(response) => {
-                let assistant_content = response
-                    .choices
-                    .first()
-                    .map(|c| c.message.content.clone())
-                    .unwrap_or_default();
-
-                // Print response
-                println!();
-                println!("{}", assistant_content);
-                println!();
-
-                // Add to history
-                messages.push(Message {
-                    role: Role::Assistant,
-                    content: assistant_content,
-                });
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                // Remove the failed user message from history
-                messages.pop();
-            }
-        }
-    }
+    println!(
+        "Session saved. Reattach with: agnx attach {}",
+        session.session_id
+    );
 
     Ok(())
 }
