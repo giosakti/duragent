@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-01-27
+
+### Added
+- Session persistence with JSONL event log and YAML snapshots
+  - Atomic writes with temp-file-rename pattern
+  - Event types: SessionStart, UserMessage, AssistantMessage, ToolCall, ToolResult, StatusChange, Error, SessionEnd
+  - Peek/commit pattern prevents sequence drift on write failures
+- Session resume on reconnect
+  - Snapshot loading with event replay after `last_event_seq`
+  - Server startup recovery scans `.agnx/sessions/` directory
+- Session disconnect behavior (`on_disconnect` config)
+  - `pause` mode: cancels LLM, saves partial content, pauses session
+  - `continue` mode: transfers stream to background task, continues execution
+- CLI `agnx attach` command
+  - `agnx attach --list` shows attachable sessions
+  - `agnx attach SESSION_ID` reconnects with conversation history
+- SSE streaming endpoint (`POST /api/v1/sessions/{id}/stream`)
+  - Events: `start`, `token`, `done`, `cancelled`, `error`, `keep-alive`
+  - Configurable idle timeout and keep-alive heartbeat
+- Background task registry for graceful shutdown
+- HTTP client library for CLI-to-server communication
+- Server launcher with auto-start and health checks
+- Integration tests for persistence, resume, and disconnect behavior
+
 ## [0.1.0] - 2026-01-25
 
 ### Added
@@ -35,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project documentation (architecture, API reference, deployment guide)
 - Agnx Agent Format (AAF) specification
 
-[Unreleased]: https://github.com/giosakti/agnx/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/giosakti/agnx/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/giosakti/agnx/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/giosakti/agnx/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/giosakti/agnx/releases/tag/v0.0.1
