@@ -3,7 +3,7 @@
 > **Purpose:** Living status + session context. The stable vision and principles live in the [Project Charter](./202601111100.project-charter.md).
 
 ## Last Updated
-2026-01-25
+2026-01-27
 
 ## Strategic Direction
 
@@ -58,18 +58,19 @@ Key specs and design docs:
 - [x] Sessions API (in-memory)
 - [x] Integration tests
 
-### v0.2.0 — Sessions & Durability
-- [ ] Session persistence (JSONL events + YAML snapshots)
-- [ ] Session resume on reconnect
-- [ ] Session disconnect behavior (`continue` / `pause`)
-- [ ] CLI: `agnx attach` (connect to running/paused session)
-- [ ] Core gateways: SSE streaming
+### v0.2.0 — Sessions & Durability ✓
+- [x] Session persistence (JSONL events + YAML snapshots)
+- [x] Session resume on reconnect
+- [x] Session disconnect behavior (`continue` / `pause`)
+- [x] CLI: `agnx attach` (connect to running/paused session)
+- [x] Core gateways: SSE streaming
 
-### v0.3.0 — Sandbox
-- [ ] Sandbox interface + auto-selection
-- [ ] bubblewrap backend (Linux)
-- [ ] Docker backend (cross-platform fallback)
-- [ ] Trust mode (no isolation)
+### v0.3.0 — Gateway Plugins
+- [ ] Gateway plugin protocol (JSON over stdio)
+- [ ] First-party plugin: agnx-gateway-telegram
+- [ ] First-party plugin: agnx-gateway-whatsapp (Baileys-based)
+- [ ] Plugin configuration in agnx.yaml
+- [ ] Trust mode (no isolation) — sandbox placeholder
 
 ### v0.4.0 — Tools & Memory
 - [ ] CLI tool support (lightweight alternative to MCP)
@@ -78,10 +79,10 @@ Key specs and design docs:
 - [ ] Agent export/import
 - [ ] CLI: `agnx export`, `agnx import`
 
-### v0.5.0 — Gateway Plugins
-- [ ] Gateway plugin protocol (JSON over stdio)
-- [ ] First-party plugin: agnx-gateway-telegram
-- [ ] Plugin configuration in agnx.yaml
+### v0.5.0 — Sandbox
+- [ ] Sandbox interface + auto-selection
+- [ ] bubblewrap backend (Linux)
+- [ ] Docker backend (cross-platform fallback)
 
 ### v0.6.0 — External Backends
 - [ ] Services: PostgreSQL backend
@@ -117,9 +118,19 @@ Key specs and design docs:
 
 ## Current Focus
 
-**v0.2.0 — Sessions & Durability**: Session persistence, resume on reconnect, SSE streaming.
+**v0.3.0 — Gateway Plugins**: Gateway plugin protocol (JSON over stdio), first-party Telegram plugin.
 
 ## Recent Accomplishments
+
+- **v0.2.0 released** — Sessions & Durability complete
+- Implemented session persistence (JSONL events + YAML snapshots) with atomic writes
+- Added session resume with snapshot + event replay on reconnect
+- Added session disconnect behavior (`continue` / `pause`) with background continuation
+- Implemented `agnx attach` command for connecting to running/paused sessions
+- Added SSE streaming endpoint with keep-alive heartbeat and idle timeout
+- Added background task registry for graceful shutdown
+- Added HTTP client library for CLI-to-server communication
+- Comprehensive integration tests for persistence, resume, and disconnect behavior
 
 - **v0.1.0 released** — Foundation complete
 - Implemented agent spec loader (AAF: YAML + Markdown)
@@ -132,12 +143,18 @@ Key specs and design docs:
 
 ## Next Action
 
-- Implement session persistence (JSONL events + YAML snapshots)
-- Add SSE streaming for LLM responses
+- Design gateway plugin protocol (JSON over stdio)
+- Implement gateway plugin manager in agnx core
+- Build first-party plugin: agnx-gateway-telegram
 
 ## Blockers / Known Issues / Decisions Needed
 
-- None currently
+- **Windows: Auto-started server may not survive CLI exit**: The launcher (`src/launcher.rs`) uses `process_group(0)` on Unix to detach the server process, but Windows lacks equivalent handling. On Windows, the auto-started server may be killed when the CLI exits. Workaround: use `agnx serve` in a separate terminal. Fix: add `CREATE_NEW_PROCESS_GROUP` via `std::os::windows::process::CommandExt`.
+- **State Synchronization**: `SessionStore` maintains parallel in-memory state while persistence logic is distributed across handlers and streaming code. Risk: forgetting to persist causes state drift on crash. Options: (1) write-through cache in SessionStore, or (2) SessionService layer that wraps store + persistence together. Recommendation: SessionService keeps the store simple (sync, easy to test) while centralizing persistence calls.
+- **Snapshot Data Duplication**: `state.yaml` stores full conversation history, duplicating `events.jsonl`. For N messages, naive snapshots cause O(N²) total I/O. Options and tradeoffs:
+  - *Periodic checkpointing* (snapshot every K events) — O(N²) → O(N) I/O; recovery replays events since checkpoint; **recommended first step**
+  - *Sliding window* — bounds memory; loses old context
+  - *Summary-based* — bounds memory + I/O; lossy compression
 
 ## Session Notes
 
