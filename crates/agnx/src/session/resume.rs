@@ -446,6 +446,7 @@ mod tests {
         let mut snapshot = create_test_snapshot("session_config", 1);
         snapshot.config = SessionConfig {
             on_disconnect: OnDisconnect::Continue,
+            ..Default::default()
         };
         write_test_snapshot(&temp_dir, "session_config", &snapshot).await;
 

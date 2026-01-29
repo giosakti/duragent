@@ -353,6 +353,9 @@ impl StreamContext {
             created_at: self.created_at,
             status,
             on_disconnect: self.on_disconnect,
+            // SSE streams are created via HTTP API, not gateways
+            gateway: None,
+            gateway_chat_id: None,
         }
     }
 }

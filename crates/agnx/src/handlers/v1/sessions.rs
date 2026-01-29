@@ -77,6 +77,8 @@ pub async fn create_session(
         created_at: session.created_at,
         status: SessionStatus::Active,
         on_disconnect: agent_spec.session.on_disconnect,
+        gateway: None,
+        gateway_chat_id: None,
     };
     if let Err(e) = commit_event(
         &ctx,

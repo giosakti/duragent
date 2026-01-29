@@ -40,6 +40,14 @@ pub struct SessionConfig {
     /// Behavior when client disconnects.
     #[serde(default)]
     pub on_disconnect: OnDisconnect,
+
+    /// Gateway this session belongs to (e.g., "telegram").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+
+    /// Platform-specific chat identifier for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_chat_id: Option<String>,
 }
 
 impl SessionSnapshot {
@@ -126,6 +134,7 @@ mod tests {
             vec![],
             SessionConfig {
                 on_disconnect: OnDisconnect::Continue,
+                ..Default::default()
             },
         );
 

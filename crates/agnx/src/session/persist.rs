@@ -34,6 +34,10 @@ pub struct SessionContext<'a> {
     pub created_at: DateTime<Utc>,
     pub status: SessionStatus,
     pub on_disconnect: OnDisconnect,
+    /// Gateway this session belongs to (for routing persistence).
+    pub gateway: Option<&'a str>,
+    /// Platform-specific chat identifier (for routing persistence).
+    pub gateway_chat_id: Option<&'a str>,
 }
 
 // ============================================================================
@@ -55,6 +59,8 @@ fn build_snapshot(
         conversation,
         SessionConfig {
             on_disconnect: ctx.on_disconnect,
+            gateway: ctx.gateway.map(String::from),
+            gateway_chat_id: ctx.gateway_chat_id.map(String::from),
         },
     )
 }

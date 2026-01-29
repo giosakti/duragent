@@ -229,7 +229,10 @@ mod tests {
                     content: "Hi there!".to_string(),
                 },
             ],
-            SessionConfig { on_disconnect },
+            SessionConfig {
+                on_disconnect,
+                ..Default::default()
+            },
         );
         write_snapshot(&sessions_path, session_id, &snapshot)
             .await
