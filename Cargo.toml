@@ -1,12 +1,22 @@
-[package]
-name = "agnx"
+[workspace]
+resolver = "2"
+members = [
+    "crates/agnx",
+    "crates/agnx-gateway-protocol",
+    "crates/agnx-gateway-telegram",
+]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2024"
-description = "A minimal and fast self-hosted runtime for durable and portable AI agents"
 license = "MIT"
-repository = "https://github.com/giosakti/agnx"
+repository = "https://github.com/AgnxAI/agnx"
 
-[dependencies]
+[workspace.dependencies]
+# Workspace crates
+agnx-gateway-protocol = { path = "crates/agnx-gateway-protocol" }
+agnx-gateway-telegram = { path = "crates/agnx-gateway-telegram" }
+
 # Async runtime
 async-trait = "0.1"
 bytes = "1"
@@ -20,6 +30,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Error handling
 anyhow = "1"
+thiserror = "2.0"
 
 # HTTP server
 axum = "0.8"
@@ -38,20 +49,17 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
-thiserror = "2.0"
 
-[dev-dependencies]
+# Gateway: Telegram
+teloxide = { version = "0.17", features = ["macros"] }
+
+# Unix-specific
+libc = "0.2"
+
+# Dev dependencies
 http-body-util = "0.1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
-
-[lib]
-name = "agnx"
-path = "src/lib.rs"
-
-[[bin]]
-name = "agnx"
-path = "src/main.rs"
 
 [profile.release]
 strip = true

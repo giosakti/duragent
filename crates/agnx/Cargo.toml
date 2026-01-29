@@ -1,0 +1,66 @@
+[package]
+name = "agnx"
+description = "A minimal and fast self-hosted runtime for durable and portable AI agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["gateway-telegram"]
+gateway-telegram = ["dep:agnx-gateway-telegram"]
+
+[dependencies]
+# Workspace crates
+agnx-gateway-protocol = { workspace = true }
+agnx-gateway-telegram = { workspace = true, optional = true }
+
+# Async runtime
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# HTTP server
+axum = { workspace = true }
+tower-http = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-saphyr = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+# Unix-specific (for prctl on Linux)
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
+
+[lib]
+name = "agnx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agnx"
+path = "src/main.rs"

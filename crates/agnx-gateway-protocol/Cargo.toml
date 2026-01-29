@@ -1,0 +1,12 @@
+[package]
+name = "agnx-gateway-protocol"
+description = "Gateway protocol types for Agnx - use this to build custom gateways"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -13,7 +13,7 @@ Thank you for your interest in contributing to Agnx! This document provides guid
 
 ```bash
 # Clone the repository
-git clone https://github.com/giosakti/agnx.git
+git clone https://github.com/AgnxAI/agnx.git
 cd agnx
 
 # Build

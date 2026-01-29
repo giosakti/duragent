@@ -1,6 +1,6 @@
 # Agnx
 
-[![CI](https://github.com/giosakti/agnx/actions/workflows/ci.yml/badge.svg)](https://github.com/giosakti/agnx/actions/workflows/ci.yml)
+[![CI](https://github.com/AgnxAI/agnx/actions/workflows/ci.yml/badge.svg)](https://github.com/AgnxAI/agnx/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -31,7 +31,7 @@ Self-host it directly, or use it as the foundation for agent-powered products.
 ### From Source
 
 ```bash
-git clone https://github.com/giosakti/agnx.git
+git clone https://github.com/AgnxAI/agnx.git
 cd agnx
 make build
 ./target/release/agnx --version
@@ -40,7 +40,7 @@ make build
 ### Cargo Install
 
 ```bash
-cargo install --git https://github.com/giosakti/agnx.git
+cargo install --git https://github.com/AgnxAI/agnx.git
 ```
 
 ## Quick Start

@@ -1,0 +1,934 @@
+//! Integration tests for session persistence.
+//!
+//! Tests the interaction between event writer/reader and snapshot writer/loader.
+
+use std::path::PathBuf;
+
+use chrono::Utc;
+use tempfile::TempDir;
+
+use agnx::agent::OnDisconnect;
+use agnx::api::SessionStatus;
+use agnx::llm::{Message, Role, Usage};
+use agnx::session::{
+    EventReader, EventWriter, SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot,
+    load_snapshot, write_snapshot,
+};
+
+fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
+    temp_dir.path().join("sessions")
+}
+
+// ============================================================================
+// Event Persistence Tests
+// ============================================================================
+
+#[tokio::test]
+async fn event_write_read_roundtrip() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "test_session";
+
+    // Write multiple events
+    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap();
+
+    let events = vec![
+        SessionEvent::new(
+            1,
+            SessionEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                agent: "test-agent".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            2,
+            SessionEventPayload::UserMessage {
+                content: "Hello, agent!".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            3,
+            SessionEventPayload::AssistantMessage {
+                agent: "test-agent".to_string(),
+                content: "Hello! How can I help?".to_string(),
+                usage: Some(Usage {
+                    prompt_tokens: 10,
+                    completion_tokens: 8,
+                    total_tokens: 18,
+                }),
+            },
+        ),
+    ];
+
+    for event in &events {
+        writer.append(event).await.unwrap();
+    }
+
+    // Read events back
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .expect("reader should exist");
+
+    let read_events = reader.read_all().await.unwrap();
+
+    // Verify order and content
+    assert_eq!(read_events.len(), 3);
+
+    assert_eq!(read_events[0].seq, 1);
+    match &read_events[0].payload {
+        SessionEventPayload::SessionStart { session_id, agent } => {
+            assert_eq!(session_id, "test_session");
+            assert_eq!(agent, "test-agent");
+        }
+        _ => panic!("expected SessionStart"),
+    }
+
+    assert_eq!(read_events[1].seq, 2);
+    match &read_events[1].payload {
+        SessionEventPayload::UserMessage { content } => {
+            assert_eq!(content, "Hello, agent!");
+        }
+        _ => panic!("expected UserMessage"),
+    }
+
+    assert_eq!(read_events[2].seq, 3);
+    match &read_events[2].payload {
+        SessionEventPayload::AssistantMessage {
+            agent,
+            content,
+            usage,
+        } => {
+            assert_eq!(agent, "test-agent");
+            assert_eq!(content, "Hello! How can I help?");
+            assert!(usage.is_some());
+            let usage = usage.as_ref().unwrap();
+            assert_eq!(usage.total_tokens, 18);
+        }
+        _ => panic!("expected AssistantMessage"),
+    }
+}
+
+#[tokio::test]
+async fn events_preserve_sequence_order() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "seq_test";
+
+    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap();
+
+    // Write events in sequence order
+    for i in 1..=10 {
+        let event = SessionEvent::new(
+            i,
+            SessionEventPayload::UserMessage {
+                content: format!("Message {}", i),
+            },
+        );
+        writer.append(&event).await.unwrap();
+    }
+
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader.read_all().await.unwrap();
+
+    // Verify order preserved
+    for (i, event) in events.iter().enumerate() {
+        assert_eq!(event.seq, (i + 1) as u64);
+    }
+}
+
+// ============================================================================
+// Snapshot Persistence Tests
+// ============================================================================
+
+#[tokio::test]
+async fn snapshot_write_load_roundtrip() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "snapshot_test";
+    let created_at = Utc::now();
+
+    let conversation = vec![
+        Message {
+            role: Role::User,
+            content: "What is 2 + 2?".to_string(),
+        },
+        Message {
+            role: Role::Assistant,
+            content: "2 + 2 equals 4.".to_string(),
+        },
+    ];
+
+    let config = SessionConfig {
+        on_disconnect: OnDisconnect::Continue,
+        ..Default::default()
+    };
+
+    let snapshot = SessionSnapshot::new(
+        session_id.to_string(),
+        "math-tutor".to_string(),
+        SessionStatus::Active,
+        created_at,
+        42,
+        conversation.clone(),
+        config,
+    );
+
+    // Write snapshot
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
+        .await
+        .unwrap();
+
+    // Load snapshot back
+    let loaded = load_snapshot(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .expect("snapshot should exist");
+
+    // Verify all fields
+    assert_eq!(loaded.session_id, session_id);
+    assert_eq!(loaded.agent, "math-tutor");
+    assert_eq!(loaded.status, SessionStatus::Active);
+    assert_eq!(loaded.last_event_seq, 42);
+    assert_eq!(loaded.config.on_disconnect, OnDisconnect::Continue);
+
+    assert_eq!(loaded.conversation.len(), 2);
+    assert_eq!(loaded.conversation[0].role, Role::User);
+    assert_eq!(loaded.conversation[0].content, "What is 2 + 2?");
+    assert_eq!(loaded.conversation[1].role, Role::Assistant);
+    assert_eq!(loaded.conversation[1].content, "2 + 2 equals 4.");
+}
+
+#[tokio::test]
+async fn snapshot_preserves_all_statuses() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let statuses = [
+        SessionStatus::Active,
+        SessionStatus::Paused,
+        SessionStatus::Running,
+        SessionStatus::Completed,
+    ];
+
+    for (i, status) in statuses.iter().enumerate() {
+        let session_id = format!("status_test_{}", i);
+
+        let snapshot = SessionSnapshot::new(
+            session_id.clone(),
+            "agent".to_string(),
+            *status,
+            Utc::now(),
+            0,
+            vec![],
+            SessionConfig::default(),
+        );
+
+        write_snapshot(&sessions_dir(&temp_dir), &session_id, &snapshot)
+            .await
+            .unwrap();
+
+        let loaded = load_snapshot(&sessions_dir(&temp_dir), &session_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded.status, *status);
+    }
+}
+
+// ============================================================================
+// Event-Snapshot Integration Tests
+// ============================================================================
+
+#[tokio::test]
+async fn read_events_from_snapshot_seq() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "resume_test";
+
+    // Write 10 events
+    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap();
+
+    for i in 1..=10 {
+        let event = SessionEvent::new(
+            i,
+            SessionEventPayload::UserMessage {
+                content: format!("Message {}", i),
+            },
+        );
+        writer.append(&event).await.unwrap();
+    }
+
+    // Write snapshot at seq 5
+    let snapshot = SessionSnapshot::new(
+        session_id.to_string(),
+        "agent".to_string(),
+        SessionStatus::Active,
+        Utc::now(),
+        5,
+        vec![],
+        SessionConfig::default(),
+    );
+
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
+        .await
+        .unwrap();
+
+    // Load snapshot and get last_event_seq
+    let loaded_snapshot = load_snapshot(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(loaded_snapshot.last_event_seq, 5);
+
+    // Read events starting from seq after snapshot
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader
+        .read_from_seq(loaded_snapshot.last_event_seq + 1)
+        .await
+        .unwrap();
+
+    // Should get events 6-10
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0].seq, 6);
+    assert_eq!(events[4].seq, 10);
+}
+
+#[tokio::test]
+async fn events_and_snapshot_coordinate_recovery() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "recovery_test";
+
+    // Simulate a session: write events and a snapshot
+    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap();
+
+    // Session start
+    writer
+        .append(&SessionEvent::new(
+            1,
+            SessionEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                agent: "recovery-agent".to_string(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    // User message
+    writer
+        .append(&SessionEvent::new(
+            2,
+            SessionEventPayload::UserMessage {
+                content: "Hello".to_string(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Assistant response
+    writer
+        .append(&SessionEvent::new(
+            3,
+            SessionEventPayload::AssistantMessage {
+                agent: "recovery-agent".to_string(),
+                content: "Hi there!".to_string(),
+                usage: None,
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Take snapshot at seq 3
+    let snapshot = SessionSnapshot::new(
+        session_id.to_string(),
+        "recovery-agent".to_string(),
+        SessionStatus::Active,
+        Utc::now(),
+        3,
+        vec![
+            Message {
+                role: Role::User,
+                content: "Hello".to_string(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Hi there!".to_string(),
+            },
+        ],
+        SessionConfig::default(),
+    );
+
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
+        .await
+        .unwrap();
+
+    // More events after snapshot
+    writer
+        .append(&SessionEvent::new(
+            4,
+            SessionEventPayload::UserMessage {
+                content: "How are you?".to_string(),
+            },
+        ))
+        .await
+        .unwrap();
+
+    writer
+        .append(&SessionEvent::new(
+            5,
+            SessionEventPayload::AssistantMessage {
+                agent: "recovery-agent".to_string(),
+                content: "I'm doing well!".to_string(),
+                usage: None,
+            },
+        ))
+        .await
+        .unwrap();
+
+    // Now simulate recovery: load snapshot and replay events
+    let loaded_snapshot = load_snapshot(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Start with snapshot conversation
+    let mut recovered_messages = loaded_snapshot.conversation.clone();
+    assert_eq!(recovered_messages.len(), 2);
+
+    // Replay events after snapshot
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let replay_events = reader
+        .read_from_seq(loaded_snapshot.last_event_seq + 1)
+        .await
+        .unwrap();
+
+    for event in replay_events {
+        if let Some(msg) = event.to_message() {
+            recovered_messages.push(msg);
+        }
+    }
+
+    // Verify full conversation recovered
+    assert_eq!(recovered_messages.len(), 4);
+    assert_eq!(recovered_messages[0].content, "Hello");
+    assert_eq!(recovered_messages[1].content, "Hi there!");
+    assert_eq!(recovered_messages[2].content, "How are you?");
+    assert_eq!(recovered_messages[3].content, "I'm doing well!");
+}
+
+// ============================================================================
+// Missing File Handling Tests
+// ============================================================================
+
+#[tokio::test]
+async fn event_reader_returns_none_for_missing_file() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let result = EventReader::open(&sessions_dir(&temp_dir), "nonexistent_session").await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn snapshot_loader_returns_none_for_missing_file() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let result = load_snapshot(&sessions_dir(&temp_dir), "nonexistent_session").await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn event_reader_returns_none_for_missing_directory() {
+    let temp_dir = TempDir::new().unwrap();
+    let nonexistent_base = temp_dir.path().join("no_such_dir");
+
+    let result = EventReader::open(&nonexistent_base, "any_session").await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn snapshot_loader_returns_none_for_missing_directory() {
+    let temp_dir = TempDir::new().unwrap();
+    let nonexistent_base = temp_dir.path().join("no_such_dir");
+
+    let result = load_snapshot(&nonexistent_base, "any_session").await;
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_none());
+}
+
+// ============================================================================
+// Malformed Data Handling Tests
+// ============================================================================
+
+#[tokio::test]
+async fn event_reader_skips_malformed_lines() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "malformed_test";
+
+    // Create session directory manually
+    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+
+    // Write a file with mixed valid and invalid lines
+    let valid_event_1 = SessionEvent::new(
+        1,
+        SessionEventPayload::UserMessage {
+            content: "First".to_string(),
+        },
+    );
+    let valid_event_2 = SessionEvent::new(
+        2,
+        SessionEventPayload::UserMessage {
+            content: "Second".to_string(),
+        },
+    );
+    let valid_event_3 = SessionEvent::new(
+        3,
+        SessionEventPayload::UserMessage {
+            content: "Third".to_string(),
+        },
+    );
+
+    let content = format!(
+        "{}\n\
+         {{\"incomplete\n\
+         not json at all\n\
+         {}\n\
+         \n\
+         {{\"seq\": 999}}\n\
+         {}\n",
+        serde_json::to_string(&valid_event_1).unwrap(),
+        serde_json::to_string(&valid_event_2).unwrap(),
+        serde_json::to_string(&valid_event_3).unwrap(),
+    );
+
+    let events_path = session_dir.join("events.jsonl");
+    tokio::fs::write(&events_path, content).await.unwrap();
+
+    // Read should skip malformed lines
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader.read_all().await.unwrap();
+
+    // Only valid events should be returned
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[1].seq, 2);
+    assert_eq!(events[2].seq, 3);
+}
+
+#[tokio::test]
+async fn event_reader_handles_empty_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "empty_test";
+
+    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+
+    let events_path = session_dir.join("events.jsonl");
+    tokio::fs::write(&events_path, "").await.unwrap();
+
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader.read_all().await.unwrap();
+    assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn event_reader_handles_only_empty_lines() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "whitespace_test";
+
+    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+
+    let events_path = session_dir.join("events.jsonl");
+    tokio::fs::write(&events_path, "\n\n   \n\t\n")
+        .await
+        .unwrap();
+
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader.read_all().await.unwrap();
+    assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn snapshot_loader_returns_error_for_invalid_yaml() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "invalid_yaml_test";
+
+    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+
+    let state_path = session_dir.join("state.yaml");
+    tokio::fs::write(&state_path, "not: [valid: yaml: [[[")
+        .await
+        .unwrap();
+
+    let result = load_snapshot(&sessions_dir(&temp_dir), session_id).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("yaml parse error"));
+}
+
+#[tokio::test]
+async fn snapshot_loader_returns_error_for_incompatible_schema() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "old_schema_test";
+
+    let mut snapshot = SessionSnapshot::new(
+        session_id.to_string(),
+        "agent".to_string(),
+        SessionStatus::Active,
+        Utc::now(),
+        0,
+        vec![],
+        SessionConfig::default(),
+    );
+
+    // Set an old schema version
+    snapshot.schema_version = "0".to_string();
+
+    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+
+    let yaml = serde_saphyr::to_string(&snapshot).unwrap();
+    let state_path = session_dir.join("state.yaml");
+    tokio::fs::write(&state_path, yaml).await.unwrap();
+
+    let result = load_snapshot(&sessions_dir(&temp_dir), session_id).await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("incompatible snapshot schema version")
+    );
+}
+
+// ============================================================================
+// Atomic Write Tests
+// ============================================================================
+
+#[tokio::test]
+async fn snapshot_write_is_atomic() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "atomic_test";
+
+    let snapshot = SessionSnapshot::new(
+        session_id.to_string(),
+        "agent".to_string(),
+        SessionStatus::Active,
+        Utc::now(),
+        42,
+        vec![],
+        SessionConfig::default(),
+    );
+
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
+        .await
+        .unwrap();
+
+    // Verify final file exists
+    let final_path = sessions_dir(&temp_dir).join(session_id).join("state.yaml");
+    assert!(final_path.exists());
+
+    // Verify temp file does not exist
+    let temp_path = sessions_dir(&temp_dir)
+        .join(session_id)
+        .join("state.yaml.tmp");
+    assert!(!temp_path.exists());
+}
+
+#[tokio::test]
+async fn snapshot_overwrite_is_atomic() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "overwrite_test";
+
+    // Write initial snapshot
+    let snapshot1 = SessionSnapshot::new(
+        session_id.to_string(),
+        "agent".to_string(),
+        SessionStatus::Active,
+        Utc::now(),
+        10,
+        vec![],
+        SessionConfig::default(),
+    );
+
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot1)
+        .await
+        .unwrap();
+
+    // Overwrite with new snapshot
+    let snapshot2 = SessionSnapshot::new(
+        session_id.to_string(),
+        "agent".to_string(),
+        SessionStatus::Completed,
+        Utc::now(),
+        50,
+        vec![],
+        SessionConfig::default(),
+    );
+
+    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot2)
+        .await
+        .unwrap();
+
+    // Load and verify new snapshot
+    let loaded = load_snapshot(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(loaded.status, SessionStatus::Completed);
+    assert_eq!(loaded.last_event_seq, 50);
+
+    // Verify no temp file left behind
+    let temp_path = sessions_dir(&temp_dir)
+        .join(session_id)
+        .join("state.yaml.tmp");
+    assert!(!temp_path.exists());
+}
+
+// ============================================================================
+// Event Writer Append Mode Tests
+// ============================================================================
+
+#[tokio::test]
+async fn event_writer_appends_to_existing_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "append_test";
+
+    // Write first batch of events
+    {
+        let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+            .await
+            .unwrap();
+
+        writer
+            .append(&SessionEvent::new(
+                1,
+                SessionEventPayload::UserMessage {
+                    content: "First".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+
+        writer
+            .append(&SessionEvent::new(
+                2,
+                SessionEventPayload::UserMessage {
+                    content: "Second".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Open new writer (simulating server restart) and append more
+    {
+        let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+            .await
+            .unwrap();
+
+        writer
+            .append(&SessionEvent::new(
+                3,
+                SessionEventPayload::UserMessage {
+                    content: "Third".to_string(),
+                },
+            ))
+            .await
+            .unwrap();
+    }
+
+    // Read all events
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let events = reader.read_all().await.unwrap();
+
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[1].seq, 2);
+    assert_eq!(events[2].seq, 3);
+}
+
+// ============================================================================
+// Complex Event Types Tests
+// ============================================================================
+
+#[tokio::test]
+async fn all_event_types_roundtrip() {
+    use agnx::api::SessionStatus;
+    use agnx::session::{SessionEndReason, ToolResultData};
+
+    let temp_dir = TempDir::new().unwrap();
+    let session_id = "all_types_test";
+
+    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap();
+
+    let events = vec![
+        SessionEvent::new(
+            1,
+            SessionEventPayload::SessionStart {
+                session_id: session_id.to_string(),
+                agent: "test-agent".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            2,
+            SessionEventPayload::UserMessage {
+                content: "Search for rust".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            3,
+            SessionEventPayload::ToolCall {
+                call_id: "call_abc123".to_string(),
+                tool_name: "web_search".to_string(),
+                arguments: serde_json::json!({"query": "rust programming"}),
+            },
+        ),
+        SessionEvent::new(
+            4,
+            SessionEventPayload::ToolResult {
+                call_id: "call_abc123".to_string(),
+                result: ToolResultData {
+                    success: true,
+                    content: "Rust is a systems programming language.".to_string(),
+                },
+            },
+        ),
+        SessionEvent::new(
+            5,
+            SessionEventPayload::AssistantMessage {
+                agent: "test-agent".to_string(),
+                content: "Here's what I found about Rust.".to_string(),
+                usage: Some(Usage {
+                    prompt_tokens: 50,
+                    completion_tokens: 20,
+                    total_tokens: 70,
+                }),
+            },
+        ),
+        SessionEvent::new(
+            6,
+            SessionEventPayload::StatusChange {
+                from: SessionStatus::Active,
+                to: SessionStatus::Paused,
+            },
+        ),
+        SessionEvent::new(
+            7,
+            SessionEventPayload::Error {
+                code: "rate_limit".to_string(),
+                message: "Too many requests".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            8,
+            SessionEventPayload::SessionEnd {
+                reason: SessionEndReason::Completed,
+            },
+        ),
+    ];
+
+    for event in &events {
+        writer.append(event).await.unwrap();
+    }
+
+    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let read_events = reader.read_all().await.unwrap();
+
+    assert_eq!(read_events.len(), 8);
+
+    // Verify each event type deserialized correctly
+    match &read_events[2].payload {
+        SessionEventPayload::ToolCall {
+            call_id,
+            tool_name,
+            arguments,
+        } => {
+            assert_eq!(call_id, "call_abc123");
+            assert_eq!(tool_name, "web_search");
+            assert_eq!(arguments["query"], "rust programming");
+        }
+        _ => panic!("expected ToolCall"),
+    }
+
+    match &read_events[3].payload {
+        SessionEventPayload::ToolResult { call_id, result } => {
+            assert_eq!(call_id, "call_abc123");
+            assert!(result.success);
+        }
+        _ => panic!("expected ToolResult"),
+    }
+
+    match &read_events[5].payload {
+        SessionEventPayload::StatusChange { from, to } => {
+            assert_eq!(*from, SessionStatus::Active);
+            assert_eq!(*to, SessionStatus::Paused);
+        }
+        _ => panic!("expected StatusChange"),
+    }
+
+    match &read_events[6].payload {
+        SessionEventPayload::Error { code, message } => {
+            assert_eq!(code, "rate_limit");
+            assert_eq!(message, "Too many requests");
+        }
+        _ => panic!("expected Error"),
+    }
+
+    match &read_events[7].payload {
+        SessionEventPayload::SessionEnd { reason } => {
+            assert_eq!(*reason, SessionEndReason::Completed);
+        }
+        _ => panic!("expected SessionEnd"),
+    }
+}
