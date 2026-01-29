@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agnx"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agnx-gateway-protocol",
  "agnx-gateway-telegram",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "agnx-gateway-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "agnx-gateway-telegram"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agnx-gateway-protocol",
  "anyhow",

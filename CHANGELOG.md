@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-01-29
+
+### Added
+- Gateway plugin architecture for platform integrations
+  - Gateway Protocol (`agnx-gateway-protocol` crate) with JSON-over-stdio communication
+  - Gateway Manager with unified interface for built-in and subprocess gateways
+  - Subprocess supervision with restart policies (`always`, `on_failure`, `never`)
+  - Exponential backoff and parent-death handling for subprocess gateways
+- Telegram gateway (`agnx-gateway-telegram`)
+  - Supports both built-in (feature flag) and subprocess modes
+  - DM and group chat support with bot commands
+- Global agent routing rules in `agnx.yaml`
+  - Match conditions: `gateway`, `chat_type`, `chat_id`, `sender_id`
+  - First-match-wins evaluation order
+  - Session routing persisted in snapshots (gateway + chat_id)
+- Sandbox module as placeholder for tool execution
+  - `Sandbox` trait with `exec()` method for command execution
+  - `TrustSandbox` implementation (no isolation, direct host execution)
+  - `SandboxConfig` with configurable mode (defaults to `trust`)
+- Environment variable interpolation in config files
+  - `${VAR}` for required variables
+  - `${VAR:-default}` for optional with defaults
+
+### Changed
+- Refactored to workspace structure (`crates/agnx`, `crates/agnx-gateway-*`)
+- AssistantMessage events now track agent name for mid-session agent switching
+
 ## [0.2.0] - 2026-01-27
 
 ### Added
@@ -59,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project documentation (architecture, API reference, deployment guide)
 - Agnx Agent Format (AAF) specification
 
-[Unreleased]: https://github.com/AgnxAI/agnx/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AgnxAI/agnx/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AgnxAI/agnx/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AgnxAI/agnx/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AgnxAI/agnx/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/AgnxAI/agnx/releases/tag/v0.0.1

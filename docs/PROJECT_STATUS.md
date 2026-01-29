@@ -65,11 +65,11 @@ Key specs and design docs:
 - [x] CLI: `agnx attach` (connect to running/paused session)
 - [x] Core gateways: SSE streaming
 
-### v0.3.0 — Gateway Plugins
+### v0.3.0 — Gateway Plugins ✓
 - [x] Gateway plugin protocol (JSON over stdio)
 - [x] First-party plugin: agnx-gateway-telegram
 - [x] Plugin configuration in agnx.yaml
-- [ ] Trust mode (no isolation) — sandbox placeholder
+- [x] Trust mode (no isolation) — sandbox placeholder
 
 ### v0.4.0 — Tools & Memory
 - [ ] CLI tool support (lightweight alternative to MCP)
@@ -118,11 +118,12 @@ Key specs and design docs:
 
 ## Current Focus
 
-**v0.3.0 — Gateway Plugins**: Finishing trust mode (sandbox placeholder).
+**v0.3.0 — Gateway Plugins**: Complete. Ready for release.
 
 ## Recent Accomplishments
 
-- **v0.3.0 in progress** — Gateway Plugins
+- **v0.3.0 complete** — Gateway Plugins
+- Added trust mode sandbox (`Sandbox` trait + `TrustSandbox` implementation) as placeholder for tool execution
 - Implemented Gateway Protocol (`agnx-gateway-protocol` crate) for external gateway developers
 - Built Telegram gateway (`agnx-gateway-telegram`) supporting both built-in and subprocess modes
 - Refactored to workspace structure (`crates/agnx`, `crates/agnx-gateway-*`)
@@ -153,8 +154,8 @@ Key specs and design docs:
 
 ## Next Action
 
-- Implement trust mode (no isolation) as sandbox placeholder
 - Release v0.3.0
+- Begin v0.4.0: CLI tool support, MCP integration, memory
 
 ## Blockers / Known Issues / Decisions Needed
 
