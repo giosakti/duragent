@@ -168,12 +168,7 @@ impl AgentStore {
 ///
 /// If `agents_dir` is relative, it is resolved relative to the config file directory.
 pub fn resolve_agents_dir(config_path: &Path, agents_dir: &Path) -> PathBuf {
-    if agents_dir.is_absolute() {
-        return agents_dir.to_path_buf();
-    }
-
-    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
-    config_dir.join(agents_dir)
+    crate::config::resolve_path(config_path, agents_dir)
 }
 
 /// Log non-fatal warnings produced by agent scanning.

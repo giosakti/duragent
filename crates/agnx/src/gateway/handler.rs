@@ -28,9 +28,6 @@ use crate::session::{
 // ============================================================================
 
 /// Handler that routes gateway messages to sessions.
-///
-/// Maps gateway chats to sessions using a compound key of `{gateway}:{chat_id}`.
-/// Creates new sessions for unknown chats using the configured default agent.
 pub struct GatewayMessageHandler {
     agents: AgentStore,
     providers: ProviderRegistry,
@@ -86,7 +83,7 @@ impl GatewayMessageHandler {
         }
 
         // Create a new session
-        let agent_name = self.resolve_agent(routing)?;
+        let agent_name = self.resolve_agent(gateway, routing)?;
         let agent = self.agents.get(&agent_name)?;
 
         let session = self.sessions.create(&agent_name).await;
@@ -134,10 +131,13 @@ impl GatewayMessageHandler {
     }
 
     /// Resolve the agent to use for new sessions based on routing rules.
-    fn resolve_agent(&self, routing: &RoutingContext) -> Option<String> {
-        // Check routing rules in order
+    ///
+    /// Rules are evaluated in order; first match wins.
+    /// A rule with empty match conditions acts as a catch-all.
+    fn resolve_agent(&self, gateway: &str, routing: &RoutingContext) -> Option<String> {
+        // Check routing rules in order (first match wins)
         for rule in &self.routing_config.rules {
-            if matches_rule(&rule.match_conditions, routing) {
+            if matches_rule(&rule.match_conditions, gateway, routing) {
                 if self.agents.get(&rule.agent).is_some() {
                     return Some(rule.agent.clone());
                 }
@@ -145,19 +145,12 @@ impl GatewayMessageHandler {
             }
         }
 
-        // Fall back to default agent
-        if let Some(ref default) = self.routing_config.default_agent {
-            if self.agents.get(default).is_some() {
-                return Some(default.clone());
-            }
-            warn!(agent = %default, "Configured default agent not found");
-        }
-
-        // No agent configured - fail closed
+        // No matching rule - fail closed
         warn!(
+            gateway = %gateway,
             channel = %routing.channel,
             chat_id = %routing.chat_id,
-            "No agent configured for gateway routing, message dropped"
+            "No matching route found, message dropped"
         );
         None
     }
@@ -343,21 +336,25 @@ impl MessageHandler for GatewayMessageHandler {
 // ============================================================================
 
 /// Routing configuration for agent selection.
+///
+/// Contains global routing rules evaluated in order (first match wins).
+/// A rule with empty/no match conditions acts as a catch-all.
 #[derive(Debug, Clone, Default)]
 pub struct RoutingConfig {
-    /// Default agent to use when no rule matches.
-    pub default_agent: Option<String>,
     /// Routing rules (evaluated in order, first match wins).
+    /// Last rule with empty match acts as default/catch-all.
     pub rules: Vec<RoutingRule>,
 }
 
 impl RoutingConfig {
-    /// Create a simple config with just a default agent.
-    pub fn with_default(agent: Option<String>) -> Self {
-        Self {
-            default_agent: agent,
-            rules: Vec::new(),
-        }
+    /// Create a config from a list of routing rules.
+    pub fn new(rules: Vec<RoutingRule>) -> Self {
+        Self { rules }
+    }
+
+    /// Create an empty config (no routes - messages will be dropped).
+    pub fn empty() -> Self {
+        Self { rules: Vec::new() }
     }
 }
 
@@ -366,10 +363,19 @@ impl RoutingConfig {
 // ============================================================================
 
 /// Check if a routing rule matches the given context.
-fn matches_rule(conditions: &RoutingMatch, routing: &RoutingContext) -> bool {
+///
+/// Gateway and chat_type comparisons are case-insensitive to prevent
+/// "Telegram" vs "telegram" bugs. Chat ID and sender ID remain case-sensitive
+/// as they are exact identifiers.
+fn matches_rule(conditions: &RoutingMatch, gateway: &str, routing: &RoutingContext) -> bool {
     // All specified conditions must match (AND logic)
+    if let Some(ref gw) = conditions.gateway
+        && !gw.eq_ignore_ascii_case(gateway)
+    {
+        return false;
+    }
     if let Some(ref chat_type) = conditions.chat_type
-        && chat_type != &routing.chat_type
+        && !chat_type.eq_ignore_ascii_case(&routing.chat_type)
     {
         return false;
     }
@@ -412,7 +418,7 @@ mod tests {
     fn test_matches_rule_empty_conditions() {
         let conditions = RoutingMatch::default();
         let routing = make_routing_context("dm", "123", "456");
-        assert!(matches_rule(&conditions, &routing));
+        assert!(matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -422,7 +428,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(matches_rule(&conditions, &routing));
+        assert!(matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -432,7 +438,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(!matches_rule(&conditions, &routing));
+        assert!(!matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -442,7 +448,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(matches_rule(&conditions, &routing));
+        assert!(matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -452,7 +458,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(!matches_rule(&conditions, &routing));
+        assert!(!matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -462,7 +468,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(matches_rule(&conditions, &routing));
+        assert!(matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -472,7 +478,7 @@ mod tests {
             ..Default::default()
         };
         let routing = make_routing_context("dm", "123", "456");
-        assert!(!matches_rule(&conditions, &routing));
+        assert!(!matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -481,9 +487,10 @@ mod tests {
             chat_type: Some("group".to_string()),
             chat_id: Some("-100123".to_string()),
             sender_id: Some("456".to_string()),
+            ..Default::default()
         };
         let routing = make_routing_context("group", "-100123", "456");
-        assert!(matches_rule(&conditions, &routing));
+        assert!(matches_rule(&conditions, "telegram", &routing));
     }
 
     #[test]
@@ -492,9 +499,85 @@ mod tests {
             chat_type: Some("group".to_string()),
             chat_id: Some("-100123".to_string()),
             sender_id: Some("456".to_string()),
+            ..Default::default()
         };
         // chat_type matches, but sender_id doesn't
         let routing = make_routing_context("group", "-100123", "789");
-        assert!(!matches_rule(&conditions, &routing));
+        assert!(!matches_rule(&conditions, "telegram", &routing));
+    }
+
+    #[test]
+    fn test_matches_rule_gateway_match() {
+        let conditions = RoutingMatch {
+            gateway: Some("telegram".to_string()),
+            ..Default::default()
+        };
+        let routing = make_routing_context("dm", "123", "456");
+        assert!(matches_rule(&conditions, "telegram", &routing));
+    }
+
+    #[test]
+    fn test_matches_rule_gateway_no_match() {
+        let conditions = RoutingMatch {
+            gateway: Some("discord".to_string()),
+            ..Default::default()
+        };
+        let routing = make_routing_context("dm", "123", "456");
+        assert!(!matches_rule(&conditions, "telegram", &routing));
+    }
+
+    #[test]
+    fn test_matches_rule_gateway_case_insensitive() {
+        let conditions = RoutingMatch {
+            gateway: Some("Telegram".to_string()),
+            ..Default::default()
+        };
+        let routing = make_routing_context("dm", "123", "456");
+        // "Telegram" in config should match "telegram" gateway
+        assert!(matches_rule(&conditions, "telegram", &routing));
+        assert!(matches_rule(&conditions, "TELEGRAM", &routing));
+        assert!(matches_rule(&conditions, "TeleGram", &routing));
+    }
+
+    #[test]
+    fn test_matches_rule_chat_type_case_insensitive() {
+        let conditions = RoutingMatch {
+            chat_type: Some("DM".to_string()),
+            ..Default::default()
+        };
+        let routing = make_routing_context("dm", "123", "456");
+        // "DM" in config should match "dm" from routing context
+        assert!(matches_rule(&conditions, "telegram", &routing));
+
+        let routing_upper = make_routing_context("DM", "123", "456");
+        assert!(matches_rule(&conditions, "telegram", &routing_upper));
+    }
+
+    #[test]
+    fn test_matches_rule_chat_id_case_sensitive() {
+        // Chat IDs should remain case-sensitive (they're exact identifiers)
+        let conditions = RoutingMatch {
+            chat_id: Some("ABC123".to_string()),
+            ..Default::default()
+        };
+        let routing_lower = make_routing_context("dm", "abc123", "456");
+        let routing_exact = make_routing_context("dm", "ABC123", "456");
+
+        assert!(!matches_rule(&conditions, "telegram", &routing_lower));
+        assert!(matches_rule(&conditions, "telegram", &routing_exact));
+    }
+
+    #[test]
+    fn test_matches_rule_sender_id_case_sensitive() {
+        // Sender IDs should remain case-sensitive (they're exact identifiers)
+        let conditions = RoutingMatch {
+            sender_id: Some("User123".to_string()),
+            ..Default::default()
+        };
+        let routing_lower = make_routing_context("dm", "123", "user123");
+        let routing_exact = make_routing_context("dm", "123", "User123");
+
+        assert!(!matches_rule(&conditions, "telegram", &routing_lower));
+        assert!(matches_rule(&conditions, "telegram", &routing_exact));
     }
 }
