@@ -23,6 +23,7 @@ pub mod sse;
 pub mod agent;
 pub mod gateway;
 pub mod llm;
+pub mod sandbox;
 pub mod session;
 
 // ============================================================================
