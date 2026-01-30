@@ -19,11 +19,19 @@ pub fn build_chat_request(
 
 /// Build system message from agent spec.
 ///
-/// Combines `system_prompt` and `instructions` into a single string.
+/// Combines `soul`, `system_prompt`, and `instructions` into a single string.
+/// Order: soul (personality) → system_prompt (capabilities) → instructions (runtime).
 pub fn build_system_message(agent_spec: &AgentSpec) -> Option<String> {
     let mut content = String::new();
 
+    if let Some(ref soul) = agent_spec.soul {
+        content.push_str(soul);
+    }
+
     if let Some(ref prompt) = agent_spec.system_prompt {
+        if !content.is_empty() {
+            content.push_str("\n\n");
+        }
         content.push_str(prompt);
     }
 
@@ -61,7 +69,11 @@ mod tests {
     use crate::llm::Provider;
     use std::collections::HashMap;
 
-    fn test_agent_spec(system_prompt: Option<&str>, instructions: Option<&str>) -> AgentSpec {
+    fn test_agent_spec(
+        soul: Option<&str>,
+        system_prompt: Option<&str>,
+        instructions: Option<&str>,
+    ) -> AgentSpec {
         AgentSpec {
             api_version: "agnx/v1alpha1".to_string(),
             kind: "Agent".to_string(),
@@ -79,6 +91,7 @@ mod tests {
                 max_input_tokens: None,
                 max_output_tokens: None,
             },
+            soul: soul.map(|s| s.to_string()),
             system_prompt: system_prompt.map(|s| s.to_string()),
             instructions: instructions.map(|s| s.to_string()),
             session: AgentSessionConfig::default(),
@@ -86,29 +99,43 @@ mod tests {
     }
 
     #[test]
-    fn build_system_message_with_both() {
-        let spec = test_agent_spec(Some("You are helpful."), Some("Be concise."));
+    fn build_system_message_with_all() {
+        let spec = test_agent_spec(
+            Some("I am a cheerful assistant."),
+            Some("You are helpful."),
+            Some("Be concise."),
+        );
         let msg = build_system_message(&spec);
-        assert_eq!(msg, Some("You are helpful.\n\nBe concise.".to_string()));
+        assert_eq!(
+            msg,
+            Some("I am a cheerful assistant.\n\nYou are helpful.\n\nBe concise.".to_string())
+        );
+    }
+
+    #[test]
+    fn build_system_message_soul_and_prompt() {
+        let spec = test_agent_spec(Some("I am cheerful."), Some("You are helpful."), None);
+        let msg = build_system_message(&spec);
+        assert_eq!(msg, Some("I am cheerful.\n\nYou are helpful.".to_string()));
     }
 
     #[test]
     fn build_system_message_prompt_only() {
-        let spec = test_agent_spec(Some("You are helpful."), None);
+        let spec = test_agent_spec(None, Some("You are helpful."), None);
         let msg = build_system_message(&spec);
         assert_eq!(msg, Some("You are helpful.".to_string()));
     }
 
     #[test]
     fn build_system_message_instructions_only() {
-        let spec = test_agent_spec(None, Some("Be concise."));
+        let spec = test_agent_spec(None, None, Some("Be concise."));
         let msg = build_system_message(&spec);
         assert_eq!(msg, Some("Be concise.".to_string()));
     }
 
     #[test]
     fn build_system_message_empty() {
-        let spec = test_agent_spec(None, None);
+        let spec = test_agent_spec(None, None, None);
         let msg = build_system_message(&spec);
         assert!(msg.is_none());
     }

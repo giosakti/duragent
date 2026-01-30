@@ -21,7 +21,11 @@ pub struct AgentSpec {
     pub kind: String,
     pub metadata: AgentMetadata,
     pub model: ModelConfig,
+    /// Agent personality and character (who the agent IS).
+    pub soul: Option<String>,
+    /// Core system prompt (what the agent DOES).
     pub system_prompt: Option<String>,
+    /// Additional runtime instructions.
     pub instructions: Option<String>,
     /// Session behavior configuration.
     pub session: AgentSessionConfig,
@@ -109,6 +113,15 @@ impl AgentSpec {
 
         let mut warnings = Vec::new();
 
+        let soul = load_optional_file(
+            agent_dir,
+            raw.spec.soul.as_deref(),
+            &raw.metadata.name,
+            "soul",
+            &mut warnings,
+        )
+        .await;
+
         let system_prompt = load_optional_file(
             agent_dir,
             raw.spec.system_prompt.as_deref(),
@@ -133,6 +146,7 @@ impl AgentSpec {
                 kind: raw.kind,
                 metadata: raw.metadata,
                 model: raw.spec.model,
+                soul,
                 system_prompt,
                 instructions,
                 session: raw.spec.session,
@@ -159,6 +173,7 @@ struct RawAgentSpec {
 #[derive(Debug, Deserialize)]
 struct RawAgentSpecBody {
     model: ModelConfig,
+    soul: Option<String>,
     system_prompt: Option<String>,
     instructions: Option<String>,
     #[serde(default)]
