@@ -293,24 +293,18 @@ async fn session_messages_added() {
     let store = SessionStore::new();
     let session = store.create("test-agent").await;
 
-    let user_msg = Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-    };
+    let user_msg = Message::text(Role::User, "Hello");
     store.add_message(&session.id, user_msg).await.unwrap();
 
-    let assistant_msg = Message {
-        role: Role::Assistant,
-        content: "Hi there!".to_string(),
-    };
+    let assistant_msg = Message::text(Role::Assistant, "Hi there!");
     store.add_message(&session.id, assistant_msg).await.unwrap();
 
     let messages = store.get_messages(&session.id).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, Role::User);
-    assert_eq!(messages[0].content, "Hello");
+    assert_eq!(messages[0].content_str(), "Hello");
     assert_eq!(messages[1].role, Role::Assistant);
-    assert_eq!(messages[1].content, "Hi there!");
+    assert_eq!(messages[1].content_str(), "Hi there!");
 }
 
 /// Test that getting messages for nonexistent session returns None.
@@ -325,10 +319,7 @@ async fn session_get_messages_nonexistent() {
 #[tokio::test]
 async fn session_add_message_nonexistent() {
     let store = SessionStore::new();
-    let msg = Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-    };
+    let msg = Message::text(Role::User, "Hello");
     let result = store.add_message("nonexistent", msg).await;
     assert!(result.is_err());
 }

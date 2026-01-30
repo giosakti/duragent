@@ -154,14 +154,8 @@ async fn snapshot_write_load_roundtrip() {
     let created_at = Utc::now();
 
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "What is 2 + 2?".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "2 + 2 equals 4.".to_string(),
-        },
+        Message::text(Role::User, "What is 2 + 2?"),
+        Message::text(Role::Assistant, "2 + 2 equals 4."),
     ];
 
     let config = SessionConfig {
@@ -199,9 +193,9 @@ async fn snapshot_write_load_roundtrip() {
 
     assert_eq!(loaded.conversation.len(), 2);
     assert_eq!(loaded.conversation[0].role, Role::User);
-    assert_eq!(loaded.conversation[0].content, "What is 2 + 2?");
+    assert_eq!(loaded.conversation[0].content_str(), "What is 2 + 2?");
     assert_eq!(loaded.conversation[1].role, Role::Assistant);
-    assert_eq!(loaded.conversation[1].content, "2 + 2 equals 4.");
+    assert_eq!(loaded.conversation[1].content_str(), "2 + 2 equals 4.");
 }
 
 #[tokio::test]
@@ -359,14 +353,8 @@ async fn events_and_snapshot_coordinate_recovery() {
         Utc::now(),
         3,
         vec![
-            Message {
-                role: Role::User,
-                content: "Hello".to_string(),
-            },
-            Message {
-                role: Role::Assistant,
-                content: "Hi there!".to_string(),
-            },
+            Message::text(Role::User, "Hello"),
+            Message::text(Role::Assistant, "Hi there!"),
         ],
         SessionConfig::default(),
     );
@@ -427,10 +415,10 @@ async fn events_and_snapshot_coordinate_recovery() {
 
     // Verify full conversation recovered
     assert_eq!(recovered_messages.len(), 4);
-    assert_eq!(recovered_messages[0].content, "Hello");
-    assert_eq!(recovered_messages[1].content, "Hi there!");
-    assert_eq!(recovered_messages[2].content, "How are you?");
-    assert_eq!(recovered_messages[3].content, "I'm doing well!");
+    assert_eq!(recovered_messages[0].content_str(), "Hello");
+    assert_eq!(recovered_messages[1].content_str(), "Hi there!");
+    assert_eq!(recovered_messages[2].content_str(), "How are you?");
+    assert_eq!(recovered_messages[3].content_str(), "I'm doing well!");
 }
 
 // ============================================================================

@@ -46,14 +46,8 @@ async fn resume_session_with_snapshot_only_no_events() {
     let session_id = "snapshot_only";
 
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi there!".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi there!"),
     ];
 
     let snapshot = create_test_snapshot(session_id, 2, conversation.clone());
@@ -71,8 +65,8 @@ async fn resume_session_with_snapshot_only_no_events() {
     assert_eq!(resumed.agent, "test-agent");
     assert_eq!(resumed.status, SessionStatus::Active);
     assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(resumed.conversation[0].content, "Hello");
-    assert_eq!(resumed.conversation[1].content, "Hi there!");
+    assert_eq!(resumed.conversation[0].content_str(), "Hello");
+    assert_eq!(resumed.conversation[1].content_str(), "Hi there!");
     assert_eq!(resumed.last_event_seq, 2);
 }
 
@@ -87,14 +81,8 @@ async fn resume_session_with_snapshot_and_events_to_replay() {
 
     // Snapshot at seq 2 with 2 messages
     let initial_conversation = vec![
-        Message {
-            role: Role::User,
-            content: "First question".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "First answer".to_string(),
-        },
+        Message::text(Role::User, "First question"),
+        Message::text(Role::Assistant, "First answer"),
     ];
 
     let snapshot = create_test_snapshot(session_id, 2, initial_conversation);
@@ -161,10 +149,10 @@ async fn resume_session_with_snapshot_and_events_to_replay() {
 
     let resumed = result.unwrap();
     assert_eq!(resumed.conversation.len(), 4);
-    assert_eq!(resumed.conversation[0].content, "First question");
-    assert_eq!(resumed.conversation[1].content, "First answer");
-    assert_eq!(resumed.conversation[2].content, "Second question");
-    assert_eq!(resumed.conversation[3].content, "Second answer");
+    assert_eq!(resumed.conversation[0].content_str(), "First question");
+    assert_eq!(resumed.conversation[1].content_str(), "First answer");
+    assert_eq!(resumed.conversation[2].content_str(), "Second question");
+    assert_eq!(resumed.conversation[3].content_str(), "Second answer");
     assert_eq!(resumed.last_event_seq, 4);
 }
 
@@ -224,17 +212,17 @@ async fn resume_session_rebuilds_conversation_in_order() {
 
     // Verify order and roles
     assert_eq!(resumed.conversation[0].role, Role::User);
-    assert_eq!(resumed.conversation[0].content, "Message 1");
+    assert_eq!(resumed.conversation[0].content_str(), "Message 1");
     assert_eq!(resumed.conversation[1].role, Role::Assistant);
-    assert_eq!(resumed.conversation[1].content, "Reply 1");
+    assert_eq!(resumed.conversation[1].content_str(), "Reply 1");
     assert_eq!(resumed.conversation[2].role, Role::User);
-    assert_eq!(resumed.conversation[2].content, "Message 2");
+    assert_eq!(resumed.conversation[2].content_str(), "Message 2");
     assert_eq!(resumed.conversation[3].role, Role::Assistant);
-    assert_eq!(resumed.conversation[3].content, "Reply 2");
+    assert_eq!(resumed.conversation[3].content_str(), "Reply 2");
     assert_eq!(resumed.conversation[4].role, Role::User);
-    assert_eq!(resumed.conversation[4].content, "Message 3");
+    assert_eq!(resumed.conversation[4].content_str(), "Message 3");
     assert_eq!(resumed.conversation[5].role, Role::Assistant);
-    assert_eq!(resumed.conversation[5].content, "Reply 3");
+    assert_eq!(resumed.conversation[5].content_str(), "Reply 3");
 
     assert_eq!(resumed.last_event_seq, 6);
 }
@@ -540,14 +528,8 @@ async fn resume_with_missing_event_file_uses_snapshot_only() {
 
     // Write snapshot with conversation
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Question".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Answer".to_string(),
-        },
+        Message::text(Role::User, "Question"),
+        Message::text(Role::Assistant, "Answer"),
     ];
 
     let snapshot = create_test_snapshot(session_id, 2, conversation);
@@ -563,8 +545,8 @@ async fn resume_with_missing_event_file_uses_snapshot_only() {
 
     let resumed = result.unwrap();
     assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(resumed.conversation[0].content, "Question");
-    assert_eq!(resumed.conversation[1].content, "Answer");
+    assert_eq!(resumed.conversation[0].content_str(), "Question");
+    assert_eq!(resumed.conversation[1].content_str(), "Answer");
     assert_eq!(resumed.last_event_seq, 2);
 }
 
@@ -573,10 +555,7 @@ async fn resume_with_empty_event_file_uses_snapshot_only() {
     let temp_dir = TempDir::new().unwrap();
     let session_id = "empty_events";
 
-    let conversation = vec![Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-    }];
+    let conversation = vec![Message::text(Role::User, "Hello")];
 
     let snapshot = create_test_snapshot(session_id, 1, conversation);
     write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
@@ -645,8 +624,8 @@ async fn resume_with_malformed_events_skips_bad_lines() {
     let resumed = result.unwrap();
     // Should have replayed the valid events
     assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(resumed.conversation[0].content, "Valid 1");
-    assert_eq!(resumed.conversation[1].content, "Valid 2");
+    assert_eq!(resumed.conversation[0].content_str(), "Valid 1");
+    assert_eq!(resumed.conversation[1].content_str(), "Valid 2");
     assert_eq!(resumed.last_event_seq, 2);
 }
 
@@ -788,8 +767,11 @@ async fn resume_ignores_tool_call_and_result_events() {
     let resumed = result.unwrap();
     // Only user and assistant messages in conversation
     assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(resumed.conversation[0].content, "Search for Rust");
-    assert_eq!(resumed.conversation[1].content, "Here are the results");
+    assert_eq!(resumed.conversation[0].content_str(), "Search for Rust");
+    assert_eq!(
+        resumed.conversation[1].content_str(),
+        "Here are the results"
+    );
     assert_eq!(resumed.last_event_seq, 4);
 }
 
@@ -892,7 +874,7 @@ async fn resume_ignores_session_start_events() {
 
     let resumed = result.unwrap();
     assert_eq!(resumed.conversation.len(), 1);
-    assert_eq!(resumed.conversation[0].content, "Hello");
+    assert_eq!(resumed.conversation[0].content_str(), "Hello");
     assert_eq!(resumed.last_event_seq, 2);
 }
 
@@ -966,14 +948,8 @@ async fn resume_after_crash_mid_conversation() {
 
     // Simulate: snapshot taken after seq 3, then more events written, then crash
     let snapshot_conversation = vec![
-        Message {
-            role: Role::User,
-            content: "What is Rust?".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Rust is a systems programming language.".to_string(),
-        },
+        Message::text(Role::User, "What is Rust?"),
+        Message::text(Role::Assistant, "Rust is a systems programming language."),
     ];
 
     let snapshot = create_test_snapshot(session_id, 3, snapshot_conversation);
@@ -1040,17 +1016,20 @@ async fn resume_after_crash_mid_conversation() {
     let resumed = result.unwrap();
     // Should have: 2 from snapshot + 3 from replay (events 4, 5, 6)
     assert_eq!(resumed.conversation.len(), 5);
-    assert_eq!(resumed.conversation[0].content, "What is Rust?");
+    assert_eq!(resumed.conversation[0].content_str(), "What is Rust?");
     assert_eq!(
-        resumed.conversation[1].content,
+        resumed.conversation[1].content_str(),
         "Rust is a systems programming language."
     );
-    assert_eq!(resumed.conversation[2].content, "Can you give an example?");
     assert_eq!(
-        resumed.conversation[3].content,
+        resumed.conversation[2].content_str(),
+        "Can you give an example?"
+    );
+    assert_eq!(
+        resumed.conversation[3].content_str(),
         "Sure! Here is a Hello World:"
     );
-    assert_eq!(resumed.conversation[4].content, "Thanks!");
+    assert_eq!(resumed.conversation[4].content_str(), "Thanks!");
     assert_eq!(resumed.last_event_seq, 6);
 }
 

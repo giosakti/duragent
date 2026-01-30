@@ -55,14 +55,8 @@ async fn pause_mode_snapshot_written_with_paused_status() {
     let session_id = "pause_snapshot_test";
 
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi there!".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi there!"),
     ];
 
     // Simulate writing a snapshot when session is paused
@@ -101,17 +95,11 @@ async fn pause_mode_partial_content_saved_on_disconnect() {
     let session = store.create("test-agent").await;
 
     // Simulate user message
-    let user_msg = Message {
-        role: Role::User,
-        content: "What is Rust?".to_string(),
-    };
+    let user_msg = Message::text(Role::User, "What is Rust?");
     store.add_message(&session.id, user_msg).await.unwrap();
 
     // Simulate partial assistant response (disconnect mid-stream)
-    let partial_response = Message {
-        role: Role::Assistant,
-        content: "Rust is a systems programming".to_string(), // Incomplete
-    };
+    let partial_response = Message::text(Role::Assistant, "Rust is a systems programming"); // Incomplete
     store
         .add_message(&session.id, partial_response)
         .await
@@ -126,7 +114,7 @@ async fn pause_mode_partial_content_saved_on_disconnect() {
     // Verify partial content was saved
     let messages = store.get_messages(&session.id).await.unwrap();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1].content, "Rust is a systems programming");
+    assert_eq!(messages[1].content_str(), "Rust is a systems programming");
 
     let updated = store.get(&session.id).await.unwrap();
     assert_eq!(updated.status, SessionStatus::Paused);
@@ -140,14 +128,8 @@ async fn pause_mode_snapshot_preserves_partial_conversation() {
 
     // Simulate partial conversation saved on disconnect
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Explain async/await".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Async/await is a".to_string(), // Partial response
-        },
+        Message::text(Role::User, "Explain async/await"),
+        Message::text(Role::Assistant, "Async/await is a"), // Partial response
     ];
 
     let snapshot = SessionSnapshot::new(
@@ -173,7 +155,7 @@ async fn pause_mode_snapshot_preserves_partial_conversation() {
         .unwrap();
 
     assert_eq!(loaded.conversation.len(), 2);
-    assert_eq!(loaded.conversation[1].content, "Async/await is a");
+    assert_eq!(loaded.conversation[1].content_str(), "Async/await is a");
     assert_eq!(loaded.status, SessionStatus::Paused);
 }
 
@@ -188,10 +170,7 @@ async fn continue_mode_snapshot_written_with_running_status() {
     let session_id = "continue_running_test";
 
     // Simulate writing a Running snapshot when continue mode background task starts
-    let conversation = vec![Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-    }];
+    let conversation = vec![Message::text(Role::User, "Hello")];
 
     let snapshot = SessionSnapshot::new(
         session_id.to_string(),
@@ -315,18 +294,14 @@ async fn continue_mode_final_message_saved_on_completion() {
     let session = store.create("background-agent").await;
 
     // Simulate user message before disconnect
-    let user_msg = Message {
-        role: Role::User,
-        content: "What is Rust?".to_string(),
-    };
+    let user_msg = Message::text(Role::User, "What is Rust?");
     store.add_message(&session.id, user_msg).await.unwrap();
 
     // Simulate background task completing and saving full response
-    let complete_response = Message {
-        role: Role::Assistant,
-        content: "Rust is a systems programming language focused on safety and performance."
-            .to_string(),
-    };
+    let complete_response = Message::text(
+        Role::Assistant,
+        "Rust is a systems programming language focused on safety and performance.",
+    );
     store
         .add_message(&session.id, complete_response)
         .await
@@ -336,7 +311,7 @@ async fn continue_mode_final_message_saved_on_completion() {
     let messages = store.get_messages(&session.id).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert_eq!(
-        messages[1].content,
+        messages[1].content_str(),
         "Rust is a systems programming language focused on safety and performance."
     );
 }
@@ -349,14 +324,8 @@ async fn continue_mode_final_snapshot_has_active_status() {
 
     // Simulate final snapshot after background task completes
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi there! How can I help you today?".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi there! How can I help you today?"),
     ];
 
     let snapshot = SessionSnapshot::new(
@@ -450,14 +419,8 @@ async fn attach_to_paused_session() {
 
     // Simulate a session that was paused on disconnect
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "What is async?".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Async is a".to_string(), // Partial response when paused
-        },
+        Message::text(Role::User, "What is async?"),
+        Message::text(Role::Assistant, "Async is a"), // Partial response when paused
     ];
 
     let snapshot = SessionSnapshot::new(
@@ -486,8 +449,8 @@ async fn attach_to_paused_session() {
     assert_eq!(resumed.session_id, session_id);
     assert_eq!(resumed.status, SessionStatus::Paused);
     assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(resumed.conversation[0].content, "What is async?");
-    assert_eq!(resumed.conversation[1].content, "Async is a");
+    assert_eq!(resumed.conversation[0].content_str(), "What is async?");
+    assert_eq!(resumed.conversation[1].content_str(), "Async is a");
     assert_eq!(resumed.config.on_disconnect, OnDisconnect::Pause);
 }
 
@@ -499,15 +462,11 @@ async fn attach_to_session_continued_in_background() {
 
     // Simulate a session that completed in background after disconnect
     let conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Write a poem".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Roses are red,\nViolets are blue,\nRust is great,\nAnd so are you!"
-                .to_string(),
-        },
+        Message::text(Role::User, "Write a poem"),
+        Message::text(
+            Role::Assistant,
+            "Roses are red,\nViolets are blue,\nRust is great,\nAnd so are you!",
+        ),
     ];
 
     let snapshot = SessionSnapshot::new(
@@ -536,7 +495,11 @@ async fn attach_to_session_continued_in_background() {
     assert_eq!(resumed.session_id, session_id);
     assert_eq!(resumed.status, SessionStatus::Active);
     assert_eq!(resumed.conversation.len(), 2);
-    assert!(resumed.conversation[1].content.contains("Roses are red"));
+    assert!(
+        resumed.conversation[1]
+            .content_str()
+            .contains("Roses are red")
+    );
     assert_eq!(resumed.config.on_disconnect, OnDisconnect::Continue);
 }
 
@@ -547,10 +510,7 @@ async fn attach_to_session_still_running_in_background() {
     let session_id = "attach_running";
 
     // Simulate a session still running in background
-    let conversation = vec![Message {
-        role: Role::User,
-        content: "Generate a long response".to_string(),
-    }];
+    let conversation = vec![Message::text(Role::User, "Generate a long response")];
 
     let snapshot = SessionSnapshot::new(
         session_id.to_string(),
@@ -605,7 +565,7 @@ async fn attach_to_session_still_running_in_background() {
     assert_eq!(resumed.status, SessionStatus::Running);
     assert_eq!(resumed.conversation.len(), 2);
     assert_eq!(
-        resumed.conversation[1].content,
+        resumed.conversation[1].content_str(),
         "Here is a partial response so far..."
     );
 }
@@ -630,14 +590,8 @@ async fn register_paused_session_in_store() {
         last_event_seq: 0,
     };
     let messages = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi!".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi!"),
     ];
 
     store.register(session, messages).await;
@@ -664,18 +618,12 @@ async fn registered_session_can_receive_messages() {
         updated_at: Utc::now(),
         last_event_seq: 0,
     };
-    let messages = vec![Message {
-        role: Role::User,
-        content: "Hello".to_string(),
-    }];
+    let messages = vec![Message::text(Role::User, "Hello")];
 
     store.register(session, messages).await;
 
     // Add new message (simulating user continuing the conversation)
-    let new_msg = Message {
-        role: Role::User,
-        content: "Follow up question".to_string(),
-    };
+    let new_msg = Message::text(Role::User, "Follow up question");
     store
         .add_message("session_continue_123", new_msg)
         .await
@@ -683,7 +631,7 @@ async fn registered_session_can_receive_messages() {
 
     let messages = store.get_messages("session_continue_123").await.unwrap();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1].content, "Follow up question");
+    assert_eq!(messages[1].content_str(), "Follow up question");
 }
 
 // ============================================================================
@@ -742,10 +690,7 @@ async fn full_pause_mode_scenario() {
     store
         .add_message(
             &session_id_owned,
-            Message {
-                role: Role::User,
-                content: "What is Rust?".to_string(),
-            },
+            Message::text(Role::User, "What is Rust?"),
         )
         .await
         .unwrap();
@@ -754,10 +699,7 @@ async fn full_pause_mode_scenario() {
     store
         .add_message(
             &session_id_owned,
-            Message {
-                role: Role::Assistant,
-                content: "Rust is a systems programming".to_string(),
-            },
+            Message::text(Role::Assistant, "Rust is a systems programming"),
         )
         .await
         .unwrap();
@@ -798,7 +740,7 @@ async fn full_pause_mode_scenario() {
     assert_eq!(resumed.status, SessionStatus::Paused);
     assert_eq!(resumed.conversation.len(), 2);
     assert_eq!(
-        resumed.conversation[1].content,
+        resumed.conversation[1].content_str(),
         "Rust is a systems programming"
     );
 }
@@ -810,10 +752,7 @@ async fn full_continue_mode_scenario() {
     let session_id = "full_continue_scenario";
 
     // 1. Simulate session start with user message
-    let initial_conversation = vec![Message {
-        role: Role::User,
-        content: "Write a haiku".to_string(),
-    }];
+    let initial_conversation = vec![Message::text(Role::User, "Write a haiku")];
 
     // 2. Write Running snapshot (disconnect happened, background task started)
     let running_snapshot = SessionSnapshot::new(
@@ -890,15 +829,11 @@ async fn full_continue_mode_scenario() {
 
     // 4. Background task completes - write final Active snapshot
     let final_conversation = vec![
-        Message {
-            role: Role::User,
-            content: "Write a haiku".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Code compiles without error\nJoy fills my heart today\nRust is beautiful"
-                .to_string(),
-        },
+        Message::text(Role::User, "Write a haiku"),
+        Message::text(
+            Role::Assistant,
+            "Code compiles without error\nJoy fills my heart today\nRust is beautiful",
+        ),
     ];
 
     let final_snapshot = SessionSnapshot::new(
@@ -928,7 +863,7 @@ async fn full_continue_mode_scenario() {
     assert_eq!(resumed.conversation.len(), 2);
     assert!(
         resumed.conversation[1]
-            .content
+            .content_str()
             .contains("Rust is beautiful")
     );
     assert_eq!(resumed.config.on_disconnect, OnDisconnect::Continue);
@@ -942,14 +877,8 @@ async fn multiple_disconnect_reconnect_cycles() {
 
     // First cycle: create session, disconnect, pause
     let conversation_v1 = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi!".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi!"),
     ];
 
     let snapshot_v1 = SessionSnapshot::new(
@@ -979,22 +908,10 @@ async fn multiple_disconnect_reconnect_cycles() {
 
     // Second cycle: continue conversation, disconnect again
     let conversation_v2 = vec![
-        Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "Hi!".to_string(),
-        },
-        Message {
-            role: Role::User,
-            content: "How are you?".to_string(),
-        },
-        Message {
-            role: Role::Assistant,
-            content: "I'm doing well!".to_string(),
-        },
+        Message::text(Role::User, "Hello"),
+        Message::text(Role::Assistant, "Hi!"),
+        Message::text(Role::User, "How are you?"),
+        Message::text(Role::Assistant, "I'm doing well!"),
     ];
 
     let snapshot_v2 = SessionSnapshot::new(
@@ -1020,6 +937,6 @@ async fn multiple_disconnect_reconnect_cycles() {
         .unwrap()
         .unwrap();
     assert_eq!(resumed_v2.conversation.len(), 4);
-    assert_eq!(resumed_v2.conversation[3].content, "I'm doing well!");
+    assert_eq!(resumed_v2.conversation[3].content_str(), "I'm doing well!");
     assert_eq!(resumed_v2.status, SessionStatus::Active);
 }
