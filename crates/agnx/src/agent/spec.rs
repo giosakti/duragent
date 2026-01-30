@@ -1,7 +1,7 @@
 //! AAF agent specification parsing.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -9,6 +9,9 @@ use tokio::fs;
 use super::error::{AgentLoadError, AgentLoadWarning};
 use super::{API_VERSION_V1ALPHA1, KIND_AGENT};
 use crate::llm::Provider;
+
+/// Default maximum tool iterations for agentic loops.
+pub const DEFAULT_MAX_TOOL_ITERATIONS: u32 = 10;
 
 // ============================================================================
 // Public Types
@@ -29,6 +32,27 @@ pub struct AgentSpec {
     pub instructions: Option<String>,
     /// Session behavior configuration.
     pub session: AgentSessionConfig,
+    /// Tool configurations for agentic capabilities.
+    pub tools: Vec<ToolConfig>,
+    /// Directory containing the agent's configuration files.
+    pub agent_dir: PathBuf,
+}
+
+/// Tool configuration from the AAF spec.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolConfig {
+    /// Built-in tool (e.g., bash).
+    Builtin { name: String },
+    /// CLI tool executed via script.
+    Cli {
+        name: String,
+        command: String,
+        #[serde(default)]
+        readme: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+    },
 }
 
 /// Session behavior configuration for an agent.
@@ -37,6 +61,13 @@ pub struct AgentSessionConfig {
     /// Behavior when client disconnects from a session.
     #[serde(default)]
     pub on_disconnect: OnDisconnect,
+    /// Maximum number of tool iterations before stopping.
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: u32,
+}
+
+fn default_max_tool_iterations() -> u32 {
+    DEFAULT_MAX_TOOL_ITERATIONS
 }
 
 /// Behavior when client disconnects from a session.
@@ -150,6 +181,8 @@ impl AgentSpec {
                 system_prompt,
                 instructions,
                 session: raw.spec.session,
+                tools: raw.spec.tools,
+                agent_dir: agent_dir.to_path_buf(),
             },
             warnings,
         ))
@@ -178,6 +211,8 @@ struct RawAgentSpecBody {
     instructions: Option<String>,
     #[serde(default)]
     session: AgentSessionConfig,
+    #[serde(default)]
+    tools: Vec<ToolConfig>,
 }
 
 /// Load optional file content, recording a warning if file cannot be read.

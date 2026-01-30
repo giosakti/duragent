@@ -10,5 +10,8 @@ mod error;
 mod spec;
 mod store;
 
-pub use spec::{AgentMetadata, AgentSessionConfig, AgentSpec, ModelConfig, OnDisconnect};
+pub use spec::{
+    AgentMetadata, AgentSessionConfig, AgentSpec, DEFAULT_MAX_TOOL_ITERATIONS, ModelConfig,
+    OnDisconnect, ToolConfig,
+};
 pub use store::{AgentStore, log_scan_warnings, resolve_agents_dir};
