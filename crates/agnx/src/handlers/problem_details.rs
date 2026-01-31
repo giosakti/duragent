@@ -76,7 +76,6 @@ impl IntoResponse for ProblemDetails {
 
 /// Common error responses
 #[must_use]
-#[allow(dead_code)] // public API, used in tests
 pub fn bad_request(detail: impl Into<String>) -> ProblemDetails {
     ProblemDetails::new(StatusCode::BAD_REQUEST, "Bad Request")
         .with_type(TYPE_BAD_REQUEST)

@@ -28,6 +28,9 @@ pub mod sse {
     pub const DONE: &str = "done";
     pub const ERROR: &str = "error";
     pub const CANCELLED: &str = "cancelled";
+    pub const APPROVAL_REQUIRED: &str = "approval_required";
+    pub const TOOL_CALL: &str = "tool_call";
+    pub const TOOL_RESULT: &str = "tool_result";
 }
 
 // ============================================================================
@@ -197,4 +200,79 @@ pub struct SendMessageResponse {
     pub message_id: String,
     pub role: String,
     pub content: String,
+}
+
+// ============================================================================
+// Approval Types
+// ============================================================================
+
+/// Approval decision from user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    /// Allow this command once.
+    AllowOnce,
+    /// Allow this command pattern always (saves to policy.local.yaml).
+    AllowAlways,
+    /// Deny this command.
+    Deny,
+}
+
+/// Request to approve or deny a pending command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApproveCommandRequest {
+    /// The tool call ID that needs approval.
+    pub call_id: String,
+    /// The command being approved (for verification).
+    pub command: String,
+    /// The approval decision.
+    pub decision: ApprovalDecision,
+}
+
+/// Response from approving a command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApproveCommandResponse {
+    pub session_id: String,
+    pub call_id: String,
+    pub decision: ApprovalDecision,
+}
+
+/// SSE payload for approval_required event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRequiredEvent {
+    pub call_id: String,
+    pub command: String,
+}
+
+/// Response when a message requires approval before completing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApprovalResponse {
+    /// The session ID.
+    pub session_id: String,
+    /// The tool call ID that needs approval.
+    pub call_id: String,
+    /// The command being approved.
+    pub command: String,
+}
+
+/// Response for getting a single session (extended with pending_approval).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSessionDetailResponse {
+    pub session_id: String,
+    pub agent: String,
+    pub status: SessionStatus,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Pending approval waiting for user decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<PendingApprovalInfo>,
+}
+
+/// Info about a pending approval in session responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApprovalInfo {
+    pub call_id: String,
+    pub command: String,
+    pub expires_at: String,
 }
