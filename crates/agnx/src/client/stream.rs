@@ -37,6 +37,8 @@ pub enum ClientStreamEvent {
     Cancelled,
     /// An error occurred.
     Error { message: String },
+    /// Tool execution requires approval.
+    ApprovalRequired { call_id: String, command: String },
 }
 
 /// Create a stream of `ClientStreamEvent` from an SSE response.
@@ -125,6 +127,14 @@ fn parse_event(event_type: &str, data: &str) -> Result<ClientStreamEvent> {
                 message: parsed.message,
             })
         }
+        sse_events::APPROVAL_REQUIRED => {
+            let parsed: ApprovalRequiredData = serde_json::from_str(data)
+                .map_err(|e| ClientError::SseParseError(e.to_string()))?;
+            Ok(ClientStreamEvent::ApprovalRequired {
+                call_id: parsed.call_id,
+                command: parsed.command,
+            })
+        }
         _ => Err(ClientError::SseParseError(format!(
             "Unknown event type: {}",
             event_type
@@ -148,6 +158,12 @@ struct DoneData {
 #[derive(Deserialize)]
 struct ErrorData {
     message: String,
+}
+
+#[derive(Deserialize)]
+struct ApprovalRequiredData {
+    call_id: String,
+    command: String,
 }
 
 #[cfg(test)]

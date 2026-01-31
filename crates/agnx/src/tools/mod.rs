@@ -7,6 +7,8 @@ mod bash;
 mod cli;
 mod error;
 mod executor;
+mod notify;
 
 pub use error::ToolError;
 pub use executor::{ToolExecutor, ToolResult};
+pub use notify::send_notification;

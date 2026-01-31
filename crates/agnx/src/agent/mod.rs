@@ -7,9 +7,13 @@ pub const API_VERSION_V1ALPHA1: &str = "agnx/v1alpha1";
 pub const KIND_AGENT: &str = "Agent";
 
 mod error;
+mod policy;
 mod spec;
 mod store;
 
+pub use policy::{
+    Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
+};
 pub use spec::{
     AgentMetadata, AgentSessionConfig, AgentSpec, DEFAULT_MAX_TOOL_ITERATIONS, ModelConfig,
     OnDisconnect, ToolConfig,

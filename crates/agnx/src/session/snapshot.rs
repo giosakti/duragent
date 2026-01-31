@@ -11,6 +11,43 @@ use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
 use crate::llm::Message;
 
+/// A pending approval waiting for user decision.
+///
+/// Approvals have no timeout — they wait indefinitely until the user
+/// approves, denies, or sends a new message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApproval {
+    /// The tool call ID that needs approval.
+    pub call_id: String,
+    /// The tool name (e.g., "bash").
+    pub tool_name: String,
+    /// The tool call arguments.
+    pub arguments: serde_json::Value,
+    /// The command being approved (for display).
+    pub command: String,
+    /// Accumulated messages to restore when resuming the loop.
+    pub messages: Vec<Message>,
+}
+
+impl PendingApproval {
+    /// Create a new pending approval.
+    pub fn new(
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        command: String,
+        messages: Vec<Message>,
+    ) -> Self {
+        Self {
+            call_id,
+            tool_name,
+            arguments,
+            command,
+            messages,
+        }
+    }
+}
+
 /// A snapshot of session state for fast resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
@@ -48,6 +85,10 @@ pub struct SessionConfig {
     /// Platform-specific chat identifier for routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_chat_id: Option<String>,
+
+    /// Pending approval waiting for user decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<PendingApproval>,
 }
 
 impl SessionSnapshot {
@@ -80,7 +121,7 @@ impl SessionSnapshot {
 
     /// Check if this snapshot is compatible with the current schema.
     pub fn is_compatible(&self) -> bool {
-        self.schema_version == Self::SCHEMA_VERSION
+        self.schema_version == "1"
     }
 }
 
@@ -177,9 +218,31 @@ mod tests {
             SessionConfig::default(),
         );
         assert!(snapshot.is_compatible());
+        assert_eq!(snapshot.schema_version, "1");
 
+        // Other versions are not compatible
         let mut old_snapshot = snapshot.clone();
         old_snapshot.schema_version = "0".to_string();
         assert!(!old_snapshot.is_compatible());
+    }
+
+    #[test]
+    fn pending_approval_serialization() {
+        let pending = PendingApproval::new(
+            "call_123".to_string(),
+            "bash".to_string(),
+            serde_json::json!({"command": "ls -la"}),
+            "ls -la".to_string(),
+            vec![Message::text(Role::User, "run ls")],
+        );
+
+        let yaml = serde_saphyr::to_string(&pending).unwrap();
+        assert!(yaml.contains("call_id: call_123"));
+        assert!(yaml.contains("tool_name: bash"));
+
+        let parsed: PendingApproval = serde_saphyr::from_str(&yaml).unwrap();
+        assert_eq!(parsed.call_id, "call_123");
+        assert_eq!(parsed.tool_name, "bash");
+        assert_eq!(parsed.command, "ls -la");
     }
 }

@@ -20,8 +20,10 @@ mod stream;
 
 // Types and errors
 pub use error::{Result, SessionError};
-pub use events::{SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData};
-pub use snapshot::{SessionConfig, SessionSnapshot};
+pub use events::{
+    ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,
+};
+pub use snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
 
 // Event I/O
 pub use event_reader::EventReader;
@@ -31,7 +33,8 @@ pub use snapshot_writer::write_snapshot;
 
 // Persistence and recovery
 pub use persist::{
-    SessionContext, commit_event, persist_assistant_message, record_event, write_session_snapshot,
+    SessionContext, clear_pending_approval, commit_event, get_pending_approval,
+    persist_assistant_message, record_event, set_pending_approval, write_session_snapshot,
 };
 pub use recover::{RecoveryResult, recover_sessions};
 pub use resume::{ResumedSession, resume_session};
@@ -41,17 +44,26 @@ pub use chat_request::{build_chat_messages, build_chat_request, build_system_mes
 pub use stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop
-pub use agentic::{AgenticError, AgenticResult, run_agentic_loop};
+pub use agentic::{
+    AgenticError, AgenticResult, EventContext, resume_agentic_loop, run_agentic_loop,
+};
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
+use dashmap::DashMap;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::api::SessionStatus;
 use crate::llm::Message;
+
+/// Per-session locks for disk I/O operations.
+///
+/// Prevents concurrent writes to the same session's files (events.jsonl, state.yaml).
+/// Different sessions can write concurrently without contention.
+pub type SessionLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
 
 /// A conversation session with an agent.
 ///

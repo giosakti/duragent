@@ -404,4 +404,208 @@ mod tests {
         assert_eq!(event.data, "final");
         assert!(events.next().await.is_none());
     }
+
+    // ==========================================================================
+    // parse_line() - Edge cases
+    // ==========================================================================
+
+    #[test]
+    fn parse_line_id_without_space() {
+        assert_eq!(parse_line("id:123"), SseLine::Id("123".to_string()));
+    }
+
+    #[test]
+    fn parse_line_event_without_space() {
+        assert_eq!(
+            parse_line("event:update"),
+            SseLine::Event("update".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_line_retry_without_space() {
+        assert_eq!(parse_line("retry:3000"), SseLine::Retry(3000));
+    }
+
+    #[test]
+    fn parse_line_invalid_retry_becomes_comment() {
+        // Non-numeric retry value should become a comment
+        assert_eq!(
+            parse_line("retry: abc"),
+            SseLine::Comment("retry: abc".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_line_retry_with_whitespace() {
+        // Retry should handle extra whitespace
+        assert_eq!(parse_line("retry:  5000  "), SseLine::Retry(5000));
+    }
+
+    #[test]
+    fn parse_line_unknown_field_becomes_comment() {
+        assert_eq!(
+            parse_line("unknown: value"),
+            SseLine::Comment("unknown: value".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_line_comment_without_space() {
+        assert_eq!(
+            parse_line(":keepalive"),
+            SseLine::Comment("keepalive".to_string())
+        );
+    }
+
+    // ==========================================================================
+    // SseLineStream - Edge cases
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn handles_remaining_buffer_on_eof() {
+        // Data without trailing newline
+        let stream = bytes_stream(vec!["data: incomplete"]);
+        let mut sse = SseLineStream::new(stream);
+
+        assert_eq!(
+            sse.next().await.unwrap().unwrap(),
+            SseLine::Data("incomplete".to_string())
+        );
+        assert!(sse.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn handles_empty_stream() {
+        let stream = bytes_stream(vec![]);
+        let mut sse = SseLineStream::new(stream);
+
+        assert!(sse.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn handles_only_newlines() {
+        let stream = bytes_stream(vec!["\n\n\n"]);
+        let mut sse = SseLineStream::new(stream);
+
+        assert_eq!(sse.next().await.unwrap().unwrap(), SseLine::Empty);
+        assert_eq!(sse.next().await.unwrap().unwrap(), SseLine::Empty);
+        assert_eq!(sse.next().await.unwrap().unwrap(), SseLine::Empty);
+        assert!(sse.next().await.is_none());
+    }
+
+    // ==========================================================================
+    // SseEventStream - Edge cases
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn multiple_events_in_stream() {
+        let stream = bytes_stream(vec![
+            "data: first\n",
+            "\n",
+            "data: second\n",
+            "\n",
+            "data: third\n",
+            "\n",
+        ]);
+        let mut events = SseEventStream::new(stream);
+
+        let e1 = events.next().await.unwrap().unwrap();
+        assert_eq!(e1.data, "first");
+
+        let e2 = events.next().await.unwrap().unwrap();
+        assert_eq!(e2.data, "second");
+
+        let e3 = events.next().await.unwrap().unwrap();
+        assert_eq!(e3.data, "third");
+
+        assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn comments_ignored_in_event_assembly() {
+        let stream = bytes_stream(vec![
+            ": this is a comment\n",
+            "data: value\n",
+            ": another comment\n",
+            "\n",
+        ]);
+        let mut events = SseEventStream::new(stream);
+
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.data, "value");
+    }
+
+    #[tokio::test]
+    async fn empty_lines_without_data_skipped() {
+        let stream = bytes_stream(vec!["\n", "\n", "data: payload\n", "\n"]);
+        let mut events = SseEventStream::new(stream);
+
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.data, "payload");
+        assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn event_only_without_data() {
+        let stream = bytes_stream(vec!["event: ping\n", "\n"]);
+        let mut events = SseEventStream::new(stream);
+
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.event, Some("ping".to_string()));
+        assert_eq!(event.data, ""); // Empty data when only event type present
+    }
+
+    #[tokio::test]
+    async fn id_only_event() {
+        let stream = bytes_stream(vec!["id: 42\n", "\n"]);
+        let mut events = SseEventStream::new(stream);
+
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.id, Some("42".to_string()));
+        assert_eq!(event.data, "");
+    }
+
+    #[tokio::test]
+    async fn retry_only_event() {
+        let stream = bytes_stream(vec!["retry: 5000\n", "\n"]);
+        let mut events = SseEventStream::new(stream);
+
+        let event = events.next().await.unwrap().unwrap();
+        assert_eq!(event.retry, Some(5000));
+        assert_eq!(event.data, "");
+    }
+
+    #[tokio::test]
+    async fn event_stream_empty_input() {
+        let stream = bytes_stream(vec![]);
+        let mut events = SseEventStream::new(stream);
+
+        assert!(events.next().await.is_none());
+    }
+
+    // ==========================================================================
+    // SseLine and SseEvent - Debug/Clone/PartialEq
+    // ==========================================================================
+
+    #[test]
+    fn sse_line_debug_and_clone() {
+        let line = SseLine::Data("test".to_string());
+        let cloned = line.clone();
+        assert_eq!(line, cloned);
+        let _ = format!("{:?}", line);
+    }
+
+    #[test]
+    fn sse_event_debug_and_clone() {
+        let event = SseEvent {
+            data: "test".to_string(),
+            event: Some("message".to_string()),
+            id: Some("1".to_string()),
+            retry: Some(1000),
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+        let _ = format!("{:?}", event);
+    }
 }

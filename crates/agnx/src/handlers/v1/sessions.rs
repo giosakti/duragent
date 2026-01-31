@@ -15,18 +15,21 @@ use uuid::Uuid;
 
 use crate::agent::{AgentSpec, OnDisconnect};
 use crate::api::{
-    CreateSessionRequest, CreateSessionResponse, GetMessagesResponse, GetSessionResponse,
-    ListSessionsResponse, MessageResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
+    ApprovalDecision, ApproveCommandRequest, CreateSessionRequest, CreateSessionResponse,
+    GetMessagesResponse, GetSessionResponse, ListSessionsResponse, MessageResponse,
+    PendingApprovalResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
     SessionSummary,
 };
 use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider, Message, Role};
 use crate::server::AppState;
 use crate::session::{
-    AccumulatingStream, SessionContext, SessionEventPayload, StreamConfig, build_chat_request,
-    build_system_message, commit_event, persist_assistant_message, record_event, run_agentic_loop,
+    AccumulatingStream, AgenticResult, ApprovalDecisionType, EventContext, SessionContext,
+    SessionEventPayload, StreamConfig, build_chat_request, build_system_message,
+    clear_pending_approval, commit_event, get_pending_approval, persist_assistant_message,
+    record_event, resume_agentic_loop, run_agentic_loop, set_pending_approval,
 };
-use crate::tools::ToolExecutor;
+use crate::tools::{ToolExecutor, ToolResult};
 
 // ============================================================================
 // Query Types
@@ -80,6 +83,8 @@ pub async fn create_session(
         on_disconnect: agent_spec.session.on_disconnect,
         gateway: None,
         gateway_chat_id: None,
+        pending_approval: None,
+        session_locks: &state.session_locks,
     };
     if let Err(e) = commit_event(
         &ctx,
@@ -199,6 +204,7 @@ pub async fn send_message(
         &session.agent,
         assistant_content.clone(),
         chat_response.usage.clone(),
+        &state.session_locks,
     )
     .await
     {
@@ -229,22 +235,29 @@ async fn send_message_agentic(
     agent_name: &str,
     ctx: ChatContext,
 ) -> Response {
-    // Create tool executor
+    // Create tool executor with policy
     let executor = ToolExecutor::new(
         ctx.agent_spec.tools.clone(),
         state.sandbox.clone(),
         ctx.agent_dir.clone(),
-    );
+        ctx.agent_spec.policy.clone(),
+        agent_name.to_string(),
+    )
+    .with_session_id(session_id.to_string());
 
     // Run the agentic loop
+    let event_ctx = EventContext {
+        sessions: state.sessions.clone(),
+        sessions_path: state.sessions_path.clone(),
+        session_id: session_id.to_string(),
+        session_locks: state.session_locks.clone(),
+    };
     let result = match run_agentic_loop(
         ctx.provider,
         &executor,
         &ctx.agent_spec,
         ctx.request.messages,
-        &state.sessions,
-        &state.sessions_path,
-        session_id,
+        &event_ctx,
     )
     .await
     {
@@ -255,35 +268,7 @@ async fn send_message_agentic(
         }
     };
 
-    // Persist final assistant message
-    if let Err(e) = persist_assistant_message(
-        &state.sessions,
-        &state.sessions_path,
-        session_id,
-        agent_name,
-        result.content.clone(),
-        result.usage.clone(),
-    )
-    .await
-    {
-        return problem_details::internal_error(format!(
-            "failed to persist assistant message: {}",
-            e
-        ))
-        .into_response();
-    }
-
-    let response = SendMessageResponse {
-        message_id: format!(
-            "{}{}",
-            crate::api::MESSAGE_ID_PREFIX,
-            Uuid::new_v4().simple()
-        ),
-        role: "assistant".to_string(),
-        content: result.content,
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
+    handle_agentic_result(state, session_id, agent_name, result, false).await
 }
 
 /// POST /api/v1/sessions/{session_id}/stream
@@ -355,6 +340,7 @@ pub async fn stream_session(
             on_disconnect: ctx.on_disconnect,
             sessions_path: state.sessions_path.clone(),
             background_tasks: state.background_tasks.clone(),
+            session_locks: state.session_locks.clone(),
         },
     );
 
@@ -363,6 +349,216 @@ pub async fn stream_session(
         .text("keep-alive");
 
     Sse::new(sse_stream).keep_alive(keep_alive).into_response()
+}
+
+/// POST /api/v1/sessions/{session_id}/approve
+///
+/// Approve or deny a pending tool execution.
+///
+/// If approved, executes the tool and resumes the agentic loop.
+/// Returns the final response or a new pending approval if another tool needs approval.
+pub async fn approve_command(
+    State(state): State<AppState>,
+    PathExtract(session_id): PathExtract<String>,
+    Json(req): Json<ApproveCommandRequest>,
+) -> impl IntoResponse {
+    // Verify session exists
+    let Some(session) = state.sessions.get(&session_id).await else {
+        return problem_details::not_found("session not found").into_response();
+    };
+
+    // Load pending approval from snapshot
+    let pending = match get_pending_approval(&state.sessions_path, &session_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return problem_details::not_found("no pending approval for this session")
+                .into_response();
+        }
+        Err(e) => {
+            return problem_details::internal_error(format!(
+                "failed to load pending approval: {}",
+                e
+            ))
+            .into_response();
+        }
+    };
+
+    // Validate call_id matches
+    if pending.call_id != req.call_id {
+        return problem_details::bad_request(format!(
+            "call_id mismatch: expected '{}', got '{}'",
+            pending.call_id, req.call_id
+        ))
+        .into_response();
+    }
+
+    // Map API decision to internal type
+    let decision = match req.decision {
+        ApprovalDecision::AllowOnce => ApprovalDecisionType::AllowOnce,
+        ApprovalDecision::AllowAlways => ApprovalDecisionType::AllowAlways,
+        ApprovalDecision::Deny => ApprovalDecisionType::Deny,
+    };
+
+    // Record the approval decision event
+    if let Err(e) = record_event(
+        &state.sessions,
+        &state.sessions_path,
+        &session_id,
+        SessionEventPayload::ApprovalDecision {
+            call_id: req.call_id.clone(),
+            decision,
+        },
+        &state.session_locks,
+    )
+    .await
+    {
+        return problem_details::internal_error(format!(
+            "failed to persist approval decision: {}",
+            e
+        ))
+        .into_response();
+    }
+
+    // Get agent spec for tool execution
+    let Some(agent_spec) = state.agents.get(&session.agent) else {
+        return problem_details::internal_error("session references non-existent agent")
+            .into_response();
+    };
+
+    // If allow_always, save pattern to policy.local.yaml
+    if req.decision == ApprovalDecision::AllowAlways
+        && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
+            &agent_spec.policy,
+            &agent_spec.agent_dir,
+            &session.agent,
+            crate::agent::ToolType::Bash,
+            &req.command,
+            &state.policy_locks,
+        )
+        .await
+    {
+        debug!(
+            error = %e,
+            command = %req.command,
+            "Failed to save allow pattern to policy.local.yaml"
+        );
+    }
+
+    // Determine tool result based on decision
+    let tool_result = if req.decision == ApprovalDecision::Deny {
+        // Denial - create a rejection message for the LLM
+        ToolResult {
+            success: false,
+            content: format!(
+                "Command '{}' was denied by the user. Please try a different approach.",
+                req.command
+            ),
+        }
+    } else {
+        // Approved - execute the tool
+        let executor = ToolExecutor::new(
+            agent_spec.tools.clone(),
+            state.sandbox.clone(),
+            agent_spec.agent_dir.clone(),
+            agent_spec.policy.clone(),
+            session.agent.clone(),
+        )
+        .with_session_id(session_id.clone());
+
+        // Build tool call from pending approval
+        let tool_call = crate::llm::ToolCall {
+            id: pending.call_id.clone(),
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: pending.tool_name.clone(),
+                arguments: pending.arguments.to_string(),
+            },
+        };
+
+        // Execute with policy bypassed (already approved)
+        match executor.execute_bypassing_policy(&tool_call).await {
+            Ok(result) => result,
+            Err(e) => ToolResult {
+                success: false,
+                content: format!("Tool execution failed: {}", e),
+            },
+        }
+    };
+
+    // Clear pending approval
+    if let Err(e) = clear_pending_approval(
+        &state.sessions,
+        &state.sessions_path,
+        &session_id,
+        &state.session_locks,
+    )
+    .await
+    {
+        debug!(error = %e, "Failed to clear pending approval");
+    }
+
+    // Get provider for resuming the loop
+    let Some(provider) = state.providers.get(
+        &agent_spec.model.provider,
+        agent_spec.model.base_url.as_deref(),
+    ) else {
+        return problem_details::internal_error(format!(
+            "provider '{}' not configured",
+            agent_spec.model.provider
+        ))
+        .into_response();
+    };
+
+    // Create executor for resume
+    let executor = ToolExecutor::new(
+        agent_spec.tools.clone(),
+        state.sandbox.clone(),
+        agent_spec.agent_dir.clone(),
+        agent_spec.policy.clone(),
+        session.agent.clone(),
+    )
+    .with_session_id(session_id.clone());
+
+    // Set session to Running before resuming (accurate status during execution)
+    if let Err(e) = state
+        .sessions
+        .set_status(&session_id, SessionStatus::Running)
+        .await
+    {
+        debug!(error = %e, "Failed to set session status to Running");
+    }
+
+    // Resume the agentic loop
+    let event_ctx = EventContext {
+        sessions: state.sessions.clone(),
+        sessions_path: state.sessions_path.clone(),
+        session_id: session_id.clone(),
+        session_locks: state.session_locks.clone(),
+    };
+    let result = match resume_agentic_loop(
+        provider,
+        &executor,
+        agent_spec,
+        pending,
+        tool_result,
+        &event_ctx,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Reset to Active on error
+            let _ = state
+                .sessions
+                .set_status(&session_id, SessionStatus::Active)
+                .await;
+            return problem_details::internal_error(format!("agentic loop failed: {}", e))
+                .into_response();
+        }
+    };
+
+    // Handle result using shared helper
+    handle_agentic_result(&state, &session_id, &session.agent, result, true).await
 }
 
 // ============================================================================
@@ -443,6 +639,7 @@ async fn prepare_chat_context(
         SessionEventPayload::UserMessage {
             content: content_for_event,
         },
+        &state.session_locks,
     )
     .await
     {
@@ -486,4 +683,114 @@ async fn prepare_chat_context(
         agent_spec,
         agent_dir,
     })
+}
+
+/// Handle the result from an agentic loop (initial or resume).
+///
+/// For Complete: persists the message and returns 200 with the response.
+/// For AwaitingApproval: saves pending state, sets Paused, returns 202.
+async fn handle_agentic_result(
+    state: &AppState,
+    session_id: &str,
+    agent_name: &str,
+    result: AgenticResult,
+    is_resume: bool,
+) -> Response {
+    match result {
+        AgenticResult::Complete { content, usage, .. } => {
+            // Persist the final assistant message
+            if let Err(e) = persist_assistant_message(
+                &state.sessions,
+                &state.sessions_path,
+                session_id,
+                agent_name,
+                content.clone(),
+                usage,
+                &state.session_locks,
+            )
+            .await
+            {
+                return problem_details::internal_error(format!(
+                    "failed to persist assistant message: {}",
+                    e
+                ))
+                .into_response();
+            }
+
+            // On resume, set back to Active (was Running during execution)
+            if is_resume {
+                let _ = state
+                    .sessions
+                    .set_status(session_id, SessionStatus::Active)
+                    .await;
+            }
+
+            let message_id = format!(
+                "{}{}",
+                crate::api::MESSAGE_ID_PREFIX,
+                Uuid::new_v4().simple()
+            );
+
+            // Return different response types based on context
+            if is_resume {
+                // For approve_command, return ApproveCommandResponse
+                let response = crate::api::ApproveCommandResponse::Complete {
+                    message_id,
+                    content,
+                };
+                (StatusCode::OK, Json(response)).into_response()
+            } else {
+                // For send_message, return SendMessageResponse
+                let response = SendMessageResponse {
+                    message_id,
+                    role: "assistant".to_string(),
+                    content,
+                };
+                (StatusCode::OK, Json(response)).into_response()
+            }
+        }
+
+        AgenticResult::AwaitingApproval { pending, .. } => {
+            // Save pending approval to snapshot
+            if let Err(e) = set_pending_approval(
+                &state.sessions,
+                &state.sessions_path,
+                session_id,
+                &pending,
+                &state.session_locks,
+            )
+            .await
+            {
+                return problem_details::internal_error(format!(
+                    "failed to save pending approval: {}",
+                    e
+                ))
+                .into_response();
+            }
+
+            // Set session to Paused
+            let _ = state
+                .sessions
+                .set_status(session_id, SessionStatus::Paused)
+                .await;
+
+            // Return different response types based on context
+            if is_resume {
+                // For approve_command, return ApproveCommandResponse
+                let response = crate::api::ApproveCommandResponse::PendingApproval {
+                    call_id: pending.call_id,
+                    command: pending.command,
+                };
+                (StatusCode::ACCEPTED, Json(response)).into_response()
+            } else {
+                // For send_message, return PendingApprovalResponse
+                let response = PendingApprovalResponse {
+                    session_id: session_id.to_string(),
+                    call_id: pending.call_id,
+                    command: pending.command,
+                };
+                (StatusCode::ACCEPTED, Json(response)).into_response()
+            }
+        }
+    }
 }

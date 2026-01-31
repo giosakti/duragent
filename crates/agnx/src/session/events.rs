@@ -51,6 +51,13 @@ pub enum SessionEventPayload {
         call_id: String,
         result: ToolResultData,
     },
+    /// Tool requires human approval before execution.
+    ApprovalRequired { call_id: String, command: String },
+    /// User made an approval decision.
+    ApprovalDecision {
+        call_id: String,
+        decision: ApprovalDecisionType,
+    },
     /// Session status changed.
     StatusChange {
         from: SessionStatus,
@@ -58,6 +65,18 @@ pub enum SessionEventPayload {
     },
     /// An error occurred (recoverable).
     Error { code: String, message: String },
+}
+
+/// Type of approval decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecisionType {
+    /// Allow this command once.
+    AllowOnce,
+    /// Allow this command pattern always (saves to policy.local.yaml).
+    AllowAlways,
+    /// Deny this command.
+    Deny,
 }
 
 /// Reason for session end.

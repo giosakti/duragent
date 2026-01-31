@@ -8,9 +8,10 @@ mod stream;
 
 pub use crate::api::{
     AgentDetailResponse, AgentMetadataResponse, AgentModelResponse, AgentSpecResponse,
-    AgentSummary, CreateSessionRequest, GetMessagesResponse, GetSessionResponse,
-    ListAgentsResponse, ListSessionsResponse, MessageResponse, SendMessageRequest,
-    SendMessageResponse, SessionStatus, SessionSummary,
+    AgentSummary, ApprovalDecision, ApproveCommandRequest, ApproveCommandResponse,
+    CreateSessionRequest, GetMessagesResponse, GetSessionResponse, ListAgentsResponse,
+    ListSessionsResponse, MessageResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
+    SessionSummary,
 };
 pub use error::{ClientError, Result};
 pub use stream::ClientStreamEvent;
@@ -166,6 +167,25 @@ impl AgentClient {
         } else {
             Err(self.parse_error(response).await)
         }
+    }
+
+    /// Approve or deny a pending tool execution.
+    pub async fn approve_command(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        command: &str,
+        decision: ApprovalDecision,
+    ) -> Result<ApproveCommandResponse> {
+        let url = format!("{}/api/v1/sessions/{}/approve", self.base_url, session_id);
+        let body = ApproveCommandRequest {
+            call_id: call_id.to_string(),
+            command: command.to_string(),
+            decision,
+        };
+
+        let response = self.http.post(&url).json(&body).send().await?;
+        self.json_response(response).await
     }
 
     // ----------------------------------------------------------------------------

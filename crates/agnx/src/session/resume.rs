@@ -112,6 +112,8 @@ async fn replay_events(
             SessionEventPayload::SessionStart { .. }
             | SessionEventPayload::ToolCall { .. }
             | SessionEventPayload::ToolResult { .. }
+            | SessionEventPayload::ApprovalRequired { .. }
+            | SessionEventPayload::ApprovalDecision { .. }
             | SessionEventPayload::Error { .. } => {}
         }
     }

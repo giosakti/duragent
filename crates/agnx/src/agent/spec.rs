@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 
 use super::error::{AgentLoadError, AgentLoadWarning};
+use super::policy::ToolPolicy;
 use super::{API_VERSION_V1ALPHA1, KIND_AGENT};
 use crate::llm::Provider;
 
@@ -34,6 +35,8 @@ pub struct AgentSpec {
     pub session: AgentSessionConfig,
     /// Tool configurations for agentic capabilities.
     pub tools: Vec<ToolConfig>,
+    /// Tool execution policy.
+    pub policy: ToolPolicy,
     /// Directory containing the agent's configuration files.
     pub agent_dir: PathBuf,
 }
@@ -171,6 +174,8 @@ impl AgentSpec {
         )
         .await;
 
+        let policy = ToolPolicy::load(agent_dir).await;
+
         Ok((
             AgentSpec {
                 api_version: raw.api_version,
@@ -182,6 +187,7 @@ impl AgentSpec {
                 instructions,
                 session: raw.spec.session,
                 tools: raw.spec.tools,
+                policy,
                 agent_dir: agent_dir.to_path_buf(),
             },
             warnings,

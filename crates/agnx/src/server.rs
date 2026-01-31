@@ -8,13 +8,13 @@ use axum::routing::{get, post};
 use tokio::sync::{Mutex, oneshot};
 use tower_http::timeout::TimeoutLayer;
 
-use crate::agent::AgentStore;
+use crate::agent::{AgentStore, PolicyLocks};
 use crate::background::BackgroundTasks;
 use crate::gateway::GatewayManager;
 use crate::handlers;
 use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
-use crate::session::SessionStore;
+use crate::session::{SessionLocks, SessionStore};
 
 // ============================================================================
 // Application State
@@ -40,6 +40,12 @@ pub struct AppState {
     pub gateways: GatewayManager,
     /// Sandbox for tool execution.
     pub sandbox: Arc<dyn Sandbox>,
+    /// Per-agent locks for policy file writes.
+    /// Prevents concurrent writes from overwriting each other.
+    pub policy_locks: PolicyLocks,
+    /// Per-session locks for disk I/O.
+    /// Prevents concurrent writes to the same session's files.
+    pub session_locks: SessionLocks,
 }
 
 // ============================================================================
@@ -74,6 +80,10 @@ pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
         .route(
             "/sessions/{session_id}/messages",
             get(handlers::v1::get_messages).post(handlers::v1::send_message),
+        )
+        .route(
+            "/sessions/{session_id}/approve",
+            post(handlers::v1::approve_command),
         )
         .with_state(state.clone())
         .layer(TimeoutLayer::with_status_code(

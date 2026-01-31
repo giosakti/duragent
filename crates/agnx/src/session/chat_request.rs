@@ -62,7 +62,7 @@ pub fn build_chat_messages(system_message: Option<&str>, history: &[Message]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AgentMetadata, AgentSessionConfig, ModelConfig};
+    use crate::agent::{AgentMetadata, AgentSessionConfig, ModelConfig, ToolPolicy};
     use crate::llm::Provider;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -94,6 +94,7 @@ mod tests {
             instructions: instructions.map(|s| s.to_string()),
             session: AgentSessionConfig::default(),
             tools: Vec::new(),
+            policy: ToolPolicy::default(),
             agent_dir: PathBuf::from("/tmp/test-agent"),
         }
     }

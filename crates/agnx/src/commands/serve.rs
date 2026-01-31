@@ -9,7 +9,7 @@ use tokio::signal;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use agnx::agent::{self, AgentStore};
+use agnx::agent::{self, AgentStore, PolicyLocks};
 use agnx::background::BackgroundTasks;
 use agnx::client::AgentClient;
 use agnx::config::{self, Config, ExternalGatewayConfig};
@@ -58,18 +58,39 @@ pub async fn run(
         );
     }
 
+    // Initialize sandbox based on config (needed for gateway handler)
+    let sandbox: Arc<dyn Sandbox> = match config.sandbox.mode.as_str() {
+        "trust" => Arc::new(TrustSandbox::new()),
+        other => {
+            warn!(mode = %other, "Unknown sandbox mode, falling back to trust");
+            Arc::new(TrustSandbox::new())
+        }
+    };
+    info!(mode = %sandbox.mode(), "Sandbox initialized");
+
     // Initialize gateway manager
     let gateways = GatewayManager::new();
 
-    // Set up gateway message handler
+    // Per-session locks for disk I/O (shared with app state)
+    let session_locks: agnx::session::SessionLocks = Arc::new(dashmap::DashMap::new());
+
+    // Per-agent locks for policy file writes (shared with app state)
+    let policy_locks: PolicyLocks = Arc::new(dashmap::DashMap::new());
+
+    // Set up gateway message handler with sandbox and gateway_manager
     let routing_config = build_routing_config(&config, &store);
-    let gateway_handler = agnx::gateway::GatewayMessageHandler::new(
-        store.clone(),
-        providers.clone(),
-        sessions.clone(),
-        sessions_path.clone(),
-        routing_config,
-    );
+    let gateway_handler =
+        agnx::gateway::GatewayMessageHandler::new(agnx::gateway::GatewayHandlerConfig {
+            agents: store.clone(),
+            providers: providers.clone(),
+            sessions: sessions.clone(),
+            sessions_path: sessions_path.clone(),
+            routing_config,
+            sandbox: sandbox.clone(),
+            gateway_manager: gateways.clone(),
+            session_locks: session_locks.clone(),
+            policy_locks: policy_locks.clone(),
+        });
 
     // Rebuild gateway routes from recovered sessions
     gateway_handler.rebuild_routes_from_sessions().await;
@@ -99,16 +120,6 @@ pub async fn run(
     // Create shutdown channel for HTTP-triggered shutdown
     let (shutdown_tx, shutdown_rx) = server::shutdown_channel();
 
-    // Initialize sandbox based on config
-    let sandbox: Arc<dyn Sandbox> = match config.sandbox.mode.as_str() {
-        "trust" => Arc::new(TrustSandbox::new()),
-        other => {
-            warn!(mode = %other, "Unknown sandbox mode, falling back to trust");
-            Arc::new(TrustSandbox::new())
-        }
-    };
-    info!(mode = %sandbox.mode(), "Sandbox initialized");
-
     // Build app state
     let background_tasks = BackgroundTasks::new();
     let state = server::AppState {
@@ -123,6 +134,8 @@ pub async fn run(
         admin_token: config.server.admin_token.clone(),
         gateways: gateways.clone(),
         sandbox,
+        policy_locks,
+        session_locks,
     };
 
     let app = server::build_app(state, config.server.request_timeout_seconds);

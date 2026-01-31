@@ -130,7 +130,7 @@ async fn recover_single_session(
         }
     };
 
-    // Determine if we should recover this session
+    // Determine the status to recover with
     let status = match resumed.status {
         SessionStatus::Active => SessionStatus::Active,
         SessionStatus::Paused => SessionStatus::Paused,
