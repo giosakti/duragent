@@ -51,7 +51,9 @@ pub use agnx_gateway_protocol::{
 };
 
 pub use handler::{GatewayMessageHandler, RoutingConfig};
-pub use manager::{GatewayHandle, GatewayManager, MessageHandler, SendError};
+pub use manager::{
+    GatewayHandle, GatewayManager, MessageHandler, SendError, build_approval_keyboard,
+};
 pub use subprocess::SubprocessGateway;
 
 // Re-export Telegram gateway from the telegram crate

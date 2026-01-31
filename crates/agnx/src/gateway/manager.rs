@@ -12,7 +12,9 @@ use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use agnx_gateway_protocol::{GatewayCommand, GatewayEvent, MessageContent, RoutingContext};
+use agnx_gateway_protocol::{
+    GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageContent, RoutingContext,
+};
 
 // ============================================================================
 // Gateway Manager
@@ -120,6 +122,19 @@ impl GatewayManager {
         content: &str,
         reply_to: Option<String>,
     ) -> Result<(), SendError> {
+        self.send_message_with_keyboard(gateway, chat_id, content, reply_to, None)
+            .await
+    }
+
+    /// Send a message through a gateway with an optional inline keyboard.
+    pub async fn send_message_with_keyboard(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+        inline_keyboard: Option<InlineKeyboard>,
+    ) -> Result<(), SendError> {
         let handle = {
             let inner = self.inner.read().await;
             inner.gateways.get(gateway).map(|h| h.command_tx.clone())
@@ -136,6 +151,7 @@ impl GatewayManager {
             chat_id: chat_id.to_string(),
             content: content.to_string(),
             reply_to,
+            inline_keyboard,
         };
 
         tx.send(command).await.map_err(|_| SendError::ChannelClosed)
@@ -155,6 +171,35 @@ impl GatewayManager {
         let command = GatewayCommand::SendTyping {
             chat_id: chat_id.to_string(),
             duration: 5,
+        };
+
+        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+    }
+
+    /// Answer a callback query with an optional notification text.
+    ///
+    /// This dismisses the loading indicator on the button and optionally
+    /// shows a toast notification to the user.
+    pub async fn answer_callback_query(
+        &self,
+        gateway: &str,
+        callback_query_id: &str,
+        text: Option<String>,
+    ) -> Result<(), SendError> {
+        let handle = {
+            let inner = self.inner.read().await;
+            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
+        };
+
+        let Some(tx) = handle else {
+            return Err(SendError::ChannelClosed);
+        };
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let command = GatewayCommand::AnswerCallbackQuery {
+            request_id,
+            callback_query_id: callback_query_id.to_string(),
+            text,
         };
 
         tx.send(command).await.map_err(|_| SendError::ChannelClosed)
@@ -319,6 +364,39 @@ impl GatewayManager {
                         "Gateway pong"
                     );
                 }
+
+                GatewayEvent::CallbackQuery(data) => {
+                    debug!(
+                        gateway = %gateway,
+                        callback_query_id = %data.callback_query_id,
+                        chat_id = %data.chat_id,
+                        data = %data.data,
+                        "Callback query received"
+                    );
+
+                    // Get handler and process callback
+                    let handler = {
+                        let inner = self.inner.read().await;
+                        inner.handler.clone()
+                    };
+
+                    if let Some(handler) = handler {
+                        let response = handler.handle_callback_query(&gateway, &data).await;
+
+                        // Answer the callback query with toast notification
+                        if let Err(e) = self
+                            .answer_callback_query(&gateway, &data.callback_query_id, response)
+                            .await
+                        {
+                            warn!(
+                                gateway = %gateway,
+                                callback_query_id = %data.callback_query_id,
+                                error = %e,
+                                "Failed to answer callback query"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -351,6 +429,19 @@ pub trait MessageHandler: Send + Sync {
         routing: &RoutingContext,
         content: &MessageContent,
     ) -> Option<String>;
+
+    /// Handle a callback query from an inline keyboard button press.
+    ///
+    /// Used for approval flow when user presses Allow/Deny buttons.
+    /// Returns an optional notification text to show the user.
+    async fn handle_callback_query(
+        &self,
+        _gateway: &str,
+        _data: &agnx_gateway_protocol::CallbackQueryData,
+    ) -> Option<String> {
+        // Default implementation does nothing
+        None
+    }
 }
 
 // ============================================================================
@@ -392,6 +483,19 @@ impl GatewayHandle {
 pub enum SendError {
     #[error("gateway channel closed")]
     ChannelClosed,
+}
+
+/// Build an inline keyboard for approval prompts.
+///
+/// Creates a single row with Allow Once, Allow Always, and Deny buttons.
+/// The callback data format is just `approve:{decision}` — the session is
+/// looked up from the chat_id when the callback is received.
+pub fn build_approval_keyboard() -> InlineKeyboard {
+    InlineKeyboard::single_row(vec![
+        InlineButton::new("Allow Once", "approve:allow_once"),
+        InlineButton::new("Allow Always", "approve:allow_always"),
+        InlineButton::new("Deny", "approve:deny"),
+    ])
 }
 
 #[cfg(test)]

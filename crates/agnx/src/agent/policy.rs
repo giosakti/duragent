@@ -20,10 +20,23 @@
 //! If no tool type prefix is provided, patterns match against all tool types.
 
 use std::path::Path;
+use std::sync::Arc;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
+
+// ============================================================================
+// Concurrency
+// ============================================================================
+
+/// Per-agent locks for policy file writes.
+///
+/// Prevents concurrent writes from overwriting each other.
+/// Different agents can write concurrently without contention.
+pub type PolicyLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
 
 // ============================================================================
 // Constants
@@ -231,14 +244,73 @@ impl ToolPolicy {
         self
     }
 
-    /// Save policy to local override file.
+    /// Save policy to local override file atomically.
+    ///
+    /// Writes to a temp file and renames to prevent corruption on crash.
+    ///
+    /// **Note:** For concurrent-safe modifications, use `add_pattern_and_save()`
+    /// which handles locking and reload automatically.
     pub async fn save_local(&self, agent_dir: &Path) -> std::io::Result<()> {
         let path = agent_dir.join("policy.local.yaml");
+        let tmp_path = agent_dir.join("policy.local.yaml.tmp");
         let content = serde_saphyr::to_string(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        fs::write(&path, content).await?;
+        fs::write(&tmp_path, &content).await?;
+        fs::rename(&tmp_path, &path).await?;
         debug!(path = %path.display(), "Saved local policy");
         Ok(())
+    }
+
+    /// Atomically add a pattern to the allow list and save.
+    ///
+    /// This is the recommended way to modify policy files as it:
+    /// 1. Acquires a per-agent lock to prevent concurrent writes
+    /// 2. Reloads the latest policy from disk
+    /// 3. Adds the new pattern
+    /// 4. Saves atomically
+    ///
+    /// This prevents race conditions where concurrent calls would overwrite
+    /// each other's changes.
+    pub async fn add_pattern_and_save(
+        base_policy: &ToolPolicy,
+        agent_dir: &Path,
+        agent_name: &str,
+        tool_type: ToolType,
+        pattern: &str,
+        policy_locks: &PolicyLocks,
+    ) -> std::io::Result<()> {
+        // Get or create lock for this agent
+        let lock = policy_locks
+            .entry(agent_name.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+
+        // Hold lock while reading, modifying, and writing
+        let _guard = lock.lock().await;
+
+        let mut policy = base_policy.clone();
+        policy.reload_local(agent_dir).await;
+        policy.add_allow_pattern(tool_type, pattern);
+        policy.save_local(agent_dir).await
+    }
+
+    /// Reload the local policy file and merge with current state.
+    ///
+    /// Use this before modifying and saving to avoid overwriting concurrent changes.
+    pub async fn reload_local(&mut self, agent_dir: &Path) {
+        if let Some(local) = Self::load_file(&agent_dir.join("policy.local.yaml")).await {
+            // Merge local patterns into self (union of allow/deny lists)
+            for pattern in local.allow {
+                if !self.allow.contains(&pattern) {
+                    self.allow.push(pattern);
+                }
+            }
+            for pattern in local.deny {
+                if !self.deny.contains(&pattern) {
+                    self.deny.push(pattern);
+                }
+            }
+        }
     }
 
     /// Add a pattern to the allow list.

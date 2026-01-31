@@ -38,6 +38,8 @@ pub async fn test_app() -> Router {
         admin_token: None,
         gateways: GatewayManager::new(),
         sandbox: Arc::new(TrustSandbox::new()),
+        policy_locks: Arc::new(dashmap::DashMap::new()),
+        session_locks: Arc::new(dashmap::DashMap::new()),
     };
 
     server::build_app(state, 300)

@@ -52,11 +52,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
+use dashmap::DashMap;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::api::SessionStatus;
 use crate::llm::Message;
+
+/// Per-session locks for disk I/O operations.
+///
+/// Prevents concurrent writes to the same session's files (events.jsonl, state.yaml).
+/// Different sessions can write concurrently without contention.
+pub type SessionLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
 
 /// A conversation session with an agent.
 ///

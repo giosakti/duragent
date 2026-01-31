@@ -19,18 +19,19 @@ use tracing::{debug, warn};
 use crate::agent::AgentSpec;
 use crate::llm::{ChatRequest, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::snapshot::PendingApproval;
-use crate::session::{SessionEventPayload, SessionStore, record_event};
+use crate::session::{SessionEventPayload, SessionLocks, SessionStore, record_event};
 use crate::tools::{ToolError, ToolExecutor, ToolResult};
 
 /// Context for recording session events during the agentic loop.
 ///
-/// Groups the session store, path, and ID that are always used together
+/// Groups the session store, path, ID, and locks that are always used together
 /// for event persistence.
 #[derive(Clone)]
 pub struct EventContext {
     pub sessions: SessionStore,
     pub sessions_path: PathBuf,
     pub session_id: String,
+    pub session_locks: SessionLocks,
 }
 
 /// Result of running the agentic loop.
@@ -199,6 +200,7 @@ pub async fn run_agentic_loop(
                     tool_name: tool_call.function.name.clone(),
                     arguments: arguments.clone(),
                 },
+                &ctx.session_locks,
             )
             .await
             {
@@ -223,6 +225,7 @@ pub async fn run_agentic_loop(
                                 content: content.clone(),
                                 usage: None, // Usage tracked separately
                             },
+                            &ctx.session_locks,
                         )
                         .await
                         {
@@ -239,6 +242,7 @@ pub async fn run_agentic_loop(
                             call_id: call_id.clone(),
                             command: command.clone(),
                         },
+                        &ctx.session_locks,
                     )
                     .await
                     {
@@ -293,6 +297,7 @@ pub async fn run_agentic_loop(
                         content: result.content.clone(),
                     },
                 },
+                &ctx.session_locks,
             )
             .await
             {
@@ -336,6 +341,7 @@ pub async fn resume_agentic_loop(
                 content: tool_result.content.clone(),
             },
         },
+        &ctx.session_locks,
     )
     .await
     {

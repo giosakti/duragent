@@ -11,7 +11,9 @@ mod policy;
 mod spec;
 mod store;
 
-pub use policy::{Delivery, NotifyConfig, PolicyDecision, PolicyMode, ToolPolicy, ToolType};
+pub use policy::{
+    Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
+};
 pub use spec::{
     AgentMetadata, AgentSessionConfig, AgentSpec, DEFAULT_MAX_TOOL_ITERATIONS, ModelConfig,
     OnDisconnect, ToolConfig,

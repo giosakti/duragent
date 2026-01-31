@@ -438,6 +438,8 @@ async fn app_state_with_custom_timeouts() {
         admin_token: None,
         gateways: GatewayManager::new(),
         sandbox: Arc::new(TrustSandbox::new()),
+        policy_locks: Arc::new(dashmap::DashMap::new()),
+        session_locks: Arc::new(dashmap::DashMap::new()),
     };
 
     // Create an app with the custom state

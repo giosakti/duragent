@@ -84,6 +84,7 @@ pub async fn create_session(
         gateway: None,
         gateway_chat_id: None,
         pending_approval: None,
+        session_locks: &state.session_locks,
     };
     if let Err(e) = commit_event(
         &ctx,
@@ -203,6 +204,7 @@ pub async fn send_message(
         &session.agent,
         assistant_content.clone(),
         chat_response.usage.clone(),
+        &state.session_locks,
     )
     .await
     {
@@ -248,6 +250,7 @@ async fn send_message_agentic(
         sessions: state.sessions.clone(),
         sessions_path: state.sessions_path.clone(),
         session_id: session_id.to_string(),
+        session_locks: state.session_locks.clone(),
     };
     let result = match run_agentic_loop(
         ctx.provider,
@@ -337,6 +340,7 @@ pub async fn stream_session(
             on_disconnect: ctx.on_disconnect,
             sessions_path: state.sessions_path.clone(),
             background_tasks: state.background_tasks.clone(),
+            session_locks: state.session_locks.clone(),
         },
     );
 
@@ -404,6 +408,7 @@ pub async fn approve_command(
             call_id: req.call_id.clone(),
             decision,
         },
+        &state.session_locks,
     )
     .await
     {
@@ -420,21 +425,18 @@ pub async fn approve_command(
             .into_response();
     };
 
-    // If allow_always, save pattern to policy.local.yaml with locking
+    // If allow_always, save pattern to policy.local.yaml
     if req.decision == ApprovalDecision::AllowAlways {
-        // Get or create lock for this agent
-        let lock = state
-            .policy_locks
-            .entry(session.agent.clone())
-            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-
-        // Hold lock while reading, modifying, and writing
-        let _guard = lock.lock().await;
-        let mut policy = agent_spec.policy.clone();
-        policy.reload_local(&agent_spec.agent_dir).await;
-        policy.add_allow_pattern(crate::agent::ToolType::Bash, &req.command);
-        if let Err(e) = policy.save_local(&agent_spec.agent_dir).await {
+        if let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
+            &agent_spec.policy,
+            &agent_spec.agent_dir,
+            &session.agent,
+            crate::agent::ToolType::Bash,
+            &req.command,
+            &state.policy_locks,
+        )
+        .await
+        {
             debug!(
                 error = %e,
                 command = %req.command,
@@ -485,7 +487,13 @@ pub async fn approve_command(
     };
 
     // Clear pending approval
-    if let Err(e) = clear_pending_approval(&state.sessions, &state.sessions_path, &session_id).await
+    if let Err(e) = clear_pending_approval(
+        &state.sessions,
+        &state.sessions_path,
+        &session_id,
+        &state.session_locks,
+    )
+    .await
     {
         debug!(error = %e, "Failed to clear pending approval");
     }
@@ -526,6 +534,7 @@ pub async fn approve_command(
         sessions: state.sessions.clone(),
         sessions_path: state.sessions_path.clone(),
         session_id: session_id.clone(),
+        session_locks: state.session_locks.clone(),
     };
     let result = match resume_agentic_loop(
         provider,
@@ -631,6 +640,7 @@ async fn prepare_chat_context(
         SessionEventPayload::UserMessage {
             content: content_for_event,
         },
+        &state.session_locks,
     )
     .await
     {
@@ -697,6 +707,7 @@ async fn handle_agentic_result(
                 agent_name,
                 content.clone(),
                 usage,
+                &state.session_locks,
             )
             .await
             {
@@ -730,9 +741,14 @@ async fn handle_agentic_result(
 
         AgenticResult::AwaitingApproval { pending, .. } => {
             // Save pending approval to snapshot
-            if let Err(e) =
-                set_pending_approval(&state.sessions, &state.sessions_path, session_id, &pending)
-                    .await
+            if let Err(e) = set_pending_approval(
+                &state.sessions,
+                &state.sessions_path,
+                session_id,
+                &pending,
+                &state.session_locks,
+            )
+            .await
             {
                 return problem_details::internal_error(format!(
                     "failed to save pending approval: {}",

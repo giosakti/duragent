@@ -26,7 +26,7 @@ use crate::llm::{ChatStream, StreamEvent, Usage};
 use super::persist::{
     SessionContext, persist_assistant_message, record_event, write_session_snapshot,
 };
-use super::{SessionEventPayload, SessionStore};
+use super::{SessionEventPayload, SessionLocks, SessionStore};
 
 // ============================================================================
 // Public API
@@ -54,6 +54,8 @@ pub struct StreamConfig {
     pub sessions_path: PathBuf,
     /// Registry for background tasks.
     pub background_tasks: BackgroundTasks,
+    /// Per-session locks for disk I/O.
+    pub session_locks: SessionLocks,
 }
 
 /// A stream wrapper that accumulates token content and stores the assistant message when done.
@@ -80,6 +82,7 @@ pub struct AccumulatingStream {
     on_disconnect: OnDisconnect,
     background_tasks: BackgroundTasks,
     disconnect_tx: Option<oneshot::Sender<DisconnectPayload>>,
+    session_locks: SessionLocks,
 }
 
 impl AccumulatingStream {
@@ -97,6 +100,7 @@ impl AccumulatingStream {
             on_disconnect,
             sessions_path,
             background_tasks,
+            session_locks,
         } = config;
 
         // Clone the token for the stream wrapper
@@ -128,6 +132,7 @@ impl AccumulatingStream {
             message_id: message_id.clone(),
             sessions_path: sessions_path.clone(),
             on_disconnect,
+            session_locks: session_locks.clone(),
         };
         let handler_tasks = background_tasks.clone();
         handler_tasks.spawn(async move {
@@ -151,6 +156,7 @@ impl AccumulatingStream {
             on_disconnect,
             background_tasks,
             disconnect_tx: Some(disconnect_tx),
+            session_locks,
         }
     }
 
@@ -166,6 +172,7 @@ impl AccumulatingStream {
             let content = std::mem::take(&mut self.accumulated);
             let usage = self.last_usage.take();
             let sessions_path = self.sessions_path.clone();
+            let session_locks = self.session_locks.clone();
 
             debug!(
                 session_id = %session_id,
@@ -174,7 +181,7 @@ impl AccumulatingStream {
             );
 
             self.background_tasks.spawn(async move {
-                if let Err(e) = persist_assistant_message(&sessions, &sessions_path, &session_id, &agent, content, usage).await {
+                if let Err(e) = persist_assistant_message(&sessions, &sessions_path, &session_id, &agent, content, usage, &session_locks).await {
                     warn!(session_id = %session_id, error = %e, "Failed to persist assistant message");
                 }
             });
@@ -351,6 +358,7 @@ struct StreamContext {
     message_id: String,
     sessions_path: PathBuf,
     on_disconnect: OnDisconnect,
+    session_locks: SessionLocks,
 }
 
 impl StreamContext {
@@ -368,6 +376,7 @@ impl StreamContext {
             gateway: None,
             gateway_chat_id: None,
             pending_approval: None,
+            session_locks: &self.session_locks,
         }
     }
 }
@@ -395,6 +404,7 @@ async fn handle_disconnect(ctx: StreamContext, payload: DisconnectPayload) {
                         &ctx.agent,
                         payload.accumulated,
                         None,
+                        &ctx.session_locks,
                     )
                     .await
                 {
@@ -436,6 +446,7 @@ async fn handle_disconnect(ctx: StreamContext, payload: DisconnectPayload) {
                     &ctx.agent,
                     payload.accumulated,
                     None,
+                    &ctx.session_locks,
                 )
                 .await
             {
@@ -528,6 +539,7 @@ async fn continue_stream_in_background(
         &ctx.session_id,
         &ctx.message_id,
         accumulated,
+        &ctx.session_locks,
     )
     .await;
 
@@ -540,6 +552,7 @@ async fn continue_stream_in_background(
             &ctx.agent,
             result.accumulated,
             result.usage,
+            &ctx.session_locks,
         )
         .await
     {
@@ -597,6 +610,7 @@ async fn consume_stream_to_completion(
     session_id: &str,
     message_id: &str,
     mut accumulated: String,
+    session_locks: &SessionLocks,
 ) -> ConsumeResult {
     let mut last_usage: Option<Usage> = None;
 
@@ -637,6 +651,7 @@ async fn consume_stream_to_completion(
                         code: "timeout".to_string(),
                         message: "stream idle timeout in background".to_string(),
                     },
+                    session_locks,
                 )
                 .await
                 {
@@ -663,6 +678,7 @@ async fn consume_stream_to_completion(
                         code: "llm_error".to_string(),
                         message: e.to_string(),
                     },
+                    session_locks,
                 )
                 .await
                 {

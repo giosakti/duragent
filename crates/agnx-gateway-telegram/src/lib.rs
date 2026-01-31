@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use agnx_gateway_protocol::{
-    GatewayCommand, GatewayEvent, MessageContent, MessageReceivedData, RoutingContext, Sender,
-    capabilities,
+    CallbackQueryData, GatewayCommand, GatewayEvent, InlineKeyboard, MessageContent,
+    MessageReceivedData, RoutingContext, Sender, capabilities,
 };
 use teloxide::prelude::*;
 use teloxide::types::{MediaKind, MessageKind};
@@ -84,6 +84,7 @@ impl TelegramGateway {
                 capabilities::DELETE.to_string(),
                 capabilities::TYPING.to_string(),
                 capabilities::REPLY.to_string(),
+                capabilities::INLINE_KEYBOARD.to_string(),
             ],
         };
         if event_tx.send(ready_event).await.is_err() {
@@ -94,7 +95,7 @@ impl TelegramGateway {
         info!("Telegram gateway starting");
 
         // Build dispatcher and get shutdown token for graceful shutdown
-        let handler = Update::filter_message().endpoint({
+        let message_handler = Update::filter_message().endpoint({
             let event_tx = event_tx.clone();
             move |bot: Bot, msg: Message| {
                 let event_tx = event_tx.clone();
@@ -106,6 +107,23 @@ impl TelegramGateway {
                 }
             }
         });
+
+        let callback_handler = Update::filter_callback_query().endpoint({
+            let event_tx = event_tx.clone();
+            move |bot: Bot, query: teloxide::types::CallbackQuery| {
+                let event_tx = event_tx.clone();
+                async move {
+                    if let Err(e) = handle_callback_query(&bot, &query, &event_tx).await {
+                        warn!(error = %e, "Failed to handle callback query");
+                    }
+                    respond(())
+                }
+            }
+        });
+
+        let handler = dptree::entry()
+            .branch(message_handler)
+            .branch(callback_handler);
 
         let mut dispatcher = Dispatcher::builder(bot.clone(), handler).build();
         let shutdown_token = dispatcher.shutdown_token();
@@ -124,12 +142,14 @@ impl TelegramGateway {
                         chat_id,
                         content,
                         reply_to,
+                        inline_keyboard,
                     } => {
                         let result = send_message(
                             &bot_for_commands,
                             &chat_id,
                             &content,
                             reply_to.as_deref(),
+                            inline_keyboard.as_ref(),
                         )
                         .await;
 
@@ -221,6 +241,32 @@ impl TelegramGateway {
                         }
                     }
 
+                    GatewayCommand::AnswerCallbackQuery {
+                        request_id,
+                        callback_query_id,
+                        text,
+                    } => {
+                        let result =
+                            answer_callback_query(&bot_for_commands, &callback_query_id, text)
+                                .await;
+
+                        let event = match result {
+                            Ok(_) => GatewayEvent::CommandOk {
+                                request_id,
+                                message_id: None,
+                            },
+                            Err(e) => GatewayEvent::CommandError {
+                                request_id,
+                                code: "answer_callback_failed".to_string(),
+                                message: e,
+                            },
+                        };
+
+                        if event_tx_for_commands.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+
                     GatewayCommand::Shutdown => {
                         info!("Telegram gateway received shutdown command");
                         // Trigger graceful shutdown of the dispatcher
@@ -301,6 +347,50 @@ async fn handle_message(
         reply_to: msg.reply_to_message().map(|m| m.id.0.to_string()),
         timestamp: Some(msg.date),
         metadata: serde_json::json!({}),
+    }));
+
+    event_tx.send(event).await?;
+    Ok(())
+}
+
+async fn handle_callback_query(
+    _bot: &Bot,
+    query: &teloxide::types::CallbackQuery,
+    event_tx: &mpsc::Sender<GatewayEvent>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(data) = &query.data else {
+        debug!("Ignoring callback query without data");
+        return Ok(());
+    };
+
+    let Some(message) = &query.message else {
+        debug!("Ignoring callback query without message");
+        return Ok(());
+    };
+
+    let chat_id = message.chat().id.0.to_string();
+    let message_id = message.id().0.to_string();
+
+    let sender = Sender {
+        id: query.from.id.0.to_string(),
+        username: query.from.username.clone(),
+        display_name: Some(
+            format!(
+                "{} {}",
+                query.from.first_name,
+                query.from.last_name.as_deref().unwrap_or("")
+            )
+            .trim()
+            .to_string(),
+        ),
+    };
+
+    let event = GatewayEvent::CallbackQuery(Box::new(CallbackQueryData {
+        callback_query_id: query.id.to_string(),
+        chat_id,
+        sender,
+        message_id,
+        data: data.clone(),
     }));
 
     event_tx.send(event).await?;
@@ -420,6 +510,7 @@ async fn send_message(
     chat_id: &str,
     content: &str,
     reply_to: Option<&str>,
+    inline_keyboard: Option<&InlineKeyboard>,
 ) -> Result<String, String> {
     let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
 
@@ -433,8 +524,47 @@ async fn send_message(
         ));
     }
 
+    // Add inline keyboard if provided
+    if let Some(keyboard) = inline_keyboard {
+        let tg_keyboard = convert_inline_keyboard(keyboard);
+        request = request.reply_markup(tg_keyboard);
+    }
+
     let msg = request.await.map_err(|e| e.to_string())?;
     Ok(msg.id.0.to_string())
+}
+
+/// Convert protocol InlineKeyboard to teloxide InlineKeyboardMarkup.
+fn convert_inline_keyboard(keyboard: &InlineKeyboard) -> teloxide::types::InlineKeyboardMarkup {
+    let buttons: Vec<Vec<teloxide::types::InlineKeyboardButton>> = keyboard
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|btn| {
+                    teloxide::types::InlineKeyboardButton::callback(&btn.text, &btn.callback_data)
+                })
+                .collect()
+        })
+        .collect();
+
+    teloxide::types::InlineKeyboardMarkup::new(buttons)
+}
+
+async fn answer_callback_query(
+    bot: &Bot,
+    callback_query_id: &str,
+    text: Option<String>,
+) -> Result<(), String> {
+    let query_id = teloxide::types::CallbackQueryId(callback_query_id.to_string());
+    let mut request = bot.answer_callback_query(query_id);
+
+    if let Some(text) = text {
+        request = request.text(text);
+    }
+
+    request.await.map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn edit_message(

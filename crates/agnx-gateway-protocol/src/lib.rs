@@ -48,6 +48,9 @@ pub enum GatewayCommand {
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to: Option<String>,
+        /// Optional inline keyboard for approval prompts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_keyboard: Option<InlineKeyboard>,
     },
 
     /// Send media (image, video, audio, document) to a chat.
@@ -85,8 +88,51 @@ pub enum GatewayCommand {
     /// Health check / ping.
     Ping { request_id: String },
 
+    /// Answer a callback query (dismiss loading indicator on button press).
+    AnswerCallbackQuery {
+        request_id: String,
+        callback_query_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+
     /// Request graceful shutdown.
     Shutdown,
+}
+
+/// Inline keyboard for interactive buttons in messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineKeyboard {
+    /// Rows of buttons (each row is a Vec of buttons).
+    pub rows: Vec<Vec<InlineButton>>,
+}
+
+/// A button in an inline keyboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineButton {
+    /// Button text displayed to user.
+    pub text: String,
+    /// Callback data sent when button is pressed.
+    pub callback_data: String,
+}
+
+impl InlineKeyboard {
+    /// Create a single-row keyboard with the given buttons.
+    pub fn single_row(buttons: Vec<InlineButton>) -> Self {
+        Self {
+            rows: vec![buttons],
+        }
+    }
+}
+
+impl InlineButton {
+    /// Create a new button.
+    pub fn new(text: impl Into<String>, callback_data: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            callback_data: callback_data.into(),
+        }
+    }
 }
 
 /// Media payload for SendMedia command.
@@ -127,6 +173,9 @@ pub enum GatewayEvent {
     /// Incoming message from a user.
     MessageReceived(Box<MessageReceivedData>),
 
+    /// Callback query from inline keyboard button press.
+    CallbackQuery(Box<CallbackQueryData>),
+
     /// Command completed successfully.
     CommandOk {
         request_id: String,
@@ -165,6 +214,21 @@ pub enum GatewayEvent {
 
     /// Authentication successful.
     AuthSuccess,
+}
+
+/// Data for a callback query event (inline keyboard button press).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallbackQueryData {
+    /// Unique identifier for this callback query.
+    pub callback_query_id: String,
+    /// Chat where the callback originated.
+    pub chat_id: String,
+    /// User who pressed the button.
+    pub sender: Sender,
+    /// Message ID that contained the inline keyboard.
+    pub message_id: String,
+    /// Data from the pressed button.
+    pub data: String,
 }
 
 /// Data for an incoming message event.
@@ -294,6 +358,8 @@ pub mod capabilities {
     pub const TYPING: &str = "typing";
     /// Gateway supports reply-to (threading).
     pub const REPLY: &str = "reply";
+    /// Gateway supports inline keyboards for interactive buttons.
+    pub const INLINE_KEYBOARD: &str = "inline_keyboard";
 }
 
 // ============================================================================
@@ -329,6 +395,7 @@ mod tests {
             chat_id: "123".to_string(),
             content: "Hello!".to_string(),
             reply_to: None,
+            inline_keyboard: None,
         };
 
         let json = serde_json::to_string(&cmd).unwrap();
