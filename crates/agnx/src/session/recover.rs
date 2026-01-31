@@ -9,6 +9,8 @@ use tokio::fs;
 use tracing::{debug, info, warn};
 
 use super::error::{Result, SessionError};
+use super::events::SessionEventPayload;
+use super::persist::{clear_pending_approval, record_event};
 use super::{Session, SessionStore, resume_session};
 use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
@@ -130,8 +132,29 @@ async fn recover_single_session(
         }
     };
 
+    // Check for expired pending approval before determining status
+    let mut final_config = resumed.config.clone();
+    let mut status_override = None;
+
+    if let Some(ref pending) = resumed.config.pending_approval
+        && pending.is_expired()
+    {
+        debug!(
+            session_id = %session_id,
+            call_id = %pending.call_id,
+            "Pending approval expired during downtime, auto-denying"
+        );
+
+        // Record timeout event (store not available yet, do it after registration)
+        // Clear pending approval from config
+        final_config.pending_approval = None;
+
+        // Override status to Active (no longer waiting for approval)
+        status_override = Some(SessionStatus::Active);
+    }
+
     // Determine if we should recover this session
-    let status = match resumed.status {
+    let status = status_override.unwrap_or(match resumed.status {
         SessionStatus::Active => SessionStatus::Active,
         SessionStatus::Paused => SessionStatus::Paused,
         SessionStatus::Running => {
@@ -164,7 +187,7 @@ async fn recover_single_session(
             );
             return Ok(false);
         }
-    };
+    });
 
     // Capture values for logging before moving
     let session_id_for_log = resumed.session_id.clone();
@@ -182,6 +205,40 @@ async fn recover_single_session(
 
     // Register the session with its messages
     store.register(session, resumed.conversation).await;
+
+    // Handle expired pending approval after registration
+    // (we need the store to be available for recording events)
+    if let Some(ref pending) = resumed.config.pending_approval
+        && pending.is_expired()
+    {
+        // Record timeout event
+        if let Err(e) = record_event(
+            store,
+            sessions_dir,
+            &session_id_for_log,
+            SessionEventPayload::ApprovalTimeout {
+                call_id: pending.call_id.clone(),
+                command: pending.command.clone(),
+            },
+        )
+        .await
+        {
+            warn!(
+                session_id = %session_id_for_log,
+                error = %e,
+                "Failed to record approval timeout during recovery"
+            );
+        }
+
+        // Clear pending approval from snapshot
+        if let Err(e) = clear_pending_approval(store, sessions_dir, &session_id_for_log).await {
+            warn!(
+                session_id = %session_id_for_log,
+                error = %e,
+                "Failed to clear expired pending approval during recovery"
+            );
+        }
+    }
 
     info!(
         session_id = %session_id_for_log,

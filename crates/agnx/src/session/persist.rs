@@ -13,7 +13,7 @@ use super::SessionStore;
 use super::error::Result;
 use super::event_writer::EventWriter;
 use super::events::{SessionEvent, SessionEventPayload};
-use super::snapshot::{SessionConfig, SessionSnapshot};
+use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
 use super::snapshot_writer::write_snapshot;
 use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
@@ -38,6 +38,8 @@ pub struct SessionContext<'a> {
     pub gateway: Option<&'a str>,
     /// Platform-specific chat identifier (for routing persistence).
     pub gateway_chat_id: Option<&'a str>,
+    /// Pending approval waiting for user decision.
+    pub pending_approval: Option<&'a PendingApproval>,
 }
 
 // ============================================================================
@@ -165,6 +167,90 @@ fn build_snapshot(
             on_disconnect: ctx.on_disconnect,
             gateway: ctx.gateway.map(String::from),
             gateway_chat_id: ctx.gateway_chat_id.map(String::from),
+            pending_approval: ctx.pending_approval.cloned(),
         },
     )
+}
+
+// ============================================================================
+// Pending Approval Helpers
+// ============================================================================
+
+/// Set a pending approval on a session snapshot.
+///
+/// This persists the pending approval to disk for crash recovery.
+pub async fn set_pending_approval(
+    _sessions: &SessionStore,
+    sessions_path: &Path,
+    session_id: &str,
+    pending: &PendingApproval,
+) -> Result<()> {
+    // Load existing snapshot
+    let snapshot = super::load_snapshot(sessions_path, session_id)
+        .await?
+        .ok_or_else(|| super::error::SessionError::NotFound(session_id.to_string()))?;
+
+    // Create updated config with pending approval
+    let config = SessionConfig {
+        pending_approval: Some(pending.clone()),
+        ..snapshot.config
+    };
+
+    // Write updated snapshot
+    let new_snapshot = SessionSnapshot::new(
+        snapshot.session_id,
+        snapshot.agent,
+        snapshot.status,
+        snapshot.created_at,
+        snapshot.last_event_seq,
+        snapshot.conversation,
+        config,
+    );
+    super::write_snapshot(sessions_path, session_id, &new_snapshot).await
+}
+
+/// Clear a pending approval from a session snapshot.
+///
+/// Call this after the approval decision is processed.
+pub async fn clear_pending_approval(
+    _sessions: &SessionStore,
+    sessions_path: &Path,
+    session_id: &str,
+) -> Result<()> {
+    // Load existing snapshot
+    let snapshot = super::load_snapshot(sessions_path, session_id)
+        .await?
+        .ok_or_else(|| super::error::SessionError::NotFound(session_id.to_string()))?;
+
+    // Skip if there's no pending approval
+    if snapshot.config.pending_approval.is_none() {
+        return Ok(());
+    }
+
+    // Create updated config without pending approval
+    let config = SessionConfig {
+        pending_approval: None,
+        ..snapshot.config
+    };
+
+    // Write updated snapshot
+    let new_snapshot = SessionSnapshot::new(
+        snapshot.session_id,
+        snapshot.agent,
+        snapshot.status,
+        snapshot.created_at,
+        snapshot.last_event_seq,
+        snapshot.conversation,
+        config,
+    );
+    super::write_snapshot(sessions_path, session_id, &new_snapshot).await
+}
+
+/// Load the pending approval for a session, if any.
+pub async fn get_pending_approval(
+    sessions_path: &Path,
+    session_id: &str,
+) -> Result<Option<PendingApproval>> {
+    let snapshot = super::load_snapshot(sessions_path, session_id).await?;
+    Ok(snapshot.and_then(|s| s.config.pending_approval))
 }

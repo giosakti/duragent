@@ -367,6 +367,7 @@ impl StreamContext {
             // SSE streams are created via HTTP API, not gateways
             gateway: None,
             gateway_chat_id: None,
+            pending_approval: None,
         }
     }
 }
