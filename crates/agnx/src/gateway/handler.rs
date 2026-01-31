@@ -1074,4 +1074,73 @@ mod tests {
         assert!(!matches_rule(&conditions, "telegram", &routing_lower));
         assert!(matches_rule(&conditions, "telegram", &routing_exact));
     }
+
+    // ------------------------------------------------------------------------
+    // truncate_command - Command display truncation
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn truncate_command_short_command_unchanged() {
+        let result = truncate_command("ls -la", 50);
+        assert_eq!(result, "ls -la");
+    }
+
+    #[test]
+    fn truncate_command_long_command_truncated() {
+        let result = truncate_command("npm install --save-dev some-very-long-package-name", 20);
+        assert_eq!(result, "npm install --save-d...");
+    }
+
+    #[test]
+    fn truncate_command_multiline_uses_first_line() {
+        let command = "echo 'hello'\necho 'world'\necho 'goodbye'";
+        let result = truncate_command(command, 50);
+        assert_eq!(result, "echo 'hello'");
+    }
+
+    #[test]
+    fn truncate_command_multiline_first_line_truncated() {
+        let command = "npm install --save-dev package\nmore stuff";
+        let result = truncate_command(command, 15);
+        assert_eq!(result, "npm install --s...");
+    }
+
+    #[test]
+    fn truncate_command_exact_length() {
+        let result = truncate_command("12345", 5);
+        assert_eq!(result, "12345");
+    }
+
+    // ------------------------------------------------------------------------
+    // RoutingConfig - Configuration
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn routing_config_new_from_rules() {
+        use crate::config::RoutingRule;
+
+        let rules = vec![
+            RoutingRule {
+                agent: "agent1".to_string(),
+                match_conditions: RoutingMatch {
+                    gateway: Some("telegram".to_string()),
+                    ..Default::default()
+                },
+            },
+            RoutingRule {
+                agent: "default".to_string(),
+                match_conditions: RoutingMatch::default(),
+            },
+        ];
+
+        let config = RoutingConfig::new(rules);
+        assert_eq!(config.rules.len(), 2);
+        assert_eq!(config.rules[0].agent, "agent1");
+    }
+
+    #[test]
+    fn routing_config_empty() {
+        let config = RoutingConfig::empty();
+        assert!(config.rules.is_empty());
+    }
 }

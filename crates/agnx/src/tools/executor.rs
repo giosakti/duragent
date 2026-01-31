@@ -320,8 +320,13 @@ fn extract_bash_command(arguments: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::PolicyMode;
     use crate::sandbox::TrustSandbox;
     use tempfile::TempDir;
+
+    // ------------------------------------------------------------------------
+    // Test Helpers
+    // ------------------------------------------------------------------------
 
     fn test_executor(tools: Vec<ToolConfig>) -> ToolExecutor {
         let sandbox = Arc::new(TrustSandbox);
@@ -330,6 +335,17 @@ mod tests {
             sandbox,
             std::path::PathBuf::from("/tmp"),
             ToolPolicy::default(),
+            "test-agent".to_string(),
+        )
+    }
+
+    fn test_executor_with_policy(tools: Vec<ToolConfig>, policy: ToolPolicy) -> ToolExecutor {
+        let sandbox = Arc::new(TrustSandbox);
+        ToolExecutor::new(
+            tools,
+            sandbox,
+            std::path::PathBuf::from("/tmp"),
+            policy,
             "test-agent".to_string(),
         )
     }
@@ -344,6 +360,119 @@ mod tests {
             "test-agent".to_string(),
         )
     }
+
+    fn bash_tool_call(command: &str) -> ToolCall {
+        ToolCall {
+            id: "call_1".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: "bash".to_string(),
+                arguments: format!(r#"{{"command": "{}"}}"#, command),
+            },
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // ToolResult::from_exec - Result building
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn tool_result_from_exec_success_with_stdout() {
+        let exec_result = ExecResult {
+            exit_code: 0,
+            stdout: "hello world\n".to_string(),
+            stderr: String::new(),
+        };
+
+        let result = ToolResult::from_exec(exec_result);
+
+        assert!(result.success);
+        assert_eq!(result.content, "hello world\n");
+    }
+
+    #[test]
+    fn tool_result_from_exec_failure_with_stderr() {
+        let exec_result = ExecResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "error: file not found\n".to_string(),
+        };
+
+        let result = ToolResult::from_exec(exec_result);
+
+        assert!(!result.success);
+        assert_eq!(result.content, "error: file not found\n");
+    }
+
+    #[test]
+    fn tool_result_from_exec_mixed_stdout_stderr() {
+        let exec_result = ExecResult {
+            exit_code: 0,
+            stdout: "output\n".to_string(),
+            stderr: "warning: something\n".to_string(),
+        };
+
+        let result = ToolResult::from_exec(exec_result);
+
+        assert!(result.success);
+        assert!(result.content.contains("output"));
+        assert!(result.content.contains("--- stderr ---"));
+        assert!(result.content.contains("warning: something"));
+    }
+
+    #[test]
+    fn tool_result_from_exec_empty_output_shows_exit_code() {
+        let exec_result = ExecResult {
+            exit_code: 42,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+
+        let result = ToolResult::from_exec(exec_result);
+
+        assert!(!result.success);
+        assert!(result.content.contains("exit code 42"));
+    }
+
+    // ------------------------------------------------------------------------
+    // extract_bash_command - Argument parsing
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn extract_bash_command_valid_json() {
+        let args = r#"{"command": "ls -la"}"#;
+        assert_eq!(extract_bash_command(args), "ls -la");
+    }
+
+    #[test]
+    fn extract_bash_command_invalid_json_returns_raw() {
+        let args = "not valid json";
+        assert_eq!(extract_bash_command(args), "not valid json");
+    }
+
+    #[test]
+    fn extract_bash_command_missing_field_returns_raw() {
+        let args = r#"{"other": "value"}"#;
+        assert_eq!(extract_bash_command(args), r#"{"other": "value"}"#);
+    }
+
+    // ------------------------------------------------------------------------
+    // unknown_builtin_definition - Fallback definitions
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn unknown_builtin_definition_creates_valid_definition() {
+        let def = unknown_builtin_definition("custom-tool");
+
+        assert_eq!(def.tool_type, "function");
+        assert_eq!(def.function.name, "custom-tool");
+        assert!(def.function.description.contains("custom-tool"));
+        assert!(def.function.parameters.is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // tool_definitions - Definition generation
+    // ------------------------------------------------------------------------
 
     #[test]
     fn tool_definitions_for_builtin_bash() {
@@ -372,6 +501,40 @@ mod tests {
         assert_eq!(defs[0].function.description, "Run git commands");
     }
 
+    #[test]
+    fn tool_definitions_for_multiple_tools() {
+        let executor = test_executor(vec![
+            ToolConfig::Builtin {
+                name: "bash".to_string(),
+            },
+            ToolConfig::Cli {
+                name: "deploy".to_string(),
+                command: "./deploy.sh".to_string(),
+                readme: None,
+                description: None,
+            },
+        ]);
+
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 2);
+    }
+
+    #[test]
+    fn tool_definitions_for_unknown_builtin() {
+        let executor = test_executor(vec![ToolConfig::Builtin {
+            name: "unknown-builtin".to_string(),
+        }]);
+
+        let defs = executor.tool_definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].function.name, "unknown-builtin");
+        assert!(defs[0].function.description.contains("unknown-builtin"));
+    }
+
+    // ------------------------------------------------------------------------
+    // execute - Tool execution with policy
+    // ------------------------------------------------------------------------
+
     #[tokio::test]
     async fn execute_bash_command() {
         let temp_dir = TempDir::new().unwrap();
@@ -382,19 +545,147 @@ mod tests {
             &temp_dir,
         );
 
+        let tool_call = bash_tool_call("echo hello");
+        let result = executor.execute(&tool_call).await.unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn execute_returns_not_found_for_unknown_tool() {
+        let executor = test_executor(vec![]);
+
         let tool_call = ToolCall {
             id: "call_1".to_string(),
             tool_type: "function".to_string(),
             function: crate::llm::FunctionCall {
-                name: "bash".to_string(),
-                arguments: r#"{"command": "echo hello"}"#.to_string(),
+                name: "nonexistent".to_string(),
+                arguments: "{}".to_string(),
             },
         };
 
-        let result = executor.execute(&tool_call).await.unwrap();
-        assert!(result.success);
-        assert!(result.content.contains("hello"));
+        let result = executor.execute(&tool_call).await;
+
+        assert!(matches!(result, Err(ToolError::NotFound(_))));
     }
+
+    #[tokio::test]
+    async fn execute_denies_command_when_policy_denies() {
+        let policy = ToolPolicy {
+            mode: PolicyMode::Dangerous,
+            deny: vec!["bash:rm *".to_string()],
+            ..Default::default()
+        };
+        let executor = test_executor_with_policy(
+            vec![ToolConfig::Builtin {
+                name: "bash".to_string(),
+            }],
+            policy,
+        );
+
+        let tool_call = bash_tool_call("rm -rf /tmp/test");
+        let result = executor.execute(&tool_call).await;
+
+        assert!(matches!(result, Err(ToolError::PolicyDenied(_))));
+    }
+
+    #[tokio::test]
+    async fn execute_requires_approval_in_ask_mode() {
+        let policy = ToolPolicy {
+            mode: PolicyMode::Ask,
+            allow: vec![], // Nothing pre-allowed
+            ..Default::default()
+        };
+        let executor = test_executor_with_policy(
+            vec![ToolConfig::Builtin {
+                name: "bash".to_string(),
+            }],
+            policy,
+        );
+
+        let tool_call = bash_tool_call("echo hello");
+        let result = executor.execute(&tool_call).await;
+
+        match result {
+            Err(ToolError::ApprovalRequired { call_id, command }) => {
+                assert_eq!(call_id, "call_1");
+                assert_eq!(command, "echo hello");
+            }
+            _ => panic!("Expected ApprovalRequired error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_allows_pre_approved_command_in_ask_mode() {
+        let policy = ToolPolicy {
+            mode: PolicyMode::Ask,
+            allow: vec!["bash:echo *".to_string()],
+            ..Default::default()
+        };
+        let temp_dir = TempDir::new().unwrap();
+        let sandbox = Arc::new(TrustSandbox);
+        let executor = ToolExecutor::new(
+            vec![ToolConfig::Builtin {
+                name: "bash".to_string(),
+            }],
+            sandbox,
+            temp_dir.path().to_path_buf(),
+            policy,
+            "test-agent".to_string(),
+        );
+
+        let tool_call = bash_tool_call("echo hello");
+        let result = executor.execute(&tool_call).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().content.contains("hello"));
+    }
+
+    // ------------------------------------------------------------------------
+    // execute_bypassing_policy - Approved execution
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn execute_bypassing_policy_ignores_deny_list() {
+        let policy = ToolPolicy {
+            mode: PolicyMode::Dangerous,
+            deny: vec!["bash:*".to_string()], // Deny everything
+            ..Default::default()
+        };
+        let temp_dir = TempDir::new().unwrap();
+        let sandbox = Arc::new(TrustSandbox);
+        let executor = ToolExecutor::new(
+            vec![ToolConfig::Builtin {
+                name: "bash".to_string(),
+            }],
+            sandbox,
+            temp_dir.path().to_path_buf(),
+            policy,
+            "test-agent".to_string(),
+        );
+
+        let tool_call = bash_tool_call("echo bypassed");
+        let result = executor.execute_bypassing_policy(&tool_call).await;
+
+        // Should succeed despite deny policy
+        assert!(result.is_ok());
+        assert!(result.unwrap().content.contains("bypassed"));
+    }
+
+    // ------------------------------------------------------------------------
+    // with_session_id - Builder pattern
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn with_session_id_sets_session() {
+        let executor = test_executor(vec![]).with_session_id("session-123".to_string());
+        assert_eq!(executor.session_id, Some("session-123".to_string()));
+    }
+
+    // ------------------------------------------------------------------------
+    // has_tools - Tool availability check
+    // ------------------------------------------------------------------------
 
     #[test]
     fn has_tools_returns_false_when_empty() {
@@ -408,5 +699,72 @@ mod tests {
             name: "bash".to_string(),
         }]);
         assert!(executor.has_tools());
+    }
+
+    // ------------------------------------------------------------------------
+    // load_readme - README caching
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn load_readme_returns_none_for_builtin() {
+        let executor = test_executor(vec![ToolConfig::Builtin {
+            name: "bash".to_string(),
+        }]);
+
+        let readme = executor.load_readme("bash").await;
+        assert!(readme.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_readme_returns_none_for_unknown_tool() {
+        let executor = test_executor(vec![]);
+
+        let readme = executor.load_readme("nonexistent").await;
+        assert!(readme.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_readme_reads_and_caches_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let readme_path = temp_dir.path().join("tools").join("git-helper.md");
+        std::fs::create_dir_all(readme_path.parent().unwrap()).unwrap();
+        std::fs::write(&readme_path, "# Git Helper\n\nUsage instructions.").unwrap();
+
+        let executor = test_executor_with_dir(
+            vec![ToolConfig::Cli {
+                name: "git-helper".to_string(),
+                command: "./tools/git-helper.sh".to_string(),
+                readme: Some("tools/git-helper.md".to_string()),
+                description: None,
+            }],
+            &temp_dir,
+        );
+
+        // First load
+        let readme = executor.load_readme("git-helper").await;
+        assert!(readme.is_some());
+        assert!(readme.as_ref().unwrap().contains("Git Helper"));
+
+        // Second load should use cache
+        let readme2 = executor.load_readme("git-helper").await;
+        assert_eq!(readme, readme2);
+    }
+
+    #[tokio::test]
+    async fn load_readme_returns_none_for_missing_file() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let executor = test_executor_with_dir(
+            vec![ToolConfig::Cli {
+                name: "git-helper".to_string(),
+                command: "./tools/git-helper.sh".to_string(),
+                readme: Some("nonexistent.md".to_string()),
+                description: None,
+            }],
+            &temp_dir,
+        );
+
+        let readme = executor.load_readme("git-helper").await;
+        assert!(readme.is_none());
     }
 }

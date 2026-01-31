@@ -295,3 +295,280 @@ pub async fn get_pending_approval(
     let snapshot = super::load_snapshot(sessions_path, session_id).await?;
     Ok(snapshot.and_then(|s| s.config.pending_approval))
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ------------------------------------------------------------------------
+    // Test Helpers
+    // ------------------------------------------------------------------------
+
+    fn create_test_locks() -> SessionLocks {
+        Arc::new(dashmap::DashMap::new())
+    }
+
+    async fn create_test_session(sessions: &SessionStore) -> String {
+        let session = sessions.create("test-agent").await;
+        session.id.clone()
+    }
+
+    async fn setup_session_with_snapshot(tmp: &TempDir, session_id: &str) {
+        use super::super::snapshot_writer::write_snapshot;
+
+        let session_dir = tmp.path().join(session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let snapshot = SessionSnapshot::new(
+            session_id.to_string(),
+            "test-agent".to_string(),
+            SessionStatus::Active,
+            Utc::now(),
+            0,
+            vec![],
+            SessionConfig::default(),
+        );
+        write_snapshot(tmp.path(), session_id, &snapshot)
+            .await
+            .unwrap();
+    }
+
+    // ------------------------------------------------------------------------
+    // get_session_lock - Lock acquisition
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_session_lock_creates_new_lock_for_session() {
+        let locks = create_test_locks();
+
+        let lock = get_session_lock(&locks, "session-1");
+
+        // Lock should be acquirable
+        let guard = lock.try_lock();
+        assert!(guard.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_session_lock_returns_same_lock_for_same_session() {
+        let locks = create_test_locks();
+
+        let lock1 = get_session_lock(&locks, "session-1");
+        let lock2 = get_session_lock(&locks, "session-1");
+
+        // Same Arc pointer
+        assert!(Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[tokio::test]
+    async fn get_session_lock_creates_separate_locks_for_different_sessions() {
+        let locks = create_test_locks();
+
+        let lock1 = get_session_lock(&locks, "session-1");
+        let lock2 = get_session_lock(&locks, "session-2");
+
+        // Different Arc pointers
+        assert!(!Arc::ptr_eq(&lock1, &lock2));
+
+        // Both can be locked simultaneously
+        let _guard1 = lock1.try_lock().unwrap();
+        let guard2 = lock2.try_lock();
+        assert!(guard2.is_ok());
+    }
+
+    // ------------------------------------------------------------------------
+    // record_event - Event recording
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn record_event_writes_to_event_log() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        let seq = record_event(
+            &sessions,
+            tmp.path(),
+            &session_id,
+            SessionEventPayload::UserMessage {
+                content: "Hello".to_string(),
+            },
+            &locks,
+        )
+        .await
+        .unwrap();
+
+        // Sequence starts at 1 (session creation uses 0)
+        assert!(seq >= 0);
+
+        // Verify event file exists
+        let event_file = tmp.path().join(&session_id).join("events.jsonl");
+        assert!(event_file.exists());
+    }
+
+    #[tokio::test]
+    async fn record_event_increments_sequence_number() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        let seq1 = record_event(
+            &sessions,
+            tmp.path(),
+            &session_id,
+            SessionEventPayload::UserMessage {
+                content: "First".to_string(),
+            },
+            &locks,
+        )
+        .await
+        .unwrap();
+
+        let seq2 = record_event(
+            &sessions,
+            tmp.path(),
+            &session_id,
+            SessionEventPayload::UserMessage {
+                content: "Second".to_string(),
+            },
+            &locks,
+        )
+        .await
+        .unwrap();
+
+        // Each event increments the sequence
+        assert_eq!(seq2, seq1 + 1);
+    }
+
+    // ------------------------------------------------------------------------
+    // persist_assistant_message - Message persistence
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn persist_assistant_message_adds_to_session_and_logs() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        let seq = persist_assistant_message(
+            &sessions,
+            tmp.path(),
+            &session_id,
+            "test-agent",
+            "Hello, I'm the assistant".to_string(),
+            None,
+            &locks,
+        )
+        .await
+        .unwrap();
+
+        // Sequence number should be valid
+        assert!(seq >= 0);
+
+        // Verify message was added to session
+        let messages = sessions.get_messages(&session_id).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].content.as_deref(),
+            Some("Hello, I'm the assistant")
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Pending approval - Set, get, clear
+    // ------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn set_and_get_pending_approval() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        // Setup: create initial snapshot
+        setup_session_with_snapshot(&tmp, &session_id).await;
+
+        // Set pending approval
+        let pending = PendingApproval::new(
+            "call-123".to_string(),
+            "bash".to_string(),
+            serde_json::json!({"command": "ls -la"}),
+            "ls -la".to_string(),
+            vec![],
+        );
+        set_pending_approval(&sessions, tmp.path(), &session_id, &pending, &locks)
+            .await
+            .unwrap();
+
+        // Get pending approval
+        let retrieved = get_pending_approval(tmp.path(), &session_id).await.unwrap();
+
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.call_id, "call-123");
+        assert_eq!(retrieved.command, "ls -la");
+    }
+
+    #[tokio::test]
+    async fn clear_pending_approval_removes_approval() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        // Setup: create snapshot with pending approval
+        setup_session_with_snapshot(&tmp, &session_id).await;
+
+        let pending = PendingApproval::new(
+            "call-456".to_string(),
+            "bash".to_string(),
+            serde_json::json!({}),
+            "rm -rf".to_string(),
+            vec![],
+        );
+        set_pending_approval(&sessions, tmp.path(), &session_id, &pending, &locks)
+            .await
+            .unwrap();
+
+        // Clear it
+        clear_pending_approval(&sessions, tmp.path(), &session_id, &locks)
+            .await
+            .unwrap();
+
+        // Verify it's gone
+        let retrieved = get_pending_approval(tmp.path(), &session_id).await.unwrap();
+        assert!(retrieved.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_pending_approval_returns_none_when_no_snapshot() {
+        let tmp = TempDir::new().unwrap();
+
+        let result = get_pending_approval(tmp.path(), "nonexistent-session").await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn clear_pending_approval_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let sessions = SessionStore::new();
+        let session_id = create_test_session(&sessions).await;
+        let locks = create_test_locks();
+
+        // Setup: create snapshot without pending approval
+        setup_session_with_snapshot(&tmp, &session_id).await;
+
+        // Clear when nothing is pending - should not error
+        let result = clear_pending_approval(&sessions, tmp.path(), &session_id, &locks).await;
+        assert!(result.is_ok());
+    }
+}
