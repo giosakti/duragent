@@ -440,6 +440,7 @@ async fn app_state_with_custom_timeouts() {
         sandbox: Arc::new(TrustSandbox::new()),
         policy_locks: Arc::new(dashmap::DashMap::new()),
         session_locks: Arc::new(dashmap::DashMap::new()),
+        scheduler: None,
     };
 
     // Create an app with the custom state

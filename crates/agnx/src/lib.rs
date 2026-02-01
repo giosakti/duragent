@@ -24,6 +24,7 @@ pub mod agent;
 pub mod gateway;
 pub mod llm;
 pub mod sandbox;
+pub mod scheduler;
 pub mod session;
 pub mod tools;
 

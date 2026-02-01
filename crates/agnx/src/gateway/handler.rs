@@ -6,12 +6,10 @@
 //! For agents with tools configured, messages are processed through the
 //! agentic loop which supports tool execution and the approval flow.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
 
 use agnx_gateway_protocol::{CallbackQueryData, MessageContent, RoutingContext};
@@ -22,13 +20,14 @@ use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
 use crate::llm::{Message, ProviderRegistry, Role};
 use crate::sandbox::Sandbox;
+use crate::scheduler::SchedulerHandle;
 use crate::session::{
-    AgenticResult, ApprovalDecisionType, EventContext, SessionContext, SessionEventPayload,
-    SessionLocks, SessionStore, build_chat_request, build_system_message, clear_pending_approval,
-    commit_event, get_pending_approval, load_snapshot, persist_assistant_message, record_event,
-    resume_agentic_loop, run_agentic_loop, set_pending_approval,
+    AgenticResult, ApprovalDecisionType, ChatSessionCache, EventContext, SessionContext,
+    SessionEventPayload, SessionLocks, SessionStore, build_chat_request, build_system_message,
+    clear_pending_approval, commit_event, get_pending_approval, persist_assistant_message,
+    record_event, resume_agentic_loop, run_agentic_loop, set_pending_approval,
 };
-use crate::tools::{ToolExecutor, ToolResult};
+use crate::tools::{ToolExecutionContext, ToolExecutor, ToolResult};
 
 // ============================================================================
 // Routing Config
@@ -72,6 +71,8 @@ pub struct GatewayHandlerConfig {
     pub gateway_manager: GatewayManager,
     pub session_locks: SessionLocks,
     pub policy_locks: PolicyLocks,
+    pub scheduler: Option<SchedulerHandle>,
+    pub chat_session_cache: ChatSessionCache,
 }
 
 /// Handler that routes gateway messages to sessions.
@@ -80,8 +81,8 @@ pub struct GatewayMessageHandler {
     providers: ProviderRegistry,
     sessions: SessionStore,
     sessions_path: PathBuf,
-    /// Mapping from gateway chat key to session ID.
-    chat_sessions: Arc<RwLock<HashMap<String, String>>>,
+    /// Shared cache mapping (gateway, chat_id, agent) to session_id.
+    chat_session_cache: ChatSessionCache,
     /// Routing configuration for agent selection.
     routing_config: RoutingConfig,
     /// Sandbox for tool execution.
@@ -92,6 +93,8 @@ pub struct GatewayMessageHandler {
     session_locks: SessionLocks,
     /// Per-agent locks for policy file writes.
     policy_locks: PolicyLocks,
+    /// Scheduler handle for schedule tools.
+    scheduler: Option<SchedulerHandle>,
 }
 
 impl GatewayMessageHandler {
@@ -102,43 +105,43 @@ impl GatewayMessageHandler {
             providers: config.providers,
             sessions: config.sessions,
             sessions_path: config.sessions_path,
-            chat_sessions: Arc::new(RwLock::new(HashMap::new())),
+            chat_session_cache: config.chat_session_cache,
             routing_config: config.routing_config,
             sandbox: config.sandbox,
             gateway_manager: config.gateway_manager,
             session_locks: config.session_locks,
             policy_locks: config.policy_locks,
+            scheduler: config.scheduler,
         }
     }
 
-    /// Get the chat key for session mapping.
-    fn chat_key(gateway: &str, chat_id: &str) -> String {
-        format!("{}:{}", gateway, chat_id)
-    }
-
     /// Get or create a session for a gateway chat.
+    ///
+    /// Uses the shared `ChatSessionCache` to look up existing sessions by
+    /// (gateway, chat_id, agent) tuple. This enables long-lived sessions
+    /// that persist across gateway messages and scheduled tasks.
     async fn get_or_create_session(
         &self,
         gateway: &str,
         routing: &RoutingContext,
     ) -> Option<String> {
-        let key = Self::chat_key(gateway, &routing.chat_id);
+        // Resolve agent first - we need it for the cache key
+        let agent_name = self.resolve_agent(gateway, routing)?;
 
-        // Check if we already have a session for this chat
+        // Check if we already have a session for this (gateway, chat_id, agent)
+        if let Some(session_id) = self
+            .chat_session_cache
+            .get(gateway, &routing.chat_id, &agent_name)
+            .await
         {
-            let sessions = self.chat_sessions.read().await;
-            if let Some(session_id) = sessions.get(&key) {
-                // Verify session still exists
-                if self.sessions.get(session_id).await.is_some() {
-                    return Some(session_id.clone());
-                }
+            // Verify session still exists
+            if self.sessions.get(&session_id).await.is_some() {
+                return Some(session_id);
             }
         }
 
         // Create a new session
-        let agent_name = self.resolve_agent(gateway, routing)?;
         let agent = self.agents.get(&agent_name)?;
-
         let session = self.sessions.create(&agent_name).await;
         let session_id = session.id.clone();
 
@@ -168,11 +171,10 @@ impl GatewayMessageHandler {
             error!(error = %e, "Failed to persist gateway session start");
         }
 
-        // Store the mapping
-        {
-            let mut sessions = self.chat_sessions.write().await;
-            sessions.insert(key, session_id.clone());
-        }
+        // Store in the shared cache
+        self.chat_session_cache
+            .insert(gateway, &routing.chat_id, &agent_name, &session_id)
+            .await;
 
         debug!(
             gateway = %gateway,
@@ -210,59 +212,33 @@ impl GatewayMessageHandler {
         None
     }
 
-    /// Rebuild gateway routes from recovered sessions.
+    /// Get the shared chat session cache.
     ///
-    /// Call this after session recovery to restore chat-to-session mappings.
-    /// Scans all active sessions and rebuilds the routing cache from their
-    /// stored gateway info.
-    pub async fn rebuild_routes_from_sessions(&self) {
-        let sessions = self.sessions.list().await;
-        let mut routes_rebuilt = 0;
+    /// This is used by the scheduler to look up and share sessions.
+    pub fn chat_session_cache(&self) -> &ChatSessionCache {
+        &self.chat_session_cache
+    }
 
-        for session in sessions {
-            // Skip non-active sessions
-            if session.status != SessionStatus::Active && session.status != SessionStatus::Paused {
-                continue;
-            }
-
-            // Load snapshot to get gateway info
-            let snapshot = match load_snapshot(&self.sessions_path, &session.id).await {
-                Ok(Some(s)) => s,
-                Ok(None) => continue,
-                Err(e) => {
-                    warn!(
-                        session_id = %session.id,
-                        error = %e,
-                        "Failed to load snapshot for route rebuild"
-                    );
-                    continue;
-                }
-            };
-
-            // Check if this session has gateway routing info
-            if let (Some(gateway), Some(chat_id)) =
-                (&snapshot.config.gateway, &snapshot.config.gateway_chat_id)
+    /// Find an existing session for a gateway chat.
+    ///
+    /// Used by callback queries where we know the gateway and chat_id but not
+    /// which agent was routed to. Tries each agent in the routing rules until
+    /// we find a cached session.
+    async fn find_session_for_chat(&self, gateway: &str, chat_id: &str) -> Option<String> {
+        // Check each agent that could have been routed to this chat
+        for rule in &self.routing_config.rules {
+            if let Some(session_id) = self
+                .chat_session_cache
+                .get(gateway, chat_id, &rule.agent)
+                .await
             {
-                let key = Self::chat_key(gateway, chat_id);
-                let mut chat_sessions = self.chat_sessions.write().await;
-                chat_sessions.insert(key, session.id.clone());
-                routes_rebuilt += 1;
-
-                debug!(
-                    gateway = %gateway,
-                    chat_id = %chat_id,
-                    session_id = %session.id,
-                    "Rebuilt gateway route from session"
-                );
+                // Verify session still exists
+                if self.sessions.get(&session_id).await.is_some() {
+                    return Some(session_id);
+                }
             }
         }
-
-        if routes_rebuilt > 0 {
-            tracing::info!(
-                routes = routes_rebuilt,
-                "Rebuilt gateway routes from sessions"
-            );
-        }
+        None
     }
 
     /// Process a text message and return the response.
@@ -375,8 +351,8 @@ impl GatewayMessageHandler {
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())?;
 
-        // Create tool executor
-        let executor = ToolExecutor::new(
+        // Create tool executor with execution context for schedule tools
+        let mut executor = ToolExecutor::new(
             agent.tools.clone(),
             self.sandbox.clone(),
             agent.agent_dir.clone(),
@@ -384,6 +360,18 @@ impl GatewayMessageHandler {
             session.agent.clone(),
         )
         .with_session_id(session_id.to_string());
+
+        // Add scheduler and execution context if available
+        if let Some(ref scheduler) = self.scheduler {
+            executor = executor
+                .with_scheduler(scheduler.clone())
+                .with_execution_context(ToolExecutionContext {
+                    gateway: Some(gateway.to_string()),
+                    chat_id: Some(chat_id.to_string()),
+                    agent: session.agent.clone(),
+                    session_id: session_id.to_string(),
+                });
+        }
 
         // Build initial messages from history
         let history = self
@@ -553,12 +541,9 @@ impl MessageHandler for GatewayMessageHandler {
 
         let decision = parts[1];
 
-        // Look up session from chat_id
-        let key = Self::chat_key(gateway, &data.chat_id);
-        let session_id = {
-            let sessions = self.chat_sessions.read().await;
-            sessions.get(&key).cloned()
-        };
+        // Look up session from chat_id by finding a session that matches this gateway/chat
+        // We need to find which agent was used for this chat, so we scan the cache
+        let session_id = self.find_session_for_chat(gateway, &data.chat_id).await;
 
         let session_id = match session_id {
             Some(id) => id,
@@ -665,7 +650,7 @@ impl MessageHandler for GatewayMessageHandler {
             }
         } else {
             // Execute the tool
-            let executor = ToolExecutor::new(
+            let mut executor = ToolExecutor::new(
                 agent.tools.clone(),
                 self.sandbox.clone(),
                 agent.agent_dir.clone(),
@@ -673,6 +658,18 @@ impl MessageHandler for GatewayMessageHandler {
                 session.agent.clone(),
             )
             .with_session_id(session_id.to_string());
+
+            // Add scheduler and execution context if available
+            if let Some(ref scheduler) = self.scheduler {
+                executor = executor
+                    .with_scheduler(scheduler.clone())
+                    .with_execution_context(ToolExecutionContext {
+                        gateway: Some(gateway.to_string()),
+                        chat_id: Some(data.chat_id.to_string()),
+                        agent: session.agent.clone(),
+                        session_id: session_id.to_string(),
+                    });
+            }
 
             // Build tool call from pending approval
             let tool_call = crate::llm::ToolCall {
@@ -718,7 +715,7 @@ impl MessageHandler for GatewayMessageHandler {
         };
 
         // Create executor for resume
-        let executor = ToolExecutor::new(
+        let mut executor = ToolExecutor::new(
             agent.tools.clone(),
             self.sandbox.clone(),
             agent.agent_dir.clone(),
@@ -726,6 +723,18 @@ impl MessageHandler for GatewayMessageHandler {
             session.agent.clone(),
         )
         .with_session_id(session_id.to_string());
+
+        // Add scheduler and execution context if available
+        if let Some(ref scheduler) = self.scheduler {
+            executor = executor
+                .with_scheduler(scheduler.clone())
+                .with_execution_context(ToolExecutionContext {
+                    gateway: Some(gateway.to_string()),
+                    chat_id: Some(data.chat_id.to_string()),
+                    agent: session.agent.clone(),
+                    session_id: session_id.to_string(),
+                });
+        }
 
         // Resume the agentic loop
         let event_ctx = EventContext {
@@ -903,9 +912,10 @@ mod tests {
     }
 
     #[test]
-    fn test_chat_key() {
-        let key = GatewayMessageHandler::chat_key("telegram", "12345");
-        assert_eq!(key, "telegram:12345");
+    fn test_chat_session_cache_key() {
+        // Cache key now includes agent for routing rule changes
+        let key = ChatSessionCache::key("telegram", "12345", "my-agent");
+        assert_eq!(key, "telegram:12345:my-agent");
     }
 
     #[test]

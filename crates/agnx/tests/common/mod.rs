@@ -40,6 +40,7 @@ pub async fn test_app() -> Router {
         sandbox: Arc::new(TrustSandbox::new()),
         policy_locks: Arc::new(dashmap::DashMap::new()),
         session_locks: Arc::new(dashmap::DashMap::new()),
+        scheduler: None,
     };
 
     server::build_app(state, 300)

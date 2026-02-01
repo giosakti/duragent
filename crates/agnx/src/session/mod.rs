@@ -6,6 +6,7 @@
 
 mod agentic;
 mod chat_request;
+mod chat_session_cache;
 mod error;
 mod event_reader;
 mod event_writer;
@@ -19,6 +20,7 @@ mod snapshot_writer;
 mod stream;
 
 // Types and errors
+pub use chat_session_cache::ChatSessionCache;
 pub use error::{Result, SessionError};
 pub use events::{
     ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,

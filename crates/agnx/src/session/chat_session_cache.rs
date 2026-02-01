@@ -1,0 +1,180 @@
+//! Cache for mapping (gateway, chat_id, agent) to session_id.
+//!
+//! This cache enables long-lived sessions for gateway chats, allowing:
+//! - Scheduled task results to appear in the same conversation
+//! - Users to follow up on task results naturally
+//! - Sessions to be an implementation detail, not user-facing
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
+
+use super::load_snapshot;
+
+/// Cache mapping (gateway, chat_id, agent) to session_id.
+///
+/// Thread-safe cache for looking up existing sessions for gateway chats.
+/// The agent is included in the key so that routing rule changes create new sessions.
+#[derive(Clone, Default)]
+pub struct ChatSessionCache {
+    cache: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl ChatSessionCache {
+    /// Create a new empty cache.
+    pub fn new() -> Self {
+        Self {
+            cache: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Build the cache key for a (gateway, chat_id, agent) tuple.
+    pub fn key(gateway: &str, chat_id: &str, agent: &str) -> String {
+        format!("{}:{}:{}", gateway, chat_id, agent)
+    }
+
+    /// Get the session_id for a (gateway, chat_id, agent) tuple.
+    pub async fn get(&self, gateway: &str, chat_id: &str, agent: &str) -> Option<String> {
+        let key = Self::key(gateway, chat_id, agent);
+        let cache = self.cache.read().await;
+        cache.get(&key).cloned()
+    }
+
+    /// Insert a session_id for a (gateway, chat_id, agent) tuple.
+    pub async fn insert(&self, gateway: &str, chat_id: &str, agent: &str, session_id: &str) {
+        let key = Self::key(gateway, chat_id, agent);
+        let mut cache = self.cache.write().await;
+        cache.insert(key, session_id.to_string());
+    }
+
+    /// Rebuild the cache from recovered sessions.
+    ///
+    /// Scans all session snapshots in the sessions directory and rebuilds
+    /// the cache from their stored gateway info.
+    pub async fn rebuild_from_sessions(&self, sessions_path: &Path, session_ids: &[String]) {
+        let mut rebuilt = 0;
+
+        for session_id in session_ids {
+            // Load snapshot to get gateway info and agent
+            let snapshot = match load_snapshot(sessions_path, session_id).await {
+                Ok(Some(s)) => s,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to load snapshot for cache rebuild"
+                    );
+                    continue;
+                }
+            };
+
+            // Check if this session has gateway routing info
+            if let (Some(gateway), Some(chat_id)) =
+                (&snapshot.config.gateway, &snapshot.config.gateway_chat_id)
+            {
+                self.insert(gateway, chat_id, &snapshot.agent, session_id)
+                    .await;
+                rebuilt += 1;
+
+                debug!(
+                    gateway = %gateway,
+                    chat_id = %chat_id,
+                    agent = %snapshot.agent,
+                    session_id = %session_id,
+                    "Rebuilt chat session cache entry"
+                );
+            }
+        }
+
+        if rebuilt > 0 {
+            tracing::info!(
+                entries = rebuilt,
+                "Rebuilt chat session cache from sessions"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_cache_is_empty() {
+        let cache = ChatSessionCache::new();
+        assert!(cache.get("telegram", "123", "agent1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn insert_and_get() {
+        let cache = ChatSessionCache::new();
+        cache
+            .insert("telegram", "123", "agent1", "session_abc")
+            .await;
+
+        assert_eq!(
+            cache.get("telegram", "123", "agent1").await,
+            Some("session_abc".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn different_agents_have_different_sessions() {
+        let cache = ChatSessionCache::new();
+        cache.insert("telegram", "123", "agent1", "session_1").await;
+        cache.insert("telegram", "123", "agent2", "session_2").await;
+
+        assert_eq!(
+            cache.get("telegram", "123", "agent1").await,
+            Some("session_1".to_string())
+        );
+        assert_eq!(
+            cache.get("telegram", "123", "agent2").await,
+            Some("session_2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn different_chats_have_different_sessions() {
+        let cache = ChatSessionCache::new();
+        cache.insert("telegram", "123", "agent1", "session_1").await;
+        cache.insert("telegram", "456", "agent1", "session_2").await;
+
+        assert_eq!(
+            cache.get("telegram", "123", "agent1").await,
+            Some("session_1".to_string())
+        );
+        assert_eq!(
+            cache.get("telegram", "456", "agent1").await,
+            Some("session_2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn different_gateways_have_different_sessions() {
+        let cache = ChatSessionCache::new();
+        cache.insert("telegram", "123", "agent1", "session_1").await;
+        cache.insert("discord", "123", "agent1", "session_2").await;
+
+        assert_eq!(
+            cache.get("telegram", "123", "agent1").await,
+            Some("session_1".to_string())
+        );
+        assert_eq!(
+            cache.get("discord", "123", "agent1").await,
+            Some("session_2".to_string())
+        );
+    }
+
+    #[test]
+    fn key_format() {
+        assert_eq!(
+            ChatSessionCache::key("telegram", "123", "agent1"),
+            "telegram:123:agent1"
+        );
+    }
+}

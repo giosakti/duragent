@@ -16,8 +16,9 @@ use agnx::config::{self, Config, ExternalGatewayConfig};
 use agnx::gateway::{GatewayManager, SubprocessGateway};
 use agnx::llm::ProviderRegistry;
 use agnx::sandbox::{Sandbox, TrustSandbox};
+use agnx::scheduler::{SchedulerConfig, SchedulerService};
 use agnx::server;
-use agnx::session;
+use agnx::session::{self, ChatSessionCache};
 
 pub async fn run(
     config_path: &str,
@@ -77,6 +78,36 @@ pub async fn run(
     // Per-agent locks for policy file writes (shared with app state)
     let policy_locks: PolicyLocks = Arc::new(dashmap::DashMap::new());
 
+    // Create shared chat session cache for gateway/scheduler session reuse
+    let chat_session_cache = ChatSessionCache::new();
+
+    // Rebuild cache from recovered sessions
+    let recovered_session_ids: Vec<String> =
+        sessions.list().await.into_iter().map(|s| s.id).collect();
+    chat_session_cache
+        .rebuild_from_sessions(&sessions_path, &recovered_session_ids)
+        .await;
+
+    // Initialize scheduler service (before gateway handler so it can be passed in)
+    let schedules_path = sessions_path
+        .parent()
+        .unwrap_or(&sessions_path)
+        .join("schedules");
+    let scheduler_config = SchedulerConfig {
+        schedules_path,
+        sessions_path: sessions_path.clone(),
+        agents: store.clone(),
+        providers: providers.clone(),
+        sessions: sessions.clone(),
+        session_locks: session_locks.clone(),
+        gateways: gateways.clone(),
+        sandbox: sandbox.clone(),
+        chat_session_cache: chat_session_cache.clone(),
+    };
+    let scheduler_service = SchedulerService::new(scheduler_config);
+    let scheduler_handle = scheduler_service.start().await;
+    info!("Scheduler service started");
+
     // Set up gateway message handler with sandbox and gateway_manager
     let routing_config = build_routing_config(&config, &store);
     let gateway_handler =
@@ -90,10 +121,9 @@ pub async fn run(
             gateway_manager: gateways.clone(),
             session_locks: session_locks.clone(),
             policy_locks: policy_locks.clone(),
+            scheduler: Some(scheduler_handle.clone()),
+            chat_session_cache,
         });
-
-    // Rebuild gateway routes from recovered sessions
-    gateway_handler.rebuild_routes_from_sessions().await;
 
     gateways
         .set_handler(std::sync::Arc::new(gateway_handler))
@@ -136,6 +166,7 @@ pub async fn run(
         sandbox,
         policy_locks,
         session_locks,
+        scheduler: Some(scheduler_handle.clone()),
     };
 
     let app = server::build_app(state, config.server.request_timeout_seconds);
@@ -151,6 +182,9 @@ pub async fn run(
     )
     .with_graceful_shutdown(shutdown_signal(shutdown_rx))
     .await?;
+
+    // Shutdown scheduler gracefully
+    scheduler_handle.shutdown().await;
 
     // Shutdown gateways gracefully
     gateways.shutdown().await;

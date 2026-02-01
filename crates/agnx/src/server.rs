@@ -14,6 +14,7 @@ use crate::gateway::GatewayManager;
 use crate::handlers;
 use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
+use crate::scheduler::SchedulerHandle;
 use crate::session::{SessionLocks, SessionStore};
 
 // ============================================================================
@@ -46,6 +47,8 @@ pub struct AppState {
     /// Per-session locks for disk I/O.
     /// Prevents concurrent writes to the same session's files.
     pub session_locks: SessionLocks,
+    /// Scheduler handle for schedule tools.
+    pub scheduler: Option<SchedulerHandle>,
 }
 
 // ============================================================================
