@@ -48,6 +48,7 @@ serde-saphyr = "0.0"
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.15"
 dashmap = "6"
+rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

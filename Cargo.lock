@@ -19,6 +19,7 @@ dependencies = [
  "futures",
  "http-body-util",
  "libc",
+ "rand",
  "reqwest 0.13.1",
  "serde",
  "serde-saphyr",
