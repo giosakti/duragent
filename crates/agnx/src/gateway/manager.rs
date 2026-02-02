@@ -9,8 +9,23 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{RwLock, mpsc};
+use dashmap::DashMap;
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, error, info, warn};
+
+/// Per-session locks for serializing message processing.
+///
+/// Key format: "{gateway}:{chat_id}" - ensures events for the same session
+/// are processed sequentially while different sessions can process concurrently.
+type SessionProcessingLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
+
+/// Get or create a processing lock for a session.
+fn get_processing_lock(locks: &SessionProcessingLocks, key: &str) -> Arc<Mutex<()>> {
+    locks
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 use agnx_gateway_protocol::{
     GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageContent, RoutingContext,
@@ -35,6 +50,9 @@ struct GatewayManagerInner {
 
     /// Message handler for incoming messages.
     handler: Option<Arc<dyn MessageHandler>>,
+
+    /// Per-session locks for serializing event processing.
+    processing_locks: SessionProcessingLocks,
 }
 
 impl GatewayManager {
@@ -44,6 +62,7 @@ impl GatewayManager {
             inner: Arc::new(RwLock::new(GatewayManagerInner {
                 gateways: HashMap::new(),
                 handler: None,
+                processing_locks: Arc::new(DashMap::new()),
             })),
         }
     }
@@ -249,35 +268,45 @@ impl GatewayManager {
                         "Message received from gateway"
                     );
 
-                    // Get handler and process message
-                    let handler = {
+                    // Get handler and processing locks
+                    let (handler, processing_locks) = {
                         let inner = self.inner.read().await;
-                        inner.handler.clone()
+                        (inner.handler.clone(), inner.processing_locks.clone())
                     };
 
                     if let Some(handler) = handler {
-                        if let Some(response) = handler
-                            .handle_message(&gateway, &data.routing, &data.content)
-                            .await
-                        {
-                            // Send response back through gateway
-                            if let Err(e) = self
-                                .send_message(
-                                    &gateway,
-                                    &data.chat_id,
-                                    &response,
-                                    Some(data.message_id.clone()),
-                                )
+                        let manager = self.clone();
+                        let gateway = gateway.clone();
+                        let lock_key = format!("{}:{}", gateway, data.routing.chat_id);
+
+                        tokio::spawn(async move {
+                            // Serialize within (gateway, chat_id)
+                            let lock = get_processing_lock(&processing_locks, &lock_key);
+                            let _guard = lock.lock().await;
+
+                            if let Some(response) = handler
+                                .handle_message(&gateway, &data.routing, &data.content)
                                 .await
                             {
-                                error!(
-                                    gateway = %gateway,
-                                    chat_id = %data.chat_id,
-                                    error = %e,
-                                    "Failed to send response"
-                                );
+                                // Send response back through gateway
+                                if let Err(e) = manager
+                                    .send_message(
+                                        &gateway,
+                                        &data.chat_id,
+                                        &response,
+                                        Some(data.message_id.clone()),
+                                    )
+                                    .await
+                                {
+                                    error!(
+                                        gateway = %gateway,
+                                        chat_id = %data.chat_id,
+                                        error = %e,
+                                        "Failed to send response"
+                                    );
+                                }
                             }
-                        }
+                        });
                     } else {
                         warn!(gateway = %gateway, "No message handler registered");
                     }
@@ -374,27 +403,37 @@ impl GatewayManager {
                         "Callback query received"
                     );
 
-                    // Get handler and process callback
-                    let handler = {
+                    // Get handler and processing locks
+                    let (handler, processing_locks) = {
                         let inner = self.inner.read().await;
-                        inner.handler.clone()
+                        (inner.handler.clone(), inner.processing_locks.clone())
                     };
 
                     if let Some(handler) = handler {
-                        let response = handler.handle_callback_query(&gateway, &data).await;
+                        let manager = self.clone();
+                        let gateway = gateway.clone();
+                        let lock_key = format!("{}:{}", gateway, data.chat_id);
 
-                        // Answer the callback query with toast notification
-                        if let Err(e) = self
-                            .answer_callback_query(&gateway, &data.callback_query_id, response)
-                            .await
-                        {
-                            warn!(
-                                gateway = %gateway,
-                                callback_query_id = %data.callback_query_id,
-                                error = %e,
-                                "Failed to answer callback query"
-                            );
-                        }
+                        tokio::spawn(async move {
+                            // Serialize within (gateway, chat_id)
+                            let lock = get_processing_lock(&processing_locks, &lock_key);
+                            let _guard = lock.lock().await;
+
+                            let response = handler.handle_callback_query(&gateway, &data).await;
+
+                            // Answer the callback query with toast notification
+                            if let Err(e) = manager
+                                .answer_callback_query(&gateway, &data.callback_query_id, response)
+                                .await
+                            {
+                                warn!(
+                                    gateway = %gateway,
+                                    callback_query_id = %data.callback_query_id,
+                                    error = %e,
+                                    "Failed to answer callback query"
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -539,5 +578,27 @@ mod tests {
         assert!(handle.has_capability("media"));
         assert!(handle.has_capability("edit"));
         assert!(!handle.has_capability("delete"));
+    }
+
+    #[test]
+    fn test_get_processing_lock_returns_same_lock_for_same_key() {
+        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
+
+        let lock1 = get_processing_lock(&locks, "telegram:chat123");
+        let lock2 = get_processing_lock(&locks, "telegram:chat123");
+
+        // Same key should return the same Arc (pointer equality)
+        assert!(Arc::ptr_eq(&lock1, &lock2));
+    }
+
+    #[test]
+    fn test_get_processing_lock_returns_different_locks_for_different_keys() {
+        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
+
+        let lock1 = get_processing_lock(&locks, "telegram:chat123");
+        let lock2 = get_processing_lock(&locks, "telegram:chat456");
+
+        // Different keys should return different locks
+        assert!(!Arc::ptr_eq(&lock1, &lock2));
     }
 }
