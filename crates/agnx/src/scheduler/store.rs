@@ -47,12 +47,9 @@ impl ScheduleStore {
     /// Call this on startup to restore persisted schedules.
     pub async fn load(&self) -> Result<LoadResult> {
         // Ensure directory exists
-        if !self.schedules_path.exists() {
-            fs::create_dir_all(&self.schedules_path)
-                .await
-                .map_err(|e| SchedulerError::Storage(e.to_string()))?;
-            return Ok(LoadResult::default());
-        }
+        fs::create_dir_all(&self.schedules_path)
+            .await
+            .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
         let mut loaded = 0;
         let mut errors = Vec::new();
@@ -193,12 +190,18 @@ impl ScheduleStore {
             inner.states.remove(id);
         }
 
-        // Remove from disk
+        // Remove from disk (ignore NotFound - already deleted)
         let path = self.schedule_path(id);
-        if path.exists() {
-            fs::remove_file(&path).await.map_err(|e| {
-                SchedulerError::Storage(format!("delete {}: {}", path.display(), e))
-            })?;
+        match fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(SchedulerError::Storage(format!(
+                    "delete {}: {}",
+                    path.display(),
+                    e
+                )));
+            }
         }
 
         debug!(schedule_id = %id, "Deleted schedule");
