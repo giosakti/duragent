@@ -49,12 +49,10 @@ pub use agentic::{
     AgenticError, AgenticResult, EventContext, resume_agentic_loop, run_agentic_loop,
 };
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use tokio::sync::{Mutex, RwLock};
 use ulid::Ulid;
 
 use crate::api::SessionStatus;
@@ -82,14 +80,18 @@ pub struct Session {
     pub last_event_seq: u64,
 }
 
-/// In-memory session store.
+/// In-memory session store using concurrent maps.
+///
+/// Uses `DashMap` for lock-free concurrent access to different sessions.
+/// This allows multiple users to interact with their sessions simultaneously
+/// without blocking each other (only operations on the same session serialize).
 ///
 /// Uses `Arc<Session>` for cheap clones on read operations.
 /// Messages are stored separately to avoid O(n) clones on every mutation.
 #[derive(Clone)]
 pub struct SessionStore {
-    sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
-    messages: Arc<RwLock<HashMap<String, Vec<Message>>>>,
+    sessions: Arc<DashMap<String, Arc<Session>>>,
+    messages: Arc<DashMap<String, Vec<Message>>>,
 }
 
 impl SessionStore {
@@ -101,8 +103,8 @@ impl SessionStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            messages: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(DashMap::new()),
+            messages: Arc::new(DashMap::new()),
         }
     }
 
@@ -114,18 +116,19 @@ impl SessionStore {
     ///
     /// The closure receives a mutable reference to a cloned session and can
     /// return a value. The modified session replaces the original in the map.
-    async fn update<F, T>(&self, id: &str, f: F) -> Result<T>
+    fn update_sync<F, T>(&self, id: &str, f: F) -> Result<T>
     where
         F: FnOnce(&mut Session) -> T,
     {
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get(id)
+        let mut entry = self
+            .sessions
+            .get_mut(id)
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
 
-        let mut updated = (**session).clone();
+        // Clone-modify-replace pattern for Arc<Session>
+        let mut updated = (**entry).clone();
         let result = f(&mut updated);
-        sessions.insert(id.to_string(), Arc::new(updated));
+        *entry = Arc::new(updated);
         Ok(result)
     }
 
@@ -147,13 +150,9 @@ impl SessionStore {
             last_event_seq: 0,
         });
 
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(session.id.clone(), Arc::clone(&session));
-        }
-
-        let mut messages = self.messages.write().await;
-        messages.insert(session.id.clone(), Vec::new());
+        self.sessions
+            .insert(session.id.clone(), Arc::clone(&session));
+        self.messages.insert(session.id.clone(), Vec::new());
 
         session
     }
@@ -162,25 +161,23 @@ impl SessionStore {
     ///
     /// Returns an `Arc<Session>` for cheap cloning (O(1) reference count bump).
     pub async fn get(&self, id: &str) -> Option<Arc<Session>> {
-        let sessions = self.sessions.read().await;
-        sessions.get(id).cloned()
+        self.sessions.get(id).map(|r| r.clone())
     }
 
     /// List all sessions.
     ///
     /// Returns cloned Session values (not Arc) for simpler API.
+    /// Takes a consistent snapshot of all sessions.
     pub async fn list(&self) -> Vec<Session> {
-        let sessions = self.sessions.read().await;
-        sessions.values().map(|s| (**s).clone()).collect()
+        self.sessions.iter().map(|r| (**r).clone()).collect()
     }
 
     /// Update a session's status.
     pub async fn set_status(&self, id: &str, status: SessionStatus) -> Result<()> {
-        self.update(id, |s| {
+        self.update_sync(id, |s| {
             s.status = status;
             s.updated_at = Utc::now();
         })
-        .await
     }
 
     /// Register an existing session (e.g., recovered from disk).
@@ -189,14 +186,8 @@ impl SessionStore {
     /// Messages are passed separately to maintain the split storage model.
     pub async fn register(&self, session: Session, session_messages: Vec<Message>) {
         let session_id = session.id.clone();
-
-        {
-            let mut sessions = self.sessions.write().await;
-            sessions.insert(session_id.clone(), Arc::new(session));
-        }
-
-        let mut messages = self.messages.write().await;
-        messages.insert(session_id, session_messages);
+        self.sessions.insert(session_id.clone(), Arc::new(session));
+        self.messages.insert(session_id, session_messages);
     }
 
     // ----------------------------------------------------------------------------
@@ -208,19 +199,20 @@ impl SessionStore {
     /// This is O(1) amortized - messages are stored separately to avoid cloning.
     pub async fn add_message(&self, id: &str, message: Message) -> Result<()> {
         // Verify session exists and update timestamp
-        self.update(id, |s| s.updated_at = Utc::now()).await?;
+        self.update_sync(id, |s| s.updated_at = Utc::now())?;
 
-        // Append message to separate storage (O(1) amortized)
-        let mut messages = self.messages.write().await;
-        messages.entry(id.to_string()).or_default().push(message);
+        // Append message to separate storage (O(1) amortized, per-key lock)
+        self.messages
+            .entry(id.to_string())
+            .or_default()
+            .push(message);
 
         Ok(())
     }
 
     /// Get all messages for a session.
     pub async fn get_messages(&self, id: &str) -> Option<Vec<Message>> {
-        let messages = self.messages.read().await;
-        messages.get(id).cloned()
+        self.messages.get(id).map(|r| r.clone())
     }
 
     // ----------------------------------------------------------------------------
@@ -229,8 +221,7 @@ impl SessionStore {
 
     /// Get the last event sequence number for a session.
     pub async fn last_event_seq(&self, id: &str) -> Result<u64> {
-        let sessions = self.sessions.read().await;
-        sessions
+        self.sessions
             .get(id)
             .map(|s| s.last_event_seq)
             .ok_or_else(|| SessionError::NotFound(id.to_string()))
@@ -241,11 +232,10 @@ impl SessionStore {
     /// **Warning:** This increments in-memory state immediately. For safer persistence,
     /// use `peek_next_event_seq` + `commit_event_seq` pattern to avoid drift on write failure.
     pub async fn next_event_seq(&self, id: &str) -> Result<u64> {
-        self.update(id, |s| {
+        self.update_sync(id, |s| {
             s.last_event_seq += 1;
             s.last_event_seq
         })
-        .await
     }
 
     /// Get the next event sequence number without incrementing.
@@ -253,8 +243,7 @@ impl SessionStore {
     /// Use with `commit_event_seq` for safe persistence: peek the value, write to disk,
     /// then commit only on success. This avoids drift if the disk write fails.
     pub async fn peek_next_event_seq(&self, id: &str) -> Result<u64> {
-        let sessions = self.sessions.read().await;
-        sessions
+        self.sessions
             .get(id)
             .map(|s| s.last_event_seq + 1)
             .ok_or_else(|| SessionError::NotFound(id.to_string()))
@@ -265,12 +254,11 @@ impl SessionStore {
     /// Only updates in-memory state if `new_seq` is greater than the current value.
     /// This ensures we don't accidentally go backwards.
     pub async fn commit_event_seq(&self, id: &str, new_seq: u64) -> Result<()> {
-        self.update(id, |s| {
+        self.update_sync(id, |s| {
             if new_seq > s.last_event_seq {
                 s.last_event_seq = new_seq;
             }
         })
-        .await
     }
 }
 
