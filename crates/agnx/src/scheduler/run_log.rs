@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::{debug, warn};
 
 use super::schedule::RunLogEntry;
+use crate::sync::KeyedLocks;
 
 /// Maximum log file size before pruning (1MB).
 const MAX_LOG_SIZE: u64 = 1_024 * 1_024;
@@ -22,16 +23,24 @@ const ENTRIES_TO_KEEP: usize = 1000;
 pub struct RunLog {
     /// Base path for run logs (e.g., `.agnx/schedules/runs`).
     runs_path: PathBuf,
+    /// Per-schedule locks to serialize append/prune/read/delete.
+    locks: KeyedLocks,
 }
 
 impl RunLog {
     /// Create a new run log at the given path.
     pub fn new(runs_path: PathBuf) -> Self {
-        Self { runs_path }
+        Self {
+            runs_path,
+            locks: KeyedLocks::new(),
+        }
     }
 
     /// Append a run entry to a schedule's log.
     pub async fn append(&self, schedule_id: &str, entry: &RunLogEntry) -> std::io::Result<()> {
+        let lock = self.locks.get(schedule_id);
+        let _guard = lock.lock().await;
+
         // Ensure directory exists
         fs::create_dir_all(&self.runs_path).await?;
 
@@ -69,6 +78,9 @@ impl RunLog {
         schedule_id: &str,
         limit: usize,
     ) -> std::io::Result<Vec<RunLogEntry>> {
+        let lock = self.locks.get(schedule_id);
+        let _guard = lock.lock().await;
+
         let path = self.log_path(schedule_id);
 
         let content = match fs::read_to_string(&path).await {
@@ -90,6 +102,9 @@ impl RunLog {
 
     /// Delete the log file for a schedule.
     pub async fn delete(&self, schedule_id: &str) -> std::io::Result<()> {
+        let lock = self.locks.get(schedule_id);
+        let _guard = lock.lock().await;
+
         let path = self.log_path(schedule_id);
         match fs::remove_file(&path).await {
             Ok(()) => Ok(()),

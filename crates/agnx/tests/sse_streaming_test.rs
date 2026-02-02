@@ -19,10 +19,10 @@ use tower::ServiceExt;
 use agnx::agent::OnDisconnect;
 use agnx::background::BackgroundTasks;
 use agnx::gateway::GatewayManager;
-use agnx::llm::{Message, ProviderRegistry, Role, StreamEvent, Usage};
+use agnx::llm::{ProviderRegistry, Role, StreamEvent, Usage};
 use agnx::sandbox::TrustSandbox;
 use agnx::server::{self, AppState};
-use agnx::session::SessionStore;
+use agnx::session::SessionRegistry;
 
 mod common;
 use common::test_app;
@@ -270,61 +270,6 @@ fn parse_sse_events_keep_alive() {
 }
 
 // ============================================================================
-// Session Store Integration Tests
-// ============================================================================
-
-/// Test that session is created and can be retrieved.
-#[tokio::test]
-async fn session_store_roundtrip() {
-    let store = SessionStore::new();
-
-    let session = store.create("test-agent").await;
-    assert!(session.id.starts_with("session_"));
-    assert_eq!(session.agent, "test-agent");
-
-    let retrieved = store.get(&session.id).await;
-    assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().id, session.id);
-}
-
-/// Test that messages can be added to a session.
-#[tokio::test]
-async fn session_messages_added() {
-    let store = SessionStore::new();
-    let session = store.create("test-agent").await;
-
-    let user_msg = Message::text(Role::User, "Hello");
-    store.add_message(&session.id, user_msg).await.unwrap();
-
-    let assistant_msg = Message::text(Role::Assistant, "Hi there!");
-    store.add_message(&session.id, assistant_msg).await.unwrap();
-
-    let messages = store.get_messages(&session.id).await.unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, Role::User);
-    assert_eq!(messages[0].content_str(), "Hello");
-    assert_eq!(messages[1].role, Role::Assistant);
-    assert_eq!(messages[1].content_str(), "Hi there!");
-}
-
-/// Test that getting messages for nonexistent session returns None.
-#[tokio::test]
-async fn session_get_messages_nonexistent() {
-    let store = SessionStore::new();
-    let messages = store.get_messages("nonexistent").await;
-    assert!(messages.is_none());
-}
-
-/// Test that adding message to nonexistent session returns an error.
-#[tokio::test]
-async fn session_add_message_nonexistent() {
-    let store = SessionStore::new();
-    let msg = Message::text(Role::User, "Hello");
-    let result = store.add_message("nonexistent", msg).await;
-    assert!(result.is_err());
-}
-
-// ============================================================================
 // OnDisconnect Serialization Tests
 // ============================================================================
 
@@ -429,8 +374,7 @@ async fn app_state_with_custom_timeouts() {
     let state = AppState {
         agents: common::empty_agent_store().await,
         providers: ProviderRegistry::new(),
-        sessions: SessionStore::new(),
-        sessions_path,
+        session_registry: SessionRegistry::new(sessions_path),
         idle_timeout_seconds: 120,
         keep_alive_interval_seconds: 30,
         background_tasks: BackgroundTasks::new(),
@@ -438,8 +382,7 @@ async fn app_state_with_custom_timeouts() {
         admin_token: None,
         gateways: GatewayManager::default(),
         sandbox: Arc::new(TrustSandbox::new()),
-        policy_locks: Arc::new(dashmap::DashMap::new()),
-        session_locks: Arc::new(dashmap::DashMap::new()),
+        policy_locks: agnx::sync::KeyedLocks::new(),
         scheduler: None,
     };
 

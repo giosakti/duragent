@@ -20,13 +20,12 @@
 //! If no tool type prefix is provided, patterns match against all tool types.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tokio::sync::Mutex;
 use tracing::{debug, warn};
+
+use crate::sync::KeyedLocks;
 
 // ============================================================================
 // Concurrency
@@ -36,7 +35,7 @@ use tracing::{debug, warn};
 ///
 /// Prevents concurrent writes from overwriting each other.
 /// Different agents can write concurrently without contention.
-pub type PolicyLocks = Arc<DashMap<String, Arc<Mutex<()>>>>;
+pub type PolicyLocks = KeyedLocks;
 
 // ============================================================================
 // Constants
@@ -279,13 +278,8 @@ impl ToolPolicy {
         pattern: &str,
         policy_locks: &PolicyLocks,
     ) -> std::io::Result<()> {
-        // Get or create lock for this agent
-        let lock = policy_locks
-            .entry(agent_name.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
-
         // Hold lock while reading, modifying, and writing
+        let lock = policy_locks.get(agent_name);
         let _guard = lock.lock().await;
 
         let mut policy = base_policy.clone();

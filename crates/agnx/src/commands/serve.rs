@@ -9,7 +9,7 @@ use tokio::signal;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use agnx::agent::{self, AgentStore, PolicyLocks};
+use agnx::agent::{self, AgentStore};
 use agnx::background::BackgroundTasks;
 use agnx::client::AgentClient;
 use agnx::config::{self, Config, ExternalGatewayConfig};
@@ -18,7 +18,7 @@ use agnx::llm::ProviderRegistry;
 use agnx::sandbox::{Sandbox, TrustSandbox};
 use agnx::scheduler::{SchedulerConfig, SchedulerService};
 use agnx::server;
-use agnx::session::{self, ChatSessionCache};
+use agnx::session::{ChatSessionCache, SessionRegistry};
 
 pub async fn run(
     config_path: &str,
@@ -47,9 +47,9 @@ pub async fn run(
     let (store, providers) = load_agents(config_path, &config).await;
     info!(agents = store.len(), "Loaded agents");
 
-    // Initialize session store and recover persisted sessions
-    let sessions = session::SessionStore::new();
-    let recovery = session::recover_sessions(&sessions_path, &sessions).await?;
+    // Initialize session registry and recover persisted sessions
+    let session_registry = SessionRegistry::new(sessions_path.clone());
+    let recovery = session_registry.recover().await?;
     if recovery.recovered > 0 {
         info!(
             recovered = recovery.recovered,
@@ -74,18 +74,19 @@ pub async fn run(
         config.server.request_timeout_seconds,
     ));
 
-    // Per-session locks for disk I/O (shared with app state)
-    let session_locks: agnx::session::SessionLocks = Arc::new(dashmap::DashMap::new());
-
     // Per-agent locks for policy file writes (shared with app state)
-    let policy_locks: PolicyLocks = Arc::new(dashmap::DashMap::new());
+    let policy_locks = agnx::sync::KeyedLocks::with_cleanup("policy_locks");
 
     // Create shared chat session cache for gateway/scheduler session reuse
     let chat_session_cache = ChatSessionCache::new();
 
     // Rebuild cache from recovered sessions
-    let recovered_session_ids: Vec<String> =
-        sessions.list().await.into_iter().map(|s| s.id).collect();
+    let recovered_session_ids: Vec<String> = session_registry
+        .list()
+        .await
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
     chat_session_cache
         .rebuild_from_sessions(&sessions_path, &recovered_session_ids)
         .await;
@@ -97,11 +98,9 @@ pub async fn run(
         .join("schedules");
     let scheduler_config = SchedulerConfig {
         schedules_path,
-        sessions_path: sessions_path.clone(),
         agents: store.clone(),
         providers: providers.clone(),
-        sessions: sessions.clone(),
-        session_locks: session_locks.clone(),
+        session_registry: session_registry.clone(),
         gateways: gateways.clone(),
         sandbox: sandbox.clone(),
         chat_session_cache: chat_session_cache.clone(),
@@ -116,12 +115,10 @@ pub async fn run(
         agnx::gateway::GatewayMessageHandler::new(agnx::gateway::GatewayHandlerConfig {
             agents: store.clone(),
             providers: providers.clone(),
-            sessions: sessions.clone(),
-            sessions_path: sessions_path.clone(),
+            session_registry: session_registry.clone(),
             routing_config,
             sandbox: sandbox.clone(),
             gateway_manager: gateways.clone(),
-            session_locks: session_locks.clone(),
             policy_locks: policy_locks.clone(),
             scheduler: Some(scheduler_handle.clone()),
             chat_session_cache,
@@ -157,8 +154,7 @@ pub async fn run(
     let state = server::AppState {
         agents: store,
         providers,
-        sessions,
-        sessions_path,
+        session_registry: session_registry.clone(),
         idle_timeout_seconds: config.server.idle_timeout_seconds,
         keep_alive_interval_seconds: config.server.keep_alive_interval_seconds,
         background_tasks: background_tasks.clone(),
@@ -167,7 +163,6 @@ pub async fn run(
         gateways: gateways.clone(),
         sandbox,
         policy_locks,
-        session_locks,
         scheduler: Some(scheduler_handle.clone()),
     };
 
@@ -187,6 +182,9 @@ pub async fn run(
 
     // Shutdown scheduler gracefully
     scheduler_handle.shutdown().await;
+
+    // Shutdown session registry (flush all pending events and snapshots)
+    session_registry.shutdown().await;
 
     // Shutdown gateways gracefully
     gateways.shutdown().await;

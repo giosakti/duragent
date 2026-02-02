@@ -6,6 +6,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
 use crate::llm::{Message, Role, Usage};
 
@@ -26,7 +27,16 @@ pub struct SessionEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEventPayload {
     /// Session was created.
-    SessionStart { session_id: String, agent: String },
+    SessionStart {
+        agent: String,
+        /// Behavior when client disconnects. Defaults to Pause for backward compatibility.
+        #[serde(default)]
+        on_disconnect: OnDisconnect,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gateway_chat_id: Option<String>,
+    },
     /// Session ended (completed or terminated).
     SessionEnd { reason: SessionEndReason },
     /// User sent a message.
@@ -188,8 +198,10 @@ mod tests {
         let event = SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: "session_abc".to_string(),
                 agent: "my-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         );
 
@@ -198,9 +210,13 @@ mod tests {
 
         assert_eq!(parsed.seq, 1);
         match parsed.payload {
-            SessionEventPayload::SessionStart { session_id, agent } => {
-                assert_eq!(session_id, "session_abc");
+            SessionEventPayload::SessionStart {
+                agent,
+                on_disconnect,
+                ..
+            } => {
                 assert_eq!(agent, "my-agent");
+                assert_eq!(on_disconnect, OnDisconnect::Pause);
             }
             _ => panic!("Wrong event type"),
         }
@@ -232,10 +248,35 @@ mod tests {
         let start_event = SessionEvent::new(
             0,
             SessionEventPayload::SessionStart {
-                session_id: "s".to_string(),
                 agent: "a".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         );
         assert!(start_event.to_message().is_none());
+    }
+
+    #[test]
+    fn deserialize_old_session_start_without_on_disconnect() {
+        // Old format without on_disconnect field - should default to Pause
+        let old_json = r#"{"seq":1,"timestamp":"2024-01-01T00:00:00Z","type":"session_start","agent":"old-agent"}"#;
+        let parsed: SessionEvent = serde_json::from_str(old_json).unwrap();
+
+        assert_eq!(parsed.seq, 1);
+        match parsed.payload {
+            SessionEventPayload::SessionStart {
+                agent,
+                on_disconnect,
+                gateway,
+                gateway_chat_id,
+            } => {
+                assert_eq!(agent, "old-agent");
+                assert_eq!(on_disconnect, OnDisconnect::Pause); // Default value
+                assert!(gateway.is_none());
+                assert!(gateway_chat_id.is_none());
+            }
+            _ => panic!("Wrong event type"),
+        }
     }
 }

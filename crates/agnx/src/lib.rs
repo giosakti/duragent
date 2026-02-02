@@ -6,6 +6,7 @@
 
 pub mod build_info;
 pub mod config;
+pub mod sync;
 
 // ============================================================================
 // Server & HTTP

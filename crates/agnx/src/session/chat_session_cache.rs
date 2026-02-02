@@ -13,14 +13,22 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use super::load_snapshot;
+use crate::sync::KeyedLocks;
 
 /// Cache mapping (gateway, chat_id, agent) to session_id.
 ///
 /// Thread-safe cache for looking up existing sessions for gateway chats.
 /// The agent is included in the key so that routing rule changes create new sessions.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ChatSessionCache {
     cache: Arc<RwLock<HashMap<String, String>>>,
+    inflight: KeyedLocks,
+}
+
+impl Default for ChatSessionCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChatSessionCache {
@@ -28,6 +36,7 @@ impl ChatSessionCache {
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(HashMap::new())),
+            inflight: KeyedLocks::new(),
         }
     }
 
@@ -64,48 +73,46 @@ impl ChatSessionCache {
     /// * `creator` - Closure that creates a new session_id if needed
     ///
     /// Returns the existing session_id if found and valid, or the result of calling the creator.
-    pub async fn get_or_insert_with<V, VFut, C, CFut>(
+    pub async fn get_or_insert_with<V, VFut, C, CFut, E>(
         &self,
         gateway: &str,
         chat_id: &str,
         agent: &str,
         validator: V,
         creator: C,
-    ) -> String
+    ) -> Result<String, E>
     where
         V: Fn(String) -> VFut,
         VFut: std::future::Future<Output = bool>,
         C: FnOnce() -> CFut,
-        CFut: std::future::Future<Output = String>,
+        CFut: std::future::Future<Output = Result<String, E>>,
     {
         let key = Self::key(gateway, chat_id, agent);
+        let lock = self.inflight.get(&key);
+        let _guard = lock.lock().await;
 
         // First, try to get with just a read lock (common case)
-        {
+        if let Some(session_id) = {
             let cache = self.cache.read().await;
-            if let Some(session_id) = cache.get(&key)
-                && validator(session_id.clone()).await
-            {
-                return session_id.clone();
-            }
-        }
-
-        // Not found or invalid - need write lock for insertion
-        let mut cache = self.cache.write().await;
-
-        // Double-check after acquiring write lock (another thread may have inserted)
-        if let Some(session_id) = cache.get(&key) {
+            cache.get(&key).cloned()
+        } {
             if validator(session_id.clone()).await {
-                return session_id.clone();
+                return Ok(session_id);
             }
+
             // Session was deleted, remove stale entry
+            let mut cache = self.cache.write().await;
             cache.remove(&key);
         }
 
         // Create new session and insert
-        let session_id = creator().await;
+        let session_id = creator().await?;
+        let mut cache = self.cache.write().await;
+        if let Some(existing) = cache.get(&key) {
+            return Ok(existing.clone());
+        }
         cache.insert(key, session_id.clone());
-        session_id
+        Ok(session_id)
     }
 
     /// Rebuild the cache from recovered sessions.

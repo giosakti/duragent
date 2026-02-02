@@ -21,11 +21,10 @@ const MAX_CONCURRENT_EXECUTIONS: usize = 5;
 use crate::agent::AgentStore;
 use crate::context::ContextBuilder;
 use crate::gateway::GatewayManager;
-use crate::llm::{Message, ProviderRegistry, Role};
+use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::session::{
-    AgenticResult, ChatSessionCache, EventContext, SessionEventPayload, SessionLocks, SessionStore,
-    persist_assistant_message, record_event, run_agentic_loop,
+    AgenticResult, ChatSessionCache, SessionHandle, SessionRegistry, run_agentic_loop,
 };
 use crate::tools::ToolExecutor;
 
@@ -118,11 +117,9 @@ impl SchedulerHandle {
 /// Configuration for the scheduler service.
 pub struct SchedulerConfig {
     pub schedules_path: PathBuf,
-    pub sessions_path: PathBuf,
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
-    pub sessions: SessionStore,
-    pub session_locks: SessionLocks,
+    pub session_registry: SessionRegistry,
     pub gateways: GatewayManager,
     pub sandbox: Arc<dyn Sandbox>,
     pub chat_session_cache: ChatSessionCache,
@@ -258,11 +255,9 @@ impl SchedulerService {
         let timers = self.timers.clone();
         let semaphore = self.execution_semaphore.clone();
         let config = SchedulerConfigRef {
-            sessions_path: self.config.sessions_path.clone(),
             agents: self.config.agents.clone(),
             providers: self.config.providers.clone(),
-            sessions: self.config.sessions.clone(),
-            session_locks: self.config.session_locks.clone(),
+            session_registry: self.config.session_registry.clone(),
             gateways: self.config.gateways.clone(),
             sandbox: self.config.sandbox.clone(),
             chat_session_cache: self.config.chat_session_cache.clone(),
@@ -334,11 +329,9 @@ impl SchedulerService {
 /// Clone-friendly config reference for spawned tasks.
 #[derive(Clone)]
 struct SchedulerConfigRef {
-    sessions_path: PathBuf,
     agents: AgentStore,
     providers: ProviderRegistry,
-    sessions: SessionStore,
-    session_locks: SessionLocks,
+    session_registry: SessionRegistry,
     gateways: GatewayManager,
     sandbox: Arc<dyn Sandbox>,
     chat_session_cache: ChatSessionCache,
@@ -610,7 +603,7 @@ async fn execute_task_payload(
         })?;
 
     // Find or create session for this chat
-    let session_id = get_or_create_session(
+    let handle = get_or_create_session(
         config,
         &schedule.destination.gateway,
         &schedule.destination.chat_id,
@@ -618,38 +611,19 @@ async fn execute_task_payload(
     )
     .await?;
 
-    // Build task message
-    let task_message = Message::text(
-        Role::User,
-        format!(
-            "[Scheduled Task]\n\n{}\n\n(This is an automated task. Send the result to this chat.)",
-            task
-        ),
+    // Build task message content
+    let task_message_content = format!(
+        "[Scheduled Task]\n\n{}\n\n(This is an automated task. Send the result to this chat.)",
+        task
     );
 
-    // Add to session
-    if config
-        .sessions
-        .add_message(&session_id, task_message.clone())
-        .await
-        .is_err()
-    {
-        return Err(SchedulerError::ExecutionFailed(
-            "Failed to add task message".to_string(),
-        ));
+    // Persist user message via actor
+    if let Err(e) = handle.add_user_message(task_message_content).await {
+        return Err(SchedulerError::ExecutionFailed(format!(
+            "Failed to persist task message: {}",
+            e
+        )));
     }
-
-    // Record user message event
-    let _ = record_event(
-        &config.sessions,
-        &config.sessions_path,
-        &session_id,
-        SessionEventPayload::UserMessage {
-            content: task_message.content.clone().unwrap_or_default(),
-        },
-        &config.session_locks,
-    )
-    .await;
 
     // Create tool executor (without execution context - schedules don't create nested schedules)
     let executor = ToolExecutor::new(
@@ -659,14 +633,10 @@ async fn execute_task_payload(
         agent.policy.clone(),
         schedule.agent.clone(),
     )
-    .with_session_id(session_id.clone());
+    .with_session_id(handle.id().to_string());
 
     // Build messages using StructuredContext
-    let history = config
-        .sessions
-        .get_messages(&session_id)
-        .await
-        .unwrap_or_default();
+    let history = handle.get_messages().await.unwrap_or_default();
     let messages = ContextBuilder::new()
         .from_agent_spec(agent)
         .with_messages(history)
@@ -679,31 +649,15 @@ async fn execute_task_payload(
         )
         .messages;
 
-    // Run agentic loop
-    let event_ctx = EventContext {
-        sessions: config.sessions.clone(),
-        sessions_path: config.sessions_path.clone(),
-        session_id: session_id.clone(),
-        session_locks: config.session_locks.clone(),
-    };
-
-    let result = run_agentic_loop(provider, &executor, agent, messages, &event_ctx, None)
+    // Run agentic loop with SessionHandle
+    let result = run_agentic_loop(provider, &executor, agent, messages, &handle, None)
         .await
         .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 
     let response = match result {
         AgenticResult::Complete { content, usage, .. } => {
-            // Persist assistant message
-            let _ = persist_assistant_message(
-                &config.sessions,
-                &config.sessions_path,
-                &session_id,
-                &schedule.agent,
-                content.clone(),
-                usage,
-                &config.session_locks,
-            )
-            .await;
+            // Persist assistant message via actor
+            let _ = handle.add_assistant_message(content.clone(), usage).await;
             content
         }
         AgenticResult::AwaitingApproval { pending, .. } => {
@@ -744,11 +698,9 @@ async fn get_or_create_session(
     gateway: &str,
     chat_id: &str,
     agent: &str,
-) -> Result<String> {
-    let sessions = config.sessions.clone();
-    let sessions_for_create = config.sessions.clone();
-    let sessions_path = config.sessions_path.clone();
-    let session_locks = config.session_locks.clone();
+) -> Result<SessionHandle> {
+    let registry = config.session_registry.clone();
+    let registry_for_create = config.session_registry.clone();
     let agent_owned = agent.to_string();
     let gateway_owned = gateway.to_string();
     let chat_id_owned = chat_id.to_string();
@@ -759,35 +711,27 @@ async fn get_or_create_session(
             gateway,
             chat_id,
             agent,
-            // Validator: check if session still exists in store
+            // Validator: check if session still exists in registry
             |session_id| {
-                let sessions = sessions.clone();
-                async move { sessions.get(&session_id).await.is_some() }
+                let registry = registry.clone();
+                async move { registry.contains(&session_id) }
             },
-            // Creator: create new session atomically
+            // Creator: create new session atomically via registry (actor records SessionStart)
             || {
-                let sessions = sessions_for_create;
-                let sessions_path = sessions_path;
-                let session_locks = session_locks;
+                let registry = registry_for_create;
                 let agent = agent_owned;
                 let gateway = gateway_owned;
                 let chat_id = chat_id_owned;
                 async move {
-                    let session = sessions.create(&agent).await;
-                    let session_id = session.id.clone();
-
-                    // Record session start
-                    let _ = record_event(
-                        &sessions,
-                        &sessions_path,
-                        &session_id,
-                        SessionEventPayload::SessionStart {
-                            session_id: session_id.clone(),
-                            agent: agent.to_string(),
-                        },
-                        &session_locks,
-                    )
-                    .await;
+                    let handle = registry
+                        .create(
+                            &agent,
+                            crate::agent::OnDisconnect::Continue, // Scheduled tasks continue in background
+                            Some(gateway.clone()),
+                            Some(chat_id.clone()),
+                        )
+                        .await?;
+                    let session_id = handle.id().to_string();
 
                     debug!(
                         session_id = %session_id,
@@ -797,11 +741,23 @@ async fn get_or_create_session(
                         "Created session for scheduled task"
                     );
 
-                    session_id
+                    Ok::<_, crate::session::ActorError>(session_id)
                 }
             },
         )
-        .await;
+        .await
+        .map_err(|e: crate::session::ActorError| {
+            SchedulerError::ExecutionFailed(format!(
+                "Failed to create session for scheduled task: {}",
+                e
+            ))
+        })?;
+
+    // Get the handle from registry
+    let handle = config
+        .session_registry
+        .get(&session_id)
+        .ok_or_else(|| SchedulerError::ExecutionFailed("Session not found".to_string()))?;
 
     debug!(
         session_id = %session_id,
@@ -811,7 +767,7 @@ async fn get_or_create_session(
         "Got session for scheduled task"
     );
 
-    Ok(session_id)
+    Ok(handle)
 }
 
 /// Validate schedule timing.
@@ -880,8 +836,6 @@ use std::str::FromStr;
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
-    use crate::scheduler::schedule::ScheduleDestination;
 
     #[test]
     fn validate_timing_rejects_past_timestamp() {

@@ -8,67 +8,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use dashmap::DashMap;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Default timeout for message handler execution (5 minutes).
-/// This prevents hung LLM calls from blocking the per-session lock indefinitely.
 const DEFAULT_MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// How often to run the lock cleanup task (1 hour).
-const LOCK_CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
-
-/// Maximum age for unused locks before cleanup (2 hours).
-const LOCK_MAX_IDLE_AGE: Duration = Duration::from_secs(7200);
-
-/// Per-session locks for serializing message processing.
-///
-/// Key format: "{gateway}:{chat_id}" - ensures events for the same session
-/// are processed sequentially while different sessions can process concurrently.
-///
-/// Each entry tracks (lock, last_access_time) for periodic cleanup of stale entries.
-type SessionProcessingLocks = Arc<DashMap<String, (Arc<Mutex<()>>, Instant)>>;
-
-/// Get or create a processing lock for a session.
-///
-/// Updates the last-access timestamp on each access for cleanup tracking.
-fn get_processing_lock(locks: &SessionProcessingLocks, key: &str) -> Arc<Mutex<()>> {
-    let now = Instant::now();
-    locks
-        .entry(key.to_string())
-        .and_modify(|(_, last_access)| *last_access = now)
-        .or_insert_with(|| (Arc::new(Mutex::new(())), now))
-        .0
-        .clone()
-}
-
-/// Remove stale lock entries that haven't been accessed recently.
-///
-/// Only removes entries where:
-/// 1. The lock hasn't been accessed within `max_age`
-/// 2. No one else holds a reference to the lock (strong_count == 1 means only DashMap holds it)
-fn cleanup_stale_locks(locks: &SessionProcessingLocks, max_age: Duration) -> usize {
-    let now = Instant::now();
-    let stale_keys: Vec<_> = locks
-        .iter()
-        .filter(|entry| {
-            let (lock, last_access) = entry.value();
-            // Only remove if no one is waiting (strong_count == 1 means only DashMap holds it)
-            // and it hasn't been accessed recently
-            Arc::strong_count(lock) == 1 && now.duration_since(*last_access) > max_age
-        })
-        .map(|entry| entry.key().clone())
-        .collect();
-
-    let count = stale_keys.len();
-    for key in stale_keys {
-        locks.remove(&key);
-    }
-    count
-}
 
 use agnx_gateway_protocol::{
     GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageContent, RoutingContext,
@@ -94,9 +40,6 @@ struct GatewayManagerInner {
     /// Message handler for incoming messages.
     handler: Option<Arc<dyn MessageHandler>>,
 
-    /// Per-session locks for serializing event processing.
-    processing_locks: SessionProcessingLocks,
-
     /// Timeout for message handler execution.
     message_handler_timeout: Duration,
 }
@@ -108,33 +51,13 @@ impl GatewayManager {
     /// (which typically make LLM calls) before timing out. This should match the
     /// server's `request_timeout_seconds` config for consistency.
     ///
-    /// Spawns a background task that periodically cleans up stale session locks
-    /// to prevent unbounded memory growth from accumulated lock entries.
+    /// Note: Message handling runs concurrently across chats. The gateway handler
+    /// applies per-session serialization to preserve ordering where needed.
     pub fn new(message_handler_timeout: Duration) -> Self {
-        let processing_locks: SessionProcessingLocks = Arc::new(DashMap::new());
-
-        // Spawn periodic cleanup task for stale locks
-        let cleanup_locks = processing_locks.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(LOCK_CLEANUP_INTERVAL);
-            loop {
-                interval.tick().await;
-                let removed = cleanup_stale_locks(&cleanup_locks, LOCK_MAX_IDLE_AGE);
-                if removed > 0 {
-                    debug!(
-                        removed = removed,
-                        remaining = cleanup_locks.len(),
-                        "Cleaned up stale processing locks"
-                    );
-                }
-            }
-        });
-
         Self {
             inner: Arc::new(RwLock::new(GatewayManagerInner {
                 gateways: HashMap::new(),
                 handler: None,
-                processing_locks,
                 message_handler_timeout,
             })),
         }
@@ -341,27 +264,21 @@ impl GatewayManager {
                         "Message received from gateway"
                     );
 
-                    // Get handler, processing locks, and timeout
-                    let (handler, processing_locks, handler_timeout) = {
+                    // Get handler and timeout (handler applies per-session serialization)
+                    let (handler, handler_timeout) = {
                         let inner = self.inner.read().await;
-                        (
-                            inner.handler.clone(),
-                            inner.processing_locks.clone(),
-                            inner.message_handler_timeout,
-                        )
+                        (inner.handler.clone(), inner.message_handler_timeout)
                     };
 
                     if let Some(handler) = handler {
                         let manager = self.clone();
                         let gateway = gateway.clone();
-                        let lock_key = format!("{}:{}", gateway, data.routing.chat_id);
 
                         tokio::spawn(async move {
-                            // Serialize within (gateway, chat_id)
-                            let lock = get_processing_lock(&processing_locks, &lock_key);
-                            let _guard = lock.lock().await;
+                            // No per-chat lock here. The gateway handler serializes per session
+                            // to preserve message ordering while allowing cross-chat parallelism.
 
-                            // Wrap handler with timeout to prevent hung LLM calls from blocking
+                            // Wrap handler with timeout to prevent hung LLM calls
                             let handler_result = tokio::time::timeout(
                                 handler_timeout,
                                 handler.handle_message(&gateway, &data.routing, &data.content),
@@ -500,27 +417,21 @@ impl GatewayManager {
                         "Callback query received"
                     );
 
-                    // Get handler, processing locks, and timeout
-                    let (handler, processing_locks, handler_timeout) = {
+                    // Get handler and timeout (no per-chat lock - session actor serializes state)
+                    let (handler, handler_timeout) = {
                         let inner = self.inner.read().await;
-                        (
-                            inner.handler.clone(),
-                            inner.processing_locks.clone(),
-                            inner.message_handler_timeout,
-                        )
+                        (inner.handler.clone(), inner.message_handler_timeout)
                     };
 
                     if let Some(handler) = handler {
                         let manager = self.clone();
                         let gateway = gateway.clone();
-                        let lock_key = format!("{}:{}", gateway, data.chat_id);
 
                         tokio::spawn(async move {
-                            // Serialize within (gateway, chat_id)
-                            let lock = get_processing_lock(&processing_locks, &lock_key);
-                            let _guard = lock.lock().await;
+                            // No per-chat lock - session actor handles state serialization.
+                            // For approval flows, the actor ensures approval state consistency.
 
-                            // Wrap handler with timeout to prevent hung operations from blocking
+                            // Wrap handler with timeout to prevent hung operations
                             let handler_result = tokio::time::timeout(
                                 handler_timeout,
                                 handler.handle_callback_query(&gateway, &data),
@@ -697,77 +608,5 @@ mod tests {
         assert!(handle.has_capability("media"));
         assert!(handle.has_capability("edit"));
         assert!(!handle.has_capability("delete"));
-    }
-
-    #[test]
-    fn test_get_processing_lock_returns_same_lock_for_same_key() {
-        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
-
-        let lock1 = get_processing_lock(&locks, "telegram:chat123");
-        let lock2 = get_processing_lock(&locks, "telegram:chat123");
-
-        // Same key should return the same Arc (pointer equality)
-        assert!(Arc::ptr_eq(&lock1, &lock2));
-    }
-
-    #[test]
-    fn test_get_processing_lock_returns_different_locks_for_different_keys() {
-        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
-
-        let lock1 = get_processing_lock(&locks, "telegram:chat123");
-        let lock2 = get_processing_lock(&locks, "telegram:chat456");
-
-        // Different keys should return different locks
-        assert!(!Arc::ptr_eq(&lock1, &lock2));
-    }
-
-    #[test]
-    fn test_cleanup_stale_locks_removes_old_unused_entries() {
-        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
-
-        // Insert a lock entry with an old timestamp
-        let old_time = Instant::now() - Duration::from_secs(10000);
-        locks.insert(
-            "telegram:old_chat".to_string(),
-            (Arc::new(Mutex::new(())), old_time),
-        );
-
-        // Insert a recent lock entry
-        locks.insert(
-            "telegram:recent_chat".to_string(),
-            (Arc::new(Mutex::new(())), Instant::now()),
-        );
-
-        assert_eq!(locks.len(), 2);
-
-        // Cleanup with 1 hour max age should remove the old entry
-        let removed = cleanup_stale_locks(&locks, Duration::from_secs(3600));
-
-        assert_eq!(removed, 1);
-        assert_eq!(locks.len(), 1);
-        assert!(locks.contains_key("telegram:recent_chat"));
-        assert!(!locks.contains_key("telegram:old_chat"));
-    }
-
-    #[test]
-    fn test_cleanup_stale_locks_preserves_locks_with_references() {
-        let locks: SessionProcessingLocks = Arc::new(DashMap::new());
-
-        // Insert an old lock entry
-        let old_time = Instant::now() - Duration::from_secs(10000);
-        locks.insert(
-            "telegram:held_chat".to_string(),
-            (Arc::new(Mutex::new(())), old_time),
-        );
-
-        // Get a reference to the lock (simulates someone holding it)
-        let _held_lock = get_processing_lock(&locks, "telegram:held_chat");
-
-        // Cleanup should NOT remove the entry because someone holds a reference
-        // (strong_count > 1 due to _held_lock)
-        let removed = cleanup_stale_locks(&locks, Duration::from_secs(3600));
-
-        assert_eq!(removed, 0);
-        assert_eq!(locks.len(), 1);
     }
 }

@@ -11,7 +11,6 @@
 //! Use `resume_agentic_loop` to continue after the user approves or denies.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -19,21 +18,9 @@ use tracing::{debug, warn};
 
 use crate::agent::AgentSpec;
 use crate::llm::{ChatRequest, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
+use crate::session::handle::SessionHandle;
 use crate::session::snapshot::PendingApproval;
-use crate::session::{SessionEventPayload, SessionLocks, SessionStore, record_event};
 use crate::tools::{ToolError, ToolExecutor, ToolResult};
-
-/// Context for recording session events during the agentic loop.
-///
-/// Groups the session store, path, ID, and locks that are always used together
-/// for event persistence.
-#[derive(Clone)]
-pub struct EventContext {
-    pub sessions: SessionStore,
-    pub sessions_path: PathBuf,
-    pub session_id: String,
-    pub session_locks: SessionLocks,
-}
 
 /// Result of running the agentic loop.
 #[derive(Debug)]
@@ -90,7 +77,7 @@ pub async fn run_agentic_loop(
     executor: &ToolExecutor,
     agent_spec: &AgentSpec,
     initial_messages: Vec<Message>,
-    ctx: &EventContext,
+    handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
@@ -195,20 +182,15 @@ pub async fn run_agentic_loop(
             // Record tool call event
             let arguments: serde_json::Value =
                 serde_json::from_str(&tool_call.function.arguments).unwrap_or_default();
-            if let Err(e) = record_event(
-                &ctx.sessions,
-                &ctx.sessions_path,
-                &ctx.session_id,
-                SessionEventPayload::ToolCall {
-                    call_id: tool_call.id.clone(),
-                    tool_name: tool_call.function.name.clone(),
-                    arguments: arguments.clone(),
-                },
-                &ctx.session_locks,
-            )
-            .await
+            if let Err(e) = handle
+                .enqueue_tool_call(
+                    tool_call.id.clone(),
+                    tool_call.function.name.clone(),
+                    arguments.clone(),
+                )
+                .await
             {
-                warn!(error = %e, "Failed to record tool call event");
+                warn!(error = %e, "Failed to enqueue tool call event");
             }
 
             // Execute the tool
@@ -220,36 +202,19 @@ pub async fn run_agentic_loop(
                 Err(ToolError::ApprovalRequired { call_id, command }) => {
                     // Record partial assistant content if any (before tool call)
                     if !content.is_empty()
-                        && let Err(e) = record_event(
-                            &ctx.sessions,
-                            &ctx.sessions_path,
-                            &ctx.session_id,
-                            SessionEventPayload::AssistantMessage {
-                                agent: agent_spec.metadata.name.clone(),
-                                content: content.clone(),
-                                usage: None, // Usage tracked separately
-                            },
-                            &ctx.session_locks,
-                        )
-                        .await
+                        && let Err(e) = handle
+                            .enqueue_assistant_message(content.clone(), None)
+                            .await
                     {
-                        warn!(error = %e, "Failed to record partial assistant message");
+                        warn!(error = %e, "Failed to enqueue partial assistant message");
                     }
 
                     // Record approval required event
-                    if let Err(e) = record_event(
-                        &ctx.sessions,
-                        &ctx.sessions_path,
-                        &ctx.session_id,
-                        SessionEventPayload::ApprovalRequired {
-                            call_id: call_id.clone(),
-                            command: command.clone(),
-                        },
-                        &ctx.session_locks,
-                    )
-                    .await
+                    if let Err(e) = handle
+                        .enqueue_approval_required(call_id.clone(), command.clone())
+                        .await
                     {
-                        warn!(error = %e, "Failed to record approval required event");
+                        warn!(error = %e, "Failed to enqueue approval required event");
                     }
 
                     // Create pending approval and return AwaitingApproval
@@ -289,22 +254,11 @@ pub async fn run_agentic_loop(
             };
 
             // Record tool result event
-            if let Err(e) = record_event(
-                &ctx.sessions,
-                &ctx.sessions_path,
-                &ctx.session_id,
-                SessionEventPayload::ToolResult {
-                    call_id: tool_call.id.clone(),
-                    result: crate::session::ToolResultData {
-                        success: result.success,
-                        content: result.content.clone(),
-                    },
-                },
-                &ctx.session_locks,
-            )
-            .await
+            if let Err(e) = handle
+                .enqueue_tool_result(tool_call.id.clone(), result.success, result.content.clone())
+                .await
             {
-                warn!(error = %e, "Failed to record tool result event");
+                warn!(error = %e, "Failed to enqueue tool result event");
             }
 
             // Add tool result message
@@ -327,29 +281,22 @@ pub async fn resume_agentic_loop(
     agent_spec: &AgentSpec,
     pending: PendingApproval,
     tool_result: ToolResult,
-    ctx: &EventContext,
+    handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
     // Restore messages from pending state
     let mut messages = pending.messages;
 
     // Record tool result event
-    if let Err(e) = record_event(
-        &ctx.sessions,
-        &ctx.sessions_path,
-        &ctx.session_id,
-        SessionEventPayload::ToolResult {
-            call_id: pending.call_id.clone(),
-            result: crate::session::ToolResultData {
-                success: tool_result.success,
-                content: tool_result.content.clone(),
-            },
-        },
-        &ctx.session_locks,
-    )
-    .await
+    if let Err(e) = handle
+        .enqueue_tool_result(
+            pending.call_id.clone(),
+            tool_result.success,
+            tool_result.content.clone(),
+        )
+        .await
     {
-        warn!(error = %e, "Failed to record tool result event");
+        warn!(error = %e, "Failed to enqueue tool result event");
     }
 
     // Add tool result message
@@ -357,7 +304,15 @@ pub async fn resume_agentic_loop(
     messages.push(tool_result_msg);
 
     // Continue the loop with the updated messages
-    run_agentic_loop(provider, executor, agent_spec, messages, ctx, tool_filter).await
+    run_agentic_loop(
+        provider,
+        executor,
+        agent_spec,
+        messages,
+        handle,
+        tool_filter,
+    )
+    .await
 }
 
 #[cfg(test)]

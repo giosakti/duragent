@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +14,7 @@ use crate::handlers;
 use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
-use crate::session::{SessionLocks, SessionStore};
+use crate::session::SessionRegistry;
 
 // ============================================================================
 // Application State
@@ -26,8 +25,8 @@ use crate::session::{SessionLocks, SessionStore};
 pub struct AppState {
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
-    pub sessions: SessionStore,
-    pub sessions_path: PathBuf,
+    /// Session registry for managing session actors.
+    pub session_registry: SessionRegistry,
     pub idle_timeout_seconds: u64,
     pub keep_alive_interval_seconds: u64,
     /// Registry for background tasks that should be awaited on shutdown.
@@ -44,9 +43,6 @@ pub struct AppState {
     /// Per-agent locks for policy file writes.
     /// Prevents concurrent writes from overwriting each other.
     pub policy_locks: PolicyLocks,
-    /// Per-session locks for disk I/O.
-    /// Prevents concurrent writes to the same session's files.
-    pub session_locks: SessionLocks,
     /// Scheduler handle for schedule tools.
     pub scheduler: Option<SchedulerHandle>,
 }

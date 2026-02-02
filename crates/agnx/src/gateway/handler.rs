@@ -6,7 +6,6 @@
 //! For agents with tools configured, messages are processed through the
 //! agentic loop which supports tool execution and the approval flow.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,15 +18,14 @@ use crate::agent::{AgentStore, PolicyLocks};
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
 use crate::context::ContextBuilder;
-use crate::llm::{Message, ProviderRegistry, Role};
+use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 use crate::session::{
-    AgenticResult, ApprovalDecisionType, ChatSessionCache, EventContext, SessionContext,
-    SessionEventPayload, SessionLocks, SessionStore, clear_pending_approval, commit_event,
-    get_pending_approval, persist_assistant_message, record_event, resume_agentic_loop,
-    run_agentic_loop, set_pending_approval,
+    AgenticResult, ApprovalDecisionType, ChatSessionCache, SessionHandle, SessionRegistry,
+    resume_agentic_loop, run_agentic_loop,
 };
+use crate::sync::KeyedLocks;
 use crate::tools::{ToolExecutionContext, ToolExecutor, ToolResult};
 
 // ============================================================================
@@ -65,12 +63,10 @@ impl RoutingConfig {
 pub struct GatewayHandlerConfig {
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
-    pub sessions: SessionStore,
-    pub sessions_path: PathBuf,
+    pub session_registry: SessionRegistry,
     pub routing_config: RoutingConfig,
     pub sandbox: Arc<dyn Sandbox>,
     pub gateway_manager: GatewayManager,
-    pub session_locks: SessionLocks,
     pub policy_locks: PolicyLocks,
     pub scheduler: Option<SchedulerHandle>,
     pub chat_session_cache: ChatSessionCache,
@@ -80,18 +76,17 @@ pub struct GatewayHandlerConfig {
 pub struct GatewayMessageHandler {
     agents: AgentStore,
     providers: ProviderRegistry,
-    sessions: SessionStore,
-    sessions_path: PathBuf,
+    session_registry: SessionRegistry,
     /// Shared cache mapping (gateway, chat_id, agent) to session_id.
     chat_session_cache: ChatSessionCache,
+    /// Per-session locks to serialize message and callback processing.
+    message_locks: KeyedLocks,
     /// Routing configuration for agent selection.
     routing_config: RoutingConfig,
     /// Sandbox for tool execution.
     sandbox: Arc<dyn Sandbox>,
     /// Gateway manager for sending messages with keyboards.
     gateway_manager: GatewayManager,
-    /// Per-session locks for disk I/O.
-    session_locks: SessionLocks,
     /// Per-agent locks for policy file writes.
     policy_locks: PolicyLocks,
     /// Scheduler handle for schedule tools.
@@ -104,13 +99,12 @@ impl GatewayMessageHandler {
         Self {
             agents: config.agents,
             providers: config.providers,
-            sessions: config.sessions,
-            sessions_path: config.sessions_path,
+            session_registry: config.session_registry,
             chat_session_cache: config.chat_session_cache,
+            message_locks: KeyedLocks::with_cleanup("gateway_message_locks"),
             routing_config: config.routing_config,
             sandbox: config.sandbox,
             gateway_manager: config.gateway_manager,
-            session_locks: config.session_locks,
             policy_locks: config.policy_locks,
             scheduler: config.scheduler,
         }
@@ -128,7 +122,7 @@ impl GatewayMessageHandler {
         &self,
         gateway: &str,
         routing: &RoutingContext,
-    ) -> Option<String> {
+    ) -> Option<SessionHandle> {
         // Resolve agent first - we need it for the cache key
         let agent_name = self.resolve_agent(gateway, routing)?;
 
@@ -136,16 +130,14 @@ impl GatewayMessageHandler {
         let agent = self.agents.get(&agent_name)?;
 
         // Clone values needed in closures
-        let sessions = self.sessions.clone();
-        let sessions_path = self.sessions_path.clone();
-        let session_locks = self.session_locks.clone();
+        let registry = self.session_registry.clone();
         let agent_name_clone = agent_name.clone();
         let gateway_clone = gateway.to_string();
         let chat_id_clone = routing.chat_id.clone();
         let on_disconnect = agent.session.on_disconnect;
 
         // Use atomic get-or-insert to prevent race conditions
-        let session_id = self
+        let session_id = match self
             .chat_session_cache
             .get_or_insert_with(
                 gateway,
@@ -153,46 +145,26 @@ impl GatewayMessageHandler {
                 &agent_name,
                 // Validator: check if the cached session still exists
                 |session_id| {
-                    let sessions = sessions.clone();
-                    async move { sessions.get(&session_id).await.is_some() }
+                    let registry = registry.clone();
+                    async move { registry.contains(&session_id) }
                 },
                 // Creator: create a new session if needed
                 || {
-                    let sessions = sessions.clone();
-                    let sessions_path = sessions_path.clone();
-                    let session_locks = session_locks.clone();
+                    let registry = registry.clone();
                     let agent_name = agent_name_clone.clone();
                     let gateway = gateway_clone.clone();
                     let chat_id = chat_id_clone.clone();
                     async move {
-                        let session = sessions.create(&agent_name).await;
-                        let session_id = session.id.clone();
+                        let handle = registry
+                            .create(
+                                &agent_name,
+                                on_disconnect,
+                                Some(gateway.clone()),
+                                Some(chat_id.clone()),
+                            )
+                            .await?;
 
-                        // Persist session start event with gateway routing info
-                        let ctx = SessionContext {
-                            sessions: &sessions,
-                            sessions_path: &sessions_path,
-                            session_id: &session_id,
-                            agent: &session.agent,
-                            created_at: session.created_at,
-                            status: SessionStatus::Active,
-                            on_disconnect,
-                            gateway: Some(&gateway),
-                            gateway_chat_id: Some(&chat_id),
-                            pending_approval: None,
-                            session_locks: &session_locks,
-                        };
-                        if let Err(e) = commit_event(
-                            &ctx,
-                            SessionEventPayload::SessionStart {
-                                session_id: session_id.clone(),
-                                agent: session.agent.clone(),
-                            },
-                        )
-                        .await
-                        {
-                            error!(error = %e, "Failed to persist gateway session start");
-                        }
+                        let session_id = handle.id().to_string();
 
                         debug!(
                             gateway = %gateway,
@@ -202,13 +174,26 @@ impl GatewayMessageHandler {
                             "Created new session for gateway chat"
                         );
 
-                        session_id
+                        Ok::<_, crate::session::ActorError>(session_id)
                     }
                 },
             )
-            .await;
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    gateway = %gateway,
+                    chat_id = %routing.chat_id,
+                    error = %e,
+                    "Failed to create session for gateway chat"
+                );
+                return None;
+            }
+        };
 
-        Some(session_id)
+        // Get handle from registry
+        self.session_registry.get(&session_id)
     }
 
     /// Resolve the agent to use for new sessions based on routing rules.
@@ -248,7 +233,7 @@ impl GatewayMessageHandler {
     /// Used by callback queries where we know the gateway and chat_id but not
     /// which agent was routed to. Tries each agent in the routing rules until
     /// we find a cached session.
-    async fn find_session_for_chat(&self, gateway: &str, chat_id: &str) -> Option<String> {
+    async fn find_session_for_chat(&self, gateway: &str, chat_id: &str) -> Option<SessionHandle> {
         // Check each agent that could have been routed to this chat
         for rule in &self.routing_config.rules {
             if let Some(session_id) = self
@@ -256,9 +241,9 @@ impl GatewayMessageHandler {
                 .get(gateway, chat_id, &rule.agent)
                 .await
             {
-                // Verify session still exists
-                if self.sessions.get(&session_id).await.is_some() {
-                    return Some(session_id);
+                // Verify session still exists and return handle
+                if let Some(handle) = self.session_registry.get(&session_id) {
+                    return Some(handle);
                 }
             }
         }
@@ -270,43 +255,21 @@ impl GatewayMessageHandler {
         &self,
         gateway: &str,
         chat_id: &str,
-        session_id: &str,
+        handle: &SessionHandle,
         text: &str,
     ) -> Option<String> {
-        let session = self.sessions.get(session_id).await?;
-        let agent = self.agents.get(&session.agent)?;
+        let agent = self.agents.get(handle.agent())?;
 
-        // Add user message to session
-        let user_message = Message::text(Role::User, text);
-        if self
-            .sessions
-            .add_message(session_id, user_message)
-            .await
-            .is_err()
-        {
-            error!(session_id = %session_id, "Failed to add user message");
+        // Persist user message via actor
+        if let Err(e) = handle.add_user_message(text.to_string()).await {
+            error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
             return None;
-        }
-
-        // Record user message event
-        if let Err(e) = record_event(
-            &self.sessions,
-            &self.sessions_path,
-            session_id,
-            SessionEventPayload::UserMessage {
-                content: text.to_string(),
-            },
-            &self.session_locks,
-        )
-        .await
-        {
-            error!(error = %e, "Failed to persist user message event");
         }
 
         // Route to agentic loop if agent has tools configured
         if !agent.tools.is_empty() {
             return self
-                .process_text_message_agentic(gateway, chat_id, session_id, text)
+                .process_text_message_agentic(gateway, chat_id, handle, text)
                 .await;
         }
 
@@ -315,11 +278,13 @@ impl GatewayMessageHandler {
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())?;
 
-        let history = self
-            .sessions
-            .get_messages(session_id)
-            .await
-            .unwrap_or_default();
+        let history = match handle.get_messages().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!(error = %e, "Failed to get messages");
+                return None;
+            }
+        };
 
         // Build structured context and render to ChatRequest
         let chat_request = ContextBuilder::new()
@@ -347,16 +312,9 @@ impl GatewayMessageHandler {
             .and_then(|c| c.message.content.clone())
             .unwrap_or_default();
 
-        if let Err(e) = persist_assistant_message(
-            &self.sessions,
-            &self.sessions_path,
-            session_id,
-            &session.agent,
-            assistant_content.clone(),
-            response.usage,
-            &self.session_locks,
-        )
-        .await
+        if let Err(e) = handle
+            .add_assistant_message(assistant_content.clone(), response.usage)
+            .await
         {
             error!(error = %e, "Failed to persist assistant message");
         }
@@ -369,11 +327,10 @@ impl GatewayMessageHandler {
         &self,
         gateway: &str,
         chat_id: &str,
-        session_id: &str,
+        handle: &SessionHandle,
         _text: &str,
     ) -> Option<String> {
-        let session = self.sessions.get(session_id).await?;
-        let agent = self.agents.get(&session.agent)?;
+        let agent = self.agents.get(handle.agent())?;
 
         let provider = self
             .providers
@@ -385,9 +342,9 @@ impl GatewayMessageHandler {
             self.sandbox.clone(),
             agent.agent_dir.clone(),
             agent.policy.clone(),
-            session.agent.clone(),
+            handle.agent().to_string(),
         )
-        .with_session_id(session_id.to_string());
+        .with_session_id(handle.id().to_string());
 
         // Add scheduler and execution context if available
         if let Some(ref scheduler) = self.scheduler {
@@ -396,17 +353,19 @@ impl GatewayMessageHandler {
                 .with_execution_context(ToolExecutionContext {
                     gateway: Some(gateway.to_string()),
                     chat_id: Some(chat_id.to_string()),
-                    agent: session.agent.clone(),
-                    session_id: session_id.to_string(),
+                    agent: handle.agent().to_string(),
+                    session_id: handle.id().to_string(),
                 });
         }
 
         // Build initial messages from history using StructuredContext
-        let history = self
-            .sessions
-            .get_messages(session_id)
-            .await
-            .unwrap_or_default();
+        let history = match handle.get_messages().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!(error = %e, "Failed to get messages");
+                return Some(format!("Error: {}", e));
+            }
+        };
         let messages = ContextBuilder::new()
             .from_agent_spec(agent)
             .with_messages(history)
@@ -420,14 +379,8 @@ impl GatewayMessageHandler {
             .messages;
 
         // Run agentic loop
-        let event_ctx = EventContext {
-            sessions: self.sessions.clone(),
-            sessions_path: self.sessions_path.clone(),
-            session_id: session_id.to_string(),
-            session_locks: self.session_locks.clone(),
-        };
         let result =
-            match run_agentic_loop(provider, &executor, agent, messages, &event_ctx, None).await {
+            match run_agentic_loop(provider, &executor, agent, messages, handle, None).await {
                 Ok(r) => r,
                 Err(e) => {
                     error!(error = %e, "Agentic loop failed");
@@ -442,18 +395,8 @@ impl GatewayMessageHandler {
                 iterations: _,
                 tool_calls_made: _,
             } => {
-                // Persist final assistant message
-                if let Err(e) = persist_assistant_message(
-                    &self.sessions,
-                    &self.sessions_path,
-                    session_id,
-                    &session.agent,
-                    content.clone(),
-                    usage,
-                    &self.session_locks,
-                )
-                .await
-                {
+                // Persist final assistant message via actor
+                if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
                     error!(error = %e, "Failed to persist assistant message");
                 }
                 Some(content)
@@ -465,26 +408,14 @@ impl GatewayMessageHandler {
                 iterations: _,
                 tool_calls_made: _,
             } => {
-                // Persist pending approval to snapshot
-                if let Err(e) = set_pending_approval(
-                    &self.sessions,
-                    &self.sessions_path,
-                    session_id,
-                    &pending,
-                    &self.session_locks,
-                )
-                .await
-                {
+                // Persist pending approval via actor
+                if let Err(e) = handle.set_pending_approval(pending.clone()).await {
                     error!(error = %e, "Failed to persist pending approval");
                     return Some("Error: Failed to save approval request".to_string());
                 }
 
-                // Set session status to Paused
-                if let Err(e) = self
-                    .sessions
-                    .set_status(session_id, SessionStatus::Paused)
-                    .await
-                {
+                // Set session status to Paused via actor
+                if let Err(e) = handle.set_status(SessionStatus::Paused).await {
                     debug!(error = %e, "Failed to set session status to Paused");
                 }
 
@@ -523,12 +454,14 @@ impl MessageHandler for GatewayMessageHandler {
         content: &MessageContent,
     ) -> Option<String> {
         // Get or create session for this chat
-        let session_id = self.get_or_create_session(gateway, routing).await?;
+        let handle = self.get_or_create_session(gateway, routing).await?;
+        let lock = self.message_locks.get(handle.id());
+        let _guard = lock.lock().await;
 
         // Process based on content type
         match content {
             MessageContent::Text { text } => {
-                self.process_text_message(gateway, &routing.chat_id, &session_id, text)
+                self.process_text_message(gateway, &routing.chat_id, &handle, text)
                     .await
             }
             MessageContent::Media { caption, .. } => {
@@ -537,7 +470,7 @@ impl MessageHandler for GatewayMessageHandler {
                     && !caption.is_empty()
                 {
                     return self
-                        .process_text_message(gateway, &routing.chat_id, &session_id, caption)
+                        .process_text_message(gateway, &routing.chat_id, &handle, caption)
                         .await;
                 }
                 None
@@ -574,32 +507,22 @@ impl MessageHandler for GatewayMessageHandler {
 
         let decision = parts[1];
 
-        // Look up session from chat_id by finding a session that matches this gateway/chat
-        // We need to find which agent was used for this chat, so we scan the cache
-        let session_id = self.find_session_for_chat(gateway, &data.chat_id).await;
-
-        let session_id = match session_id {
-            Some(id) => id,
+        // Look up session from chat_id - returns SessionHandle
+        let handle = match self.find_session_for_chat(gateway, &data.chat_id).await {
+            Some(h) => h,
             None => {
                 warn!(chat_id = %data.chat_id, "No session found for chat");
                 return Some("No active session".to_string());
             }
         };
+        let lock = self.message_locks.get(handle.id());
+        let _guard = lock.lock().await;
 
-        // Verify session exists
-        let session = match self.sessions.get(&session_id).await {
-            Some(s) => s,
-            None => {
-                warn!(session_id = %session_id, "Session not found for approval callback");
-                return Some("Session not found".to_string());
-            }
-        };
-
-        // Load pending approval from snapshot
-        let pending = match get_pending_approval(&self.sessions_path, &session_id).await {
+        // Load pending approval via actor
+        let pending = match handle.get_pending_approval().await {
             Ok(Some(p)) => p,
             Ok(None) => {
-                warn!(session_id = %session_id, "No pending approval found");
+                warn!(session_id = %handle.id(), "No pending approval found");
                 return Some("No pending approval".to_string());
             }
             Err(e) => {
@@ -627,28 +550,20 @@ impl MessageHandler for GatewayMessageHandler {
             ApprovalDecisionType::Deny => format!("✗ Denied: {}", command_preview),
         };
 
-        // Record the approval decision event
-        if let Err(e) = record_event(
-            &self.sessions,
-            &self.sessions_path,
-            &session_id,
-            SessionEventPayload::ApprovalDecision {
-                call_id: pending.call_id.clone(),
-                decision: decision_type,
-            },
-            &self.session_locks,
-        )
-        .await
+        // Record the approval decision event via actor
+        if let Err(e) = handle
+            .record_approval_decision(pending.call_id.clone(), decision_type)
+            .await
         {
             error!(error = %e, "Failed to record approval decision");
             return Some("Failed to process approval".to_string());
         }
 
         // Get agent spec for tool execution
-        let agent = match self.agents.get(&session.agent) {
+        let agent = match self.agents.get(handle.agent()) {
             Some(a) => a,
             None => {
-                error!(agent = %session.agent, "Agent not found");
+                error!(agent = %handle.agent(), "Agent not found");
                 return Some("Agent configuration error".to_string());
             }
         };
@@ -658,7 +573,7 @@ impl MessageHandler for GatewayMessageHandler {
             && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
                 &agent.policy,
                 &agent.agent_dir,
-                &session.agent,
+                handle.agent(),
                 crate::agent::ToolType::Bash,
                 &pending.command,
                 &self.policy_locks,
@@ -688,9 +603,9 @@ impl MessageHandler for GatewayMessageHandler {
                 self.sandbox.clone(),
                 agent.agent_dir.clone(),
                 agent.policy.clone(),
-                session.agent.clone(),
+                handle.agent().to_string(),
             )
-            .with_session_id(session_id.to_string());
+            .with_session_id(handle.id().to_string());
 
             // Add scheduler and execution context if available
             if let Some(ref scheduler) = self.scheduler {
@@ -699,8 +614,8 @@ impl MessageHandler for GatewayMessageHandler {
                     .with_execution_context(ToolExecutionContext {
                         gateway: Some(gateway.to_string()),
                         chat_id: Some(data.chat_id.to_string()),
-                        agent: session.agent.clone(),
-                        session_id: session_id.to_string(),
+                        agent: handle.agent().to_string(),
+                        session_id: handle.id().to_string(),
                     });
             }
 
@@ -723,15 +638,8 @@ impl MessageHandler for GatewayMessageHandler {
             }
         };
 
-        // Clear pending approval
-        if let Err(e) = clear_pending_approval(
-            &self.sessions,
-            &self.sessions_path,
-            &session_id,
-            &self.session_locks,
-        )
-        .await
-        {
+        // Clear pending approval via actor
+        if let Err(e) = handle.clear_pending_approval().await {
             debug!(error = %e, "Failed to clear pending approval");
         }
 
@@ -753,9 +661,9 @@ impl MessageHandler for GatewayMessageHandler {
             self.sandbox.clone(),
             agent.agent_dir.clone(),
             agent.policy.clone(),
-            session.agent.clone(),
+            handle.agent().to_string(),
         )
-        .with_session_id(session_id.to_string());
+        .with_session_id(handle.id().to_string());
 
         // Add scheduler and execution context if available
         if let Some(ref scheduler) = self.scheduler {
@@ -764,25 +672,19 @@ impl MessageHandler for GatewayMessageHandler {
                 .with_execution_context(ToolExecutionContext {
                     gateway: Some(gateway.to_string()),
                     chat_id: Some(data.chat_id.to_string()),
-                    agent: session.agent.clone(),
-                    session_id: session_id.to_string(),
+                    agent: handle.agent().to_string(),
+                    session_id: handle.id().to_string(),
                 });
         }
 
         // Resume the agentic loop
-        let event_ctx = EventContext {
-            sessions: self.sessions.clone(),
-            sessions_path: self.sessions_path.clone(),
-            session_id: session_id.to_string(),
-            session_locks: self.session_locks.clone(),
-        };
         let result = match resume_agentic_loop(
             provider,
             &executor,
             agent,
             pending,
             tool_result,
-            &event_ctx,
+            &handle,
             None,
         )
         .await
@@ -790,11 +692,8 @@ impl MessageHandler for GatewayMessageHandler {
             Ok(r) => r,
             Err(e) => {
                 error!(error = %e, "Agentic loop resume failed");
-                // Set session back to Active on error
-                let _ = self
-                    .sessions
-                    .set_status(&session_id, SessionStatus::Active)
-                    .await;
+                // Set session back to Active on error via actor
+                let _ = handle.set_status(SessionStatus::Active).await;
                 return Some(format!("Error resuming: {}", e));
             }
         };
@@ -806,24 +705,11 @@ impl MessageHandler for GatewayMessageHandler {
                 iterations: _,
                 tool_calls_made: _,
             } => {
-                // Set session back to Active
-                let _ = self
-                    .sessions
-                    .set_status(&session_id, SessionStatus::Active)
-                    .await;
+                // Set session back to Active via actor
+                let _ = handle.set_status(SessionStatus::Active).await;
 
-                // Persist final assistant message
-                if let Err(e) = persist_assistant_message(
-                    &self.sessions,
-                    &self.sessions_path,
-                    &session_id,
-                    &session.agent,
-                    content.clone(),
-                    usage,
-                    &self.session_locks,
-                )
-                .await
-                {
+                // Persist final assistant message via actor
+                if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
                     error!(error = %e, "Failed to persist assistant message");
                 }
 
@@ -846,16 +732,8 @@ impl MessageHandler for GatewayMessageHandler {
                 iterations: _,
                 tool_calls_made: _,
             } => {
-                // Persist new pending approval
-                if let Err(e) = set_pending_approval(
-                    &self.sessions,
-                    &self.sessions_path,
-                    &session_id,
-                    &new_pending,
-                    &self.session_locks,
-                )
-                .await
-                {
+                // Persist new pending approval via actor
+                if let Err(e) = handle.set_pending_approval(new_pending.clone()).await {
                     error!(error = %e, "Failed to persist pending approval");
                     return Some("Error: Failed to save approval request".to_string());
                 }

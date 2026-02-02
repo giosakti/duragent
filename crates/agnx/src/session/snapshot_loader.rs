@@ -46,8 +46,9 @@ pub async fn load_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::SessionStatus;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SessionStatus};
+    use crate::session::SessionConfig;
     use chrono::Utc;
     use std::path::PathBuf;
     use tempfile::TempDir;

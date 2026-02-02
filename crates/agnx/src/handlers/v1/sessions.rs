@@ -22,13 +22,11 @@ use crate::api::{
 };
 use crate::context::ContextBuilder;
 use crate::handlers::problem_details;
-use crate::llm::{ChatRequest, LLMProvider, Message, Role};
+use crate::llm::{ChatRequest, LLMProvider};
 use crate::server::AppState;
 use crate::session::{
-    AccumulatingStream, AgenticResult, ApprovalDecisionType, EventContext, SessionContext,
-    SessionEventPayload, StreamConfig, clear_pending_approval_internal, commit_event,
-    get_pending_approval, get_session_lock, persist_assistant_message, record_event,
-    resume_agentic_loop, run_agentic_loop, set_pending_approval,
+    AccumulatingStream, AgenticResult, ApprovalDecisionType, SessionHandle, StreamConfig,
+    resume_agentic_loop, run_agentic_loop,
 };
 use crate::tools::{ToolExecutor, ToolResult};
 
@@ -48,15 +46,15 @@ pub struct GetMessagesQuery {
 /// GET /api/v1/sessions
 pub async fn list_sessions(State(state): State<AppState>) -> Json<ListSessionsResponse> {
     let sessions: Vec<SessionSummary> = state
-        .sessions
+        .session_registry
         .list()
         .await
         .into_iter()
-        .map(|s| SessionSummary {
-            session_id: s.id,
-            agent: s.agent,
-            status: s.status,
-            created_at: s.created_at.to_rfc3339(),
+        .map(|m| SessionSummary {
+            session_id: m.id,
+            agent: m.agent,
+            status: m.status,
+            created_at: m.created_at.to_rfc3339(),
         })
         .collect();
 
@@ -73,38 +71,36 @@ pub async fn create_session(
             .into_response();
     };
 
-    let session = state.sessions.create(&req.agent).await;
-    let ctx = SessionContext {
-        sessions: &state.sessions,
-        sessions_path: &state.sessions_path,
-        session_id: &session.id,
-        agent: &session.agent,
-        created_at: session.created_at,
-        status: SessionStatus::Active,
-        on_disconnect: agent_spec.session.on_disconnect,
-        gateway: None,
-        gateway_chat_id: None,
-        pending_approval: None,
-        session_locks: &state.session_locks,
-    };
-    if let Err(e) = commit_event(
-        &ctx,
-        SessionEventPayload::SessionStart {
-            session_id: session.id.clone(),
-            agent: session.agent.clone(),
-        },
-    )
-    .await
+    // Create session via registry - actor records SessionStart event automatically
+    let handle = match state
+        .session_registry
+        .create(&req.agent, agent_spec.session.on_disconnect, None, None)
+        .await
     {
-        return problem_details::internal_error(format!("failed to persist session: {}", e))
+        Ok(h) => h,
+        Err(e) => {
+            return problem_details::internal_error(format!("failed to create session: {}", e))
+                .into_response();
+        }
+    };
+
+    // Get metadata for response
+    let metadata = match handle.get_metadata().await {
+        Ok(m) => m,
+        Err(e) => {
+            return problem_details::internal_error(format!(
+                "failed to get session metadata: {}",
+                e
+            ))
             .into_response();
-    }
+        }
+    };
 
     let response = CreateSessionResponse {
-        session_id: session.id.clone(),
-        agent: session.agent.clone(),
-        status: session.status,
-        created_at: session.created_at.to_rfc3339(),
+        session_id: metadata.id,
+        agent: metadata.agent,
+        status: metadata.status,
+        created_at: metadata.created_at.to_rfc3339(),
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -115,16 +111,27 @@ pub async fn get_session(
     State(state): State<AppState>,
     PathExtract(session_id): PathExtract<String>,
 ) -> impl IntoResponse {
-    let Some(session) = state.sessions.get(&session_id).await else {
+    let Some(handle) = state.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
     };
 
+    let metadata = match handle.get_metadata().await {
+        Ok(m) => m,
+        Err(e) => {
+            return problem_details::internal_error(format!(
+                "failed to get session metadata: {}",
+                e
+            ))
+            .into_response();
+        }
+    };
+
     let response = GetSessionResponse {
-        session_id: session.id.clone(),
-        agent: session.agent.clone(),
-        status: session.status,
-        created_at: session.created_at.to_rfc3339(),
-        updated_at: Some(session.updated_at.to_rfc3339()),
+        session_id: metadata.id,
+        agent: metadata.agent,
+        status: metadata.status,
+        created_at: metadata.created_at.to_rfc3339(),
+        updated_at: Some(metadata.updated_at.to_rfc3339()),
     };
 
     (StatusCode::OK, Json(response)).into_response()
@@ -136,16 +143,17 @@ pub async fn get_messages(
     PathExtract(session_id): PathExtract<String>,
     Query(query): Query<GetMessagesQuery>,
 ) -> impl IntoResponse {
-    // First check if session exists
-    if state.sessions.get(&session_id).await.is_none() {
+    let Some(handle) = state.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
-    }
+    };
 
-    let messages = state
-        .sessions
-        .get_messages(&session_id)
-        .await
-        .unwrap_or_default();
+    let messages = match handle.get_messages().await {
+        Ok(m) => m,
+        Err(e) => {
+            return problem_details::internal_error(format!("failed to get messages: {}", e))
+                .into_response();
+        }
+    };
 
     let iter = messages.into_iter().map(|m| MessageResponse {
         role: m.role.to_string(),
@@ -170,16 +178,10 @@ pub async fn send_message(
         Err(e) => return e.into_response(),
     };
 
-    // Get session info for agent name
-    let session = match state.sessions.get(&session_id).await {
-        Some(s) => s,
-        None => return problem_details::not_found("session not found").into_response(),
-    };
-
     // Check if agent has tools configured
     if !ctx.agent_spec.tools.is_empty() {
         // Use agentic loop for tool-using agents
-        return send_message_agentic(&state, &session_id, &session.agent, ctx).await;
+        return send_message_agentic(&state, ctx).await;
     }
 
     // Simple single-turn for agents without tools
@@ -197,17 +199,11 @@ pub async fn send_message(
         .and_then(|c| c.message.content.clone())
         .unwrap_or_default();
 
-    // Persist assistant message to store and event log
-    if let Err(e) = persist_assistant_message(
-        &state.sessions,
-        &state.sessions_path,
-        &session_id,
-        &session.agent,
-        assistant_content.clone(),
-        chat_response.usage.clone(),
-        &state.session_locks,
-    )
-    .await
+    // Persist assistant message via actor
+    if let Err(e) = ctx
+        .handle
+        .add_assistant_message(assistant_content.clone(), chat_response.usage.clone())
+        .await
     {
         return problem_details::internal_error(format!(
             "failed to persist assistant message: {}",
@@ -226,35 +222,27 @@ pub async fn send_message(
 }
 
 /// Handle send_message for agents with tools using the agentic loop.
-async fn send_message_agentic(
-    state: &AppState,
-    session_id: &str,
-    agent_name: &str,
-    ctx: ChatContext,
-) -> Response {
+async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
+    let session_id = ctx.handle.id().to_string();
+    let agent_name = ctx.handle.agent().to_string();
+
     // Create tool executor with policy
     let executor = ToolExecutor::new(
         ctx.agent_spec.tools.clone(),
         state.sandbox.clone(),
         ctx.agent_dir.clone(),
         ctx.agent_spec.policy.clone(),
-        agent_name.to_string(),
+        agent_name.clone(),
     )
-    .with_session_id(session_id.to_string());
+    .with_session_id(session_id.clone());
 
-    // Run the agentic loop
-    let event_ctx = EventContext {
-        sessions: state.sessions.clone(),
-        sessions_path: state.sessions_path.clone(),
-        session_id: session_id.to_string(),
-        session_locks: state.session_locks.clone(),
-    };
+    // Run the agentic loop with SessionHandle
     let result = match run_agentic_loop(
         ctx.provider,
         &executor,
         &ctx.agent_spec,
         ctx.request.messages,
-        &event_ctx,
+        &ctx.handle,
         None, // TODO: pass context.tool_refs when skills are implemented
     )
     .await
@@ -266,7 +254,7 @@ async fn send_message_agentic(
         }
     };
 
-    handle_agentic_result(state, session_id, agent_name, result, false).await
+    handle_agentic_result(&ctx.handle, result, false).await
 }
 
 /// POST /api/v1/sessions/{session_id}/stream
@@ -297,10 +285,16 @@ pub async fn stream_session(
         Err(e) => return e.into_response(),
     };
 
-    // Get session info for snapshot (we need created_at and agent)
-    let session = match state.sessions.get(&session_id).await {
-        Some(s) => s,
-        None => return problem_details::not_found("session not found").into_response(),
+    // Get metadata for stream config
+    let metadata = match ctx.handle.get_metadata().await {
+        Ok(m) => m,
+        Err(e) => {
+            return problem_details::internal_error(format!(
+                "failed to get session metadata: {}",
+                e
+            ))
+            .into_response();
+        }
     };
 
     let stream = match ctx.provider.chat_stream(ctx.request).await {
@@ -324,17 +318,15 @@ pub async fn stream_session(
     let sse_stream = AccumulatingStream::new(
         stream,
         StreamConfig {
-            sessions: state.sessions.clone(),
+            handle: ctx.handle,
             session_id,
-            agent: session.agent.clone(),
-            created_at: session.created_at,
+            agent: metadata.agent,
+            created_at: metadata.created_at,
             message_id,
             idle_timeout: Duration::from_secs(state.idle_timeout_seconds),
             cancel_token,
             on_disconnect: ctx.on_disconnect,
-            sessions_path: state.sessions_path.clone(),
             background_tasks: state.background_tasks.clone(),
-            session_locks: state.session_locks.clone(),
         },
     );
 
@@ -356,19 +348,15 @@ pub async fn approve_command(
     PathExtract(session_id): PathExtract<String>,
     Json(req): Json<ApproveCommandRequest>,
 ) -> impl IntoResponse {
-    // Verify session exists
-    let Some(session) = state.sessions.get(&session_id).await else {
+    // Verify session exists and get handle
+    let Some(handle) = state.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
     };
 
-    // Acquire session lock to prevent concurrent approval requests from racing.
-    // This lock is held until after we clear the pending approval, ensuring
-    // atomic read-validate-process-clear semantics.
-    let approval_lock = get_session_lock(&state.session_locks, &session_id);
-    let _approval_guard = approval_lock.lock().await;
+    let agent_name = handle.agent().to_string();
 
-    // Load pending approval from snapshot
-    let pending = match get_pending_approval(&state.sessions_path, &session_id).await {
+    // Load pending approval from actor (actor serializes access, no external lock needed)
+    let pending = match handle.get_pending_approval().await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return problem_details::not_found("no pending approval for this session")
@@ -399,18 +387,10 @@ pub async fn approve_command(
         ApprovalDecision::Deny => ApprovalDecisionType::Deny,
     };
 
-    // Record the approval decision event
-    if let Err(e) = record_event(
-        &state.sessions,
-        &state.sessions_path,
-        &session_id,
-        SessionEventPayload::ApprovalDecision {
-            call_id: req.call_id.clone(),
-            decision,
-        },
-        &state.session_locks,
-    )
-    .await
+    // Record the approval decision event via actor
+    if let Err(e) = handle
+        .record_approval_decision(req.call_id.clone(), decision)
+        .await
     {
         return problem_details::internal_error(format!(
             "failed to persist approval decision: {}",
@@ -420,7 +400,7 @@ pub async fn approve_command(
     }
 
     // Get agent spec for tool execution
-    let Some(agent_spec) = state.agents.get(&session.agent) else {
+    let Some(agent_spec) = state.agents.get(&agent_name) else {
         return problem_details::internal_error("session references non-existent agent")
             .into_response();
     };
@@ -430,7 +410,7 @@ pub async fn approve_command(
         && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
             &agent_spec.policy,
             &agent_spec.agent_dir,
-            &session.agent,
+            &agent_name,
             crate::agent::ToolType::Bash,
             &req.command,
             &state.policy_locks,
@@ -461,7 +441,7 @@ pub async fn approve_command(
             state.sandbox.clone(),
             agent_spec.agent_dir.clone(),
             agent_spec.policy.clone(),
-            session.agent.clone(),
+            agent_name.clone(),
         )
         .with_session_id(session_id.clone());
 
@@ -485,8 +465,8 @@ pub async fn approve_command(
         }
     };
 
-    // Clear pending approval
-    if let Err(e) = clear_pending_approval_internal(&state.sessions_path, &session_id).await {
+    // Clear pending approval via actor
+    if let Err(e) = handle.clear_pending_approval().await {
         debug!(error = %e, "Failed to clear pending approval");
     }
 
@@ -508,33 +488,23 @@ pub async fn approve_command(
         state.sandbox.clone(),
         agent_spec.agent_dir.clone(),
         agent_spec.policy.clone(),
-        session.agent.clone(),
+        agent_name.clone(),
     )
     .with_session_id(session_id.clone());
 
     // Set session to Running before resuming (accurate status during execution)
-    if let Err(e) = state
-        .sessions
-        .set_status(&session_id, SessionStatus::Running)
-        .await
-    {
+    if let Err(e) = handle.set_status(SessionStatus::Running).await {
         debug!(error = %e, "Failed to set session status to Running");
     }
 
-    // Resume the agentic loop
-    let event_ctx = EventContext {
-        sessions: state.sessions.clone(),
-        sessions_path: state.sessions_path.clone(),
-        session_id: session_id.clone(),
-        session_locks: state.session_locks.clone(),
-    };
+    // Resume the agentic loop with SessionHandle
     let result = match resume_agentic_loop(
         provider,
         &executor,
         agent_spec,
         pending,
         tool_result,
-        &event_ctx,
+        &handle,
         None, // TODO: pass context.tool_refs when skills are implemented
     )
     .await
@@ -542,17 +512,14 @@ pub async fn approve_command(
         Ok(r) => r,
         Err(e) => {
             // Reset to Active on error
-            let _ = state
-                .sessions
-                .set_status(&session_id, SessionStatus::Active)
-                .await;
+            let _ = handle.set_status(SessionStatus::Active).await;
             return problem_details::internal_error(format!("agentic loop failed: {}", e))
                 .into_response();
         }
     };
 
     // Handle result using shared helper
-    handle_agentic_result(&state, &session_id, &session.agent, result, true).await
+    handle_agentic_result(&handle, result, true).await
 }
 
 // ============================================================================
@@ -564,7 +531,6 @@ pub async fn approve_command(
 enum SendMessageError {
     SessionNotFound,
     AgentNotFound,
-    MessageAddFailed,
     PersistFailed(String),
     ProviderNotConfigured(String),
 }
@@ -575,9 +541,6 @@ impl IntoResponse for SendMessageError {
             Self::SessionNotFound => problem_details::not_found("session not found"),
             Self::AgentNotFound => {
                 problem_details::internal_error("session references non-existent agent")
-            }
-            Self::MessageAddFailed => {
-                problem_details::internal_error("failed to add message to session")
             }
             Self::PersistFailed(msg) => problem_details::internal_error(msg),
             Self::ProviderNotConfigured(provider) => problem_details::internal_error(format!(
@@ -596,6 +559,7 @@ struct ChatContext {
     on_disconnect: OnDisconnect,
     agent_spec: Arc<AgentSpec>,
     agent_dir: std::path::PathBuf,
+    handle: SessionHandle,
 }
 
 /// Prepare chat context for LLM request.
@@ -607,47 +571,32 @@ async fn prepare_chat_context(
     session_id: &str,
     user_content: String,
 ) -> Result<ChatContext, SendMessageError> {
-    let Some(session) = state.sessions.get(session_id).await else {
+    let Some(handle) = state.session_registry.get(session_id) else {
         return Err(SendMessageError::SessionNotFound);
     };
 
-    let Some(agent) = state.agents.get(&session.agent) else {
+    let agent_name = handle.agent().to_string();
+    let Some(agent) = state.agents.get(&agent_name) else {
         return Err(SendMessageError::AgentNotFound);
     };
 
-    let content_for_event = user_content.clone();
-    let user_message = Message::text(Role::User, user_content);
-    if state
-        .sessions
-        .add_message(session_id, user_message)
-        .await
-        .is_err()
-    {
-        return Err(SendMessageError::MessageAddFailed);
-    }
-
-    if let Err(e) = record_event(
-        &state.sessions,
-        &state.sessions_path,
-        session_id,
-        SessionEventPayload::UserMessage {
-            content: content_for_event,
-        },
-        &state.session_locks,
-    )
-    .await
-    {
+    // Persist user message via actor
+    if let Err(e) = handle.add_user_message(user_content).await {
         return Err(SendMessageError::PersistFailed(format!(
             "Failed to persist user message: {}",
             e
         )));
     }
 
-    let history = state
-        .sessions
-        .get_messages(session_id)
-        .await
-        .unwrap_or_default();
+    let history = match handle.get_messages().await {
+        Ok(m) => m,
+        Err(e) => {
+            return Err(SendMessageError::PersistFailed(format!(
+                "Failed to get messages: {}",
+                e
+            )));
+        }
+    };
 
     let Some(provider) = state
         .providers
@@ -681,6 +630,7 @@ async fn prepare_chat_context(
         on_disconnect: agent.session.on_disconnect,
         agent_spec,
         agent_dir,
+        handle,
     })
 }
 
@@ -689,26 +639,16 @@ async fn prepare_chat_context(
 /// For Complete: persists the message and returns 200 with the response.
 /// For AwaitingApproval: saves pending state, sets Paused, returns 202.
 async fn handle_agentic_result(
-    state: &AppState,
-    session_id: &str,
-    agent_name: &str,
+    handle: &SessionHandle,
     result: AgenticResult,
     is_resume: bool,
 ) -> Response {
+    let session_id = handle.id();
+
     match result {
         AgenticResult::Complete { content, usage, .. } => {
-            // Persist the final assistant message
-            if let Err(e) = persist_assistant_message(
-                &state.sessions,
-                &state.sessions_path,
-                session_id,
-                agent_name,
-                content.clone(),
-                usage,
-                &state.session_locks,
-            )
-            .await
-            {
+            // Persist the final assistant message via actor
+            if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
                 return problem_details::internal_error(format!(
                     "failed to persist assistant message: {}",
                     e
@@ -718,10 +658,7 @@ async fn handle_agentic_result(
 
             // On resume, set back to Active (was Running during execution)
             if is_resume {
-                let _ = state
-                    .sessions
-                    .set_status(session_id, SessionStatus::Active)
-                    .await;
+                let _ = handle.set_status(SessionStatus::Active).await;
             }
 
             let message_id = format!("{}{}", crate::api::MESSAGE_ID_PREFIX, Ulid::new());
@@ -746,16 +683,8 @@ async fn handle_agentic_result(
         }
 
         AgenticResult::AwaitingApproval { pending, .. } => {
-            // Save pending approval to snapshot
-            if let Err(e) = set_pending_approval(
-                &state.sessions,
-                &state.sessions_path,
-                session_id,
-                &pending,
-                &state.session_locks,
-            )
-            .await
-            {
+            // Save pending approval via actor (immediately persists for crash safety)
+            if let Err(e) = handle.set_pending_approval(pending.clone()).await {
                 return problem_details::internal_error(format!(
                     "failed to save pending approval: {}",
                     e
@@ -764,10 +693,7 @@ async fn handle_agentic_result(
             }
 
             // Set session to Paused
-            let _ = state
-                .sessions
-                .set_status(session_id, SessionStatus::Paused)
-                .await;
+            let _ = handle.set_status(SessionStatus::Paused).await;
 
             // Return different response types based on context
             if is_resume {

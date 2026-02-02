@@ -7,7 +7,6 @@
 //! - Automatic persistence of messages and snapshots
 
 use std::convert::Infallible;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::response::sse::Event;
@@ -23,10 +22,7 @@ use crate::api::{SessionStatus, sse as sse_events};
 use crate::background::BackgroundTasks;
 use crate::llm::{ChatStream, StreamEvent, Usage};
 
-use super::persist::{
-    SessionContext, persist_assistant_message, record_event, write_session_snapshot,
-};
-use super::{SessionEventPayload, SessionLocks, SessionStore};
+use super::handle::SessionHandle;
 
 // ============================================================================
 // Public API
@@ -34,8 +30,8 @@ use super::{SessionEventPayload, SessionLocks, SessionStore};
 
 /// Configuration for an accumulating SSE stream.
 pub struct StreamConfig {
-    /// Session store for persisting messages.
-    pub sessions: SessionStore,
+    /// Session handle for persisting messages.
+    pub handle: SessionHandle,
     /// Session ID.
     pub session_id: String,
     /// Agent name.
@@ -50,12 +46,8 @@ pub struct StreamConfig {
     pub cancel_token: CancellationToken,
     /// Behavior when client disconnects.
     pub on_disconnect: OnDisconnect,
-    /// Path to sessions directory for snapshots.
-    pub sessions_path: PathBuf,
     /// Registry for background tasks.
     pub background_tasks: BackgroundTasks,
-    /// Per-session locks for disk I/O.
-    pub session_locks: SessionLocks,
 }
 
 /// A stream wrapper that accumulates token content and stores the assistant message when done.
@@ -72,17 +64,14 @@ pub struct AccumulatingStream {
     message_id: String,
     accumulated: String,
     last_usage: Option<Usage>,
-    sessions: SessionStore,
+    handle: SessionHandle,
     session_id: String,
-    agent: String,
-    sessions_path: PathBuf,
     started: bool,
     finished: bool,
     cancel_token: CancellationToken,
     on_disconnect: OnDisconnect,
     background_tasks: BackgroundTasks,
     disconnect_tx: Option<oneshot::Sender<DisconnectPayload>>,
-    session_locks: SessionLocks,
 }
 
 impl AccumulatingStream {
@@ -90,7 +79,7 @@ impl AccumulatingStream {
     #[must_use]
     pub fn new(inner: ChatStream, config: StreamConfig) -> Self {
         let StreamConfig {
-            sessions,
+            handle,
             session_id,
             agent,
             created_at,
@@ -98,9 +87,7 @@ impl AccumulatingStream {
             idle_timeout,
             cancel_token,
             on_disconnect,
-            sessions_path,
             background_tasks,
-            session_locks,
         } = config;
 
         // Clone the token for the stream wrapper
@@ -125,14 +112,12 @@ impl AccumulatingStream {
         // cleanup (persist partial content, update session status). See Drop impl.
         let (disconnect_tx, disconnect_rx) = oneshot::channel();
         let stream_ctx = StreamContext {
-            sessions: sessions.clone(),
+            handle: handle.clone(),
             session_id: session_id.clone(),
-            agent: agent.clone(),
+            agent,
             created_at,
             message_id: message_id.clone(),
-            sessions_path: sessions_path.clone(),
             on_disconnect,
-            session_locks: session_locks.clone(),
         };
         let handler_tasks = background_tasks.clone();
         handler_tasks.spawn(async move {
@@ -146,43 +131,37 @@ impl AccumulatingStream {
             message_id,
             accumulated: String::new(),
             last_usage: None,
-            sessions,
+            handle,
             session_id,
-            agent,
-            sessions_path,
             started: false,
             finished: false,
             cancel_token,
             on_disconnect,
             background_tasks,
             disconnect_tx: Some(disconnect_tx),
-            session_locks,
         }
     }
 
     /// Save accumulated content as assistant message.
     ///
-    /// Records the event only (no snapshot) — snapshots are written at session boundaries
-    /// (pause, complete, status changes) to avoid O(N²) IO overhead.
+    /// Uses `finalize_stream` to force a snapshot after stream completion.
     fn save_accumulated(&mut self) {
         if !self.accumulated.is_empty() {
-            let sessions = self.sessions.clone();
+            let handle = self.handle.clone();
             let session_id = self.session_id.clone();
-            let agent = self.agent.clone();
             let content = std::mem::take(&mut self.accumulated);
             let usage = self.last_usage.take();
-            let sessions_path = self.sessions_path.clone();
-            let session_locks = self.session_locks.clone();
 
             debug!(
                 session_id = %session_id,
                 content_len = content.len(),
-                "Saving accumulated content"
+                "Saving accumulated content with snapshot"
             );
 
+            // Use finalize_stream for durability (forces snapshot)
             self.background_tasks.spawn(async move {
-                if let Err(e) = persist_assistant_message(&sessions, &sessions_path, &session_id, &agent, content, usage, &session_locks).await {
-                    warn!(session_id = %session_id, error = %e, "Failed to persist assistant message");
+                if let Err(e) = handle.finalize_stream(content, usage).await {
+                    warn!(session_id = %session_id, error = %e, "Failed to finalize stream");
                 }
             });
         }
@@ -351,34 +330,14 @@ impl Drop for AccumulatingStream {
 
 /// Context for stream lifecycle operations (disconnect handling, background continuation).
 struct StreamContext {
-    sessions: SessionStore,
+    handle: SessionHandle,
     session_id: String,
+    #[allow(dead_code)]
     agent: String,
+    #[allow(dead_code)]
     created_at: DateTime<Utc>,
     message_id: String,
-    sessions_path: PathBuf,
     on_disconnect: OnDisconnect,
-    session_locks: SessionLocks,
-}
-
-impl StreamContext {
-    /// Create a SessionContext for snapshot operations.
-    fn session_context(&self, status: SessionStatus) -> SessionContext<'_> {
-        SessionContext {
-            sessions: &self.sessions,
-            sessions_path: &self.sessions_path,
-            session_id: &self.session_id,
-            agent: &self.agent,
-            created_at: self.created_at,
-            status,
-            on_disconnect: self.on_disconnect,
-            // SSE streams are created via HTTP API, not gateways
-            gateway: None,
-            gateway_chat_id: None,
-            pending_approval: None,
-            session_locks: &self.session_locks,
-        }
-    }
 }
 
 /// Payload sent when the SSE stream is dropped unexpectedly.
@@ -397,23 +356,16 @@ async fn handle_disconnect(ctx: StreamContext, payload: DisconnectPayload) {
                     "Missing stream for background continuation"
                 );
                 if !payload.accumulated.is_empty()
-                    && let Err(e) = persist_assistant_message(
-                        &ctx.sessions,
-                        &ctx.sessions_path,
-                        &ctx.session_id,
-                        &ctx.agent,
-                        payload.accumulated,
-                        None,
-                        &ctx.session_locks,
-                    )
-                    .await
+                    && let Err(e) = ctx
+                        .handle
+                        .enqueue_assistant_message(payload.accumulated, None)
+                        .await
                 {
                     warn!(session_id = %ctx.session_id, error = %e, "Failed to persist assistant message");
+                    return;
                 }
 
-                if let Err(e) =
-                    write_session_snapshot(&ctx.session_context(SessionStatus::Active)).await
-                {
+                if let Err(e) = ctx.handle.force_snapshot().await {
                     warn!(
                         session_id = %ctx.session_id,
                         error = %e,
@@ -439,47 +391,27 @@ async fn handle_disconnect(ctx: StreamContext, payload: DisconnectPayload) {
             );
 
             if !payload.accumulated.is_empty()
-                && let Err(e) = persist_assistant_message(
-                    &ctx.sessions,
-                    &ctx.sessions_path,
-                    &ctx.session_id,
-                    &ctx.agent,
-                    payload.accumulated,
-                    None,
-                    &ctx.session_locks,
-                )
-                .await
+                && let Err(e) = ctx
+                    .handle
+                    .enqueue_assistant_message(payload.accumulated, None)
+                    .await
             {
                 warn!(session_id = %ctx.session_id, error = %e, "Failed to persist assistant message");
+                return;
             }
 
-            if ctx
-                .sessions
-                .set_status(&ctx.session_id, SessionStatus::Paused)
-                .await
-                .is_err()
-            {
+            if let Err(e) = ctx.handle.set_status(SessionStatus::Paused).await {
                 warn!(
                     session_id = %ctx.session_id,
+                    error = %e,
                     "Failed to set session status to paused"
                 );
                 return;
             }
-
-            if let Err(e) =
-                write_session_snapshot(&ctx.session_context(SessionStatus::Paused)).await
-            {
-                warn!(
-                    session_id = %ctx.session_id,
-                    error = %e,
-                    "Failed to write snapshot on pause"
-                );
-            } else {
-                info!(
-                    session_id = %ctx.session_id,
-                    "Session paused and snapshot written"
-                );
-            }
+            info!(
+                session_id = %ctx.session_id,
+                "Session paused"
+            );
         }
     }
 }
@@ -500,19 +432,15 @@ async fn continue_stream_in_background(
     ctx: StreamContext,
     accumulated: String,
 ) {
-    if ctx
-        .sessions
-        .set_status(&ctx.session_id, SessionStatus::Running)
-        .await
-        .is_err()
-    {
+    if let Err(e) = ctx.handle.set_status(SessionStatus::Running).await {
         warn!(
             session_id = %ctx.session_id,
+            error = %e,
             "Failed to set session status to running"
         );
     }
 
-    if let Err(e) = write_session_snapshot(&ctx.session_context(SessionStatus::Running)).await {
+    if let Err(e) = ctx.handle.force_snapshot().await {
         warn!(
             session_id = %ctx.session_id,
             error = %e,
@@ -534,56 +462,34 @@ async fn continue_stream_in_background(
 
     let result = consume_stream_to_completion(
         &mut stream,
-        &ctx.sessions,
-        &ctx.sessions_path,
+        &ctx.handle,
         &ctx.session_id,
         &ctx.message_id,
         accumulated,
-        &ctx.session_locks,
     )
     .await;
 
-    // Save the complete accumulated message
+    // Finalize the stream: save accumulated message and force snapshot (crash safety)
     if !result.accumulated.is_empty()
-        && let Err(e) = persist_assistant_message(
-            &ctx.sessions,
-            &ctx.sessions_path,
-            &ctx.session_id,
-            &ctx.agent,
-            result.accumulated,
-            result.usage,
-            &ctx.session_locks,
-        )
-        .await
+        && let Err(e) = ctx
+            .handle
+            .finalize_stream(result.accumulated, result.usage)
+            .await
     {
-        warn!(session_id = %ctx.session_id, error = %e, "Failed to persist assistant message");
+        warn!(session_id = %ctx.session_id, error = %e, "Failed to finalize stream");
     }
 
-    // Write final snapshot with Active status (completed processing)
-    if ctx
-        .sessions
-        .set_status(&ctx.session_id, SessionStatus::Active)
-        .await
-        .is_err()
-    {
+    // Set status back to Active (completed processing)
+    if let Err(e) = ctx.handle.set_status(SessionStatus::Active).await {
         warn!(
             session_id = %ctx.session_id,
+            error = %e,
             "Failed to set session status to active"
         );
     }
 
-    if let Err(e) = write_session_snapshot(&ctx.session_context(SessionStatus::Active)).await {
-        warn!(
-            session_id = %ctx.session_id,
-            error = %e,
-            "Failed to write final snapshot after background continue"
-        );
-    } else {
-        debug!(
-            session_id = %ctx.session_id,
-            "Wrote final Active snapshot after background continue"
-        );
-    }
+    // Note: finalize_stream already forces a snapshot, and set_status also forces one
+    // if the status changed. No need for an extra force_snapshot call here.
 
     info!(
         session_id = %ctx.session_id,
@@ -605,12 +511,10 @@ struct ConsumeResult {
 /// Returns the accumulated content and usage when the stream completes.
 async fn consume_stream_to_completion(
     stream: &mut FlattenedLLMStream,
-    sessions: &SessionStore,
-    sessions_path: &Path,
+    handle: &SessionHandle,
     session_id: &str,
     message_id: &str,
     mut accumulated: String,
-    session_locks: &SessionLocks,
 ) -> ConsumeResult {
     let mut last_usage: Option<Usage> = None;
 
@@ -643,17 +547,12 @@ async fn consume_stream_to_completion(
                     message_id = %message_id,
                     "Background stream timed out"
                 );
-                if let Err(e) = record_event(
-                    sessions,
-                    sessions_path,
-                    session_id,
-                    SessionEventPayload::Error {
-                        code: "timeout".to_string(),
-                        message: "stream idle timeout in background".to_string(),
-                    },
-                    session_locks,
-                )
-                .await
+                if let Err(e) = handle
+                    .record_error(
+                        "timeout".to_string(),
+                        "stream idle timeout in background".to_string(),
+                    )
+                    .await
                 {
                     warn!(
                         session_id = %session_id,
@@ -670,17 +569,9 @@ async fn consume_stream_to_completion(
                     error = %e,
                     "Background stream LLM error"
                 );
-                if let Err(err) = record_event(
-                    sessions,
-                    sessions_path,
-                    session_id,
-                    SessionEventPayload::Error {
-                        code: "llm_error".to_string(),
-                        message: e.to_string(),
-                    },
-                    session_locks,
-                )
-                .await
+                if let Err(err) = handle
+                    .record_error("llm_error".to_string(), e.to_string())
+                    .await
                 {
                     warn!(
                         session_id = %session_id,

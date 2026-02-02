@@ -4,9 +4,7 @@
 //! - Pause mode: session status changes to Paused, snapshot written with Paused status
 //! - Continue mode: session stays Running, events logged to JSONL, final snapshot with Active status
 //!
-//! Note: These tests simulate the outcomes of disconnect scenarios by directly
-//! testing the session store, snapshot, and event persistence layer, since
-//! actual SSE disconnect testing would require end-to-end server tests.
+//! These tests focus on the persistence layer: snapshots, event logging, and session resume.
 
 use std::path::PathBuf;
 
@@ -18,7 +16,7 @@ use agnx::api::SessionStatus;
 use agnx::llm::{Message, Role, Usage};
 use agnx::session::{
     EventReader, EventWriter, SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot,
-    SessionStore, load_snapshot, resume_session, write_snapshot,
+    load_snapshot, resume_session, write_snapshot,
 };
 
 fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
@@ -28,25 +26,6 @@ fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
 // ============================================================================
 // Pause Mode Tests
 // ============================================================================
-
-/// Test that session status can be set to Paused (simulates disconnect with pause mode).
-#[tokio::test]
-async fn pause_mode_session_status_changes_to_paused() {
-    let store = SessionStore::new();
-    let session = store.create("test-agent").await;
-
-    // Initially active
-    assert_eq!(session.status, SessionStatus::Active);
-
-    // Simulate disconnect with pause mode
-    store
-        .set_status(&session.id, SessionStatus::Paused)
-        .await
-        .unwrap();
-
-    let updated = store.get(&session.id).await.unwrap();
-    assert_eq!(updated.status, SessionStatus::Paused);
-}
 
 /// Test that snapshot is written with Paused status on disconnect.
 #[tokio::test]
@@ -86,38 +65,6 @@ async fn pause_mode_snapshot_written_with_paused_status() {
     assert_eq!(loaded.status, SessionStatus::Paused);
     assert_eq!(loaded.config.on_disconnect, OnDisconnect::Pause);
     assert_eq!(loaded.conversation.len(), 2);
-}
-
-/// Test that partial content is saved when disconnected mid-stream (pause mode).
-#[tokio::test]
-async fn pause_mode_partial_content_saved_on_disconnect() {
-    let store = SessionStore::new();
-    let session = store.create("test-agent").await;
-
-    // Simulate user message
-    let user_msg = Message::text(Role::User, "What is Rust?");
-    store.add_message(&session.id, user_msg).await.unwrap();
-
-    // Simulate partial assistant response (disconnect mid-stream)
-    let partial_response = Message::text(Role::Assistant, "Rust is a systems programming"); // Incomplete
-    store
-        .add_message(&session.id, partial_response)
-        .await
-        .unwrap();
-
-    // Set to paused
-    store
-        .set_status(&session.id, SessionStatus::Paused)
-        .await
-        .unwrap();
-
-    // Verify partial content was saved
-    let messages = store.get_messages(&session.id).await.unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1].content_str(), "Rust is a systems programming");
-
-    let updated = store.get(&session.id).await.unwrap();
-    assert_eq!(updated.status, SessionStatus::Paused);
 }
 
 /// Test snapshot with partial conversation is written correctly.
@@ -285,35 +232,6 @@ async fn continue_mode_events_logged_during_background_processing() {
         }
         _ => panic!("expected AssistantMessage"),
     }
-}
-
-/// Test that final message is saved when background task completes.
-#[tokio::test]
-async fn continue_mode_final_message_saved_on_completion() {
-    let store = SessionStore::new();
-    let session = store.create("background-agent").await;
-
-    // Simulate user message before disconnect
-    let user_msg = Message::text(Role::User, "What is Rust?");
-    store.add_message(&session.id, user_msg).await.unwrap();
-
-    // Simulate background task completing and saving full response
-    let complete_response = Message::text(
-        Role::Assistant,
-        "Rust is a systems programming language focused on safety and performance.",
-    );
-    store
-        .add_message(&session.id, complete_response)
-        .await
-        .unwrap();
-
-    // Verify complete message was saved
-    let messages = store.get_messages(&session.id).await.unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(
-        messages[1].content_str(),
-        "Rust is a systems programming language focused on safety and performance."
-    );
 }
 
 /// Test that final snapshot has Active status after background processing completes.
@@ -571,70 +489,6 @@ async fn attach_to_session_still_running_in_background() {
 }
 
 // ============================================================================
-// Session Store Registration Tests
-// ============================================================================
-
-/// Test registering a paused session in the session store.
-#[tokio::test]
-async fn register_paused_session_in_store() {
-    use agnx::session::Session;
-
-    let store = SessionStore::new();
-
-    let session = Session {
-        id: "session_paused_123".to_string(),
-        agent: "test-agent".to_string(),
-        status: SessionStatus::Paused,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        last_event_seq: 0,
-    };
-    let messages = vec![
-        Message::text(Role::User, "Hello"),
-        Message::text(Role::Assistant, "Hi!"),
-    ];
-
-    store.register(session, messages).await;
-
-    let fetched = store.get("session_paused_123").await.unwrap();
-    assert_eq!(fetched.status, SessionStatus::Paused);
-
-    let fetched_messages = store.get_messages("session_paused_123").await.unwrap();
-    assert_eq!(fetched_messages.len(), 2);
-}
-
-/// Test that a registered session can have messages added.
-#[tokio::test]
-async fn registered_session_can_receive_messages() {
-    use agnx::session::Session;
-
-    let store = SessionStore::new();
-
-    let session = Session {
-        id: "session_continue_123".to_string(),
-        agent: "background-agent".to_string(),
-        status: SessionStatus::Active,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        last_event_seq: 0,
-    };
-    let messages = vec![Message::text(Role::User, "Hello")];
-
-    store.register(session, messages).await;
-
-    // Add new message (simulating user continuing the conversation)
-    let new_msg = Message::text(Role::User, "Follow up question");
-    store
-        .add_message("session_continue_123", new_msg)
-        .await
-        .unwrap();
-
-    let messages = store.get_messages("session_continue_123").await.unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1].content_str(), "Follow up question");
-}
-
-// ============================================================================
 // OnDisconnect Configuration Tests
 // ============================================================================
 
@@ -674,76 +528,6 @@ fn on_disconnect_serialization_roundtrip() {
 // ============================================================================
 // Complex Scenario Tests
 // ============================================================================
-
-/// Test full pause mode scenario: create, message, disconnect, snapshot, resume.
-#[tokio::test]
-async fn full_pause_mode_scenario() {
-    let temp_dir = TempDir::new().unwrap();
-    let session_id = "full_pause_scenario";
-    let store = SessionStore::new();
-
-    // 1. Create session
-    let session = store.create("test-agent").await;
-    let session_id_owned = session.id.clone();
-
-    // 2. Add user message
-    store
-        .add_message(
-            &session_id_owned,
-            Message::text(Role::User, "What is Rust?"),
-        )
-        .await
-        .unwrap();
-
-    // 3. Simulate partial streaming response before disconnect
-    store
-        .add_message(
-            &session_id_owned,
-            Message::text(Role::Assistant, "Rust is a systems programming"),
-        )
-        .await
-        .unwrap();
-
-    // 4. Disconnect happens - set status to paused
-    store
-        .set_status(&session_id_owned, SessionStatus::Paused)
-        .await
-        .unwrap();
-
-    // 5. Write snapshot with paused state
-    let messages = store.get_messages(&session_id_owned).await.unwrap();
-    let session_data = store.get(&session_id_owned).await.unwrap();
-
-    let snapshot = SessionSnapshot::new(
-        session_id.to_string(),
-        session_data.agent.clone(),
-        SessionStatus::Paused,
-        session_data.created_at,
-        2,
-        messages,
-        SessionConfig {
-            on_disconnect: OnDisconnect::Pause,
-            ..Default::default()
-        },
-    );
-
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
-        .await
-        .unwrap();
-
-    // 6. Verify we can resume the paused session
-    let resumed = resume_session(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(resumed.status, SessionStatus::Paused);
-    assert_eq!(resumed.conversation.len(), 2);
-    assert_eq!(
-        resumed.conversation[1].content_str(),
-        "Rust is a systems programming"
-    );
-}
 
 /// Test full continue mode scenario: create, message, disconnect, background, complete.
 #[tokio::test]

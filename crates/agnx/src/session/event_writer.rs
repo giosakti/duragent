@@ -62,11 +62,43 @@ impl EventWriter {
 
         Ok(())
     }
+
+    /// Append multiple events to the log file in a single batch.
+    ///
+    /// More efficient than calling `append` repeatedly because it performs
+    /// a single fsync after all events are written.
+    pub async fn append_batch(&mut self, events: &[SessionEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        // Serialize all events to a single buffer
+        let mut buffer = String::new();
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            buffer.push_str(&line);
+            buffer.push('\n');
+        }
+
+        self.file
+            .write_all(buffer.as_bytes())
+            .await
+            .map_err(|e| SessionError::io(&self.path, e))?;
+
+        // Single fsync for the entire batch
+        self.file
+            .sync_all()
+            .await
+            .map_err(|e| SessionError::io(&self.path, e))?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::OnDisconnect;
     use crate::llm::Usage;
     use crate::session::SessionEventPayload;
     use tempfile::TempDir;
@@ -146,8 +178,10 @@ mod tests {
             SessionEvent::new(
                 1,
                 SessionEventPayload::SessionStart {
-                    session_id: "test_session".to_string(),
                     agent: "my-agent".to_string(),
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
                 },
             ),
             SessionEvent::new(
