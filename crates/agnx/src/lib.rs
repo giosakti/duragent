@@ -21,6 +21,7 @@ pub mod sse;
 // ============================================================================
 
 pub mod agent;
+pub mod context;
 pub mod gateway;
 pub mod llm;
 pub mod sandbox;

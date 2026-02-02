@@ -10,6 +10,7 @@
 //! The loop can pause when a tool requires approval, returning `AwaitingApproval`.
 //! Use `resume_agentic_loop` to continue after the user approves or denies.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -82,15 +83,18 @@ pub enum AgenticError {
 /// - Calls the LLM with available tools
 /// - If the LLM returns tool calls, executes them and feeds results back
 /// - Continues until the LLM returns a final response or max iterations is reached
+///
+/// If `tool_filter` is provided, only those tools will be visible to the LLM.
 pub async fn run_agentic_loop(
     provider: Arc<dyn LLMProvider>,
     executor: &ToolExecutor,
     agent_spec: &AgentSpec,
     initial_messages: Vec<Message>,
     ctx: &EventContext,
+    tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
-    let tool_definitions = executor.tool_definitions();
+    let tool_definitions = executor.tool_definitions(tool_filter);
 
     let mut messages = initial_messages;
     let mut total_usage: Option<Usage> = None;
@@ -324,6 +328,7 @@ pub async fn resume_agentic_loop(
     pending: PendingApproval,
     tool_result: ToolResult,
     ctx: &EventContext,
+    tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
     // Restore messages from pending state
     let mut messages = pending.messages;
@@ -352,7 +357,7 @@ pub async fn resume_agentic_loop(
     messages.push(tool_result_msg);
 
     // Continue the loop with the updated messages
-    run_agentic_loop(provider, executor, agent_spec, messages, ctx).await
+    run_agentic_loop(provider, executor, agent_spec, messages, ctx, tool_filter).await
 }
 
 #[cfg(test)]

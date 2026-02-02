@@ -5,7 +5,6 @@
 //! v0.4.0: Agentic loop for tool-using agents.
 
 mod agentic;
-mod chat_request;
 mod chat_session_cache;
 mod error;
 mod event_reader;
@@ -41,8 +40,7 @@ pub use persist::{
 pub use recover::{RecoveryResult, recover_sessions};
 pub use resume::{ResumedSession, resume_session};
 
-// Chat and streaming
-pub use chat_request::{build_chat_messages, build_chat_request, build_system_message};
+// Streaming
 pub use stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop

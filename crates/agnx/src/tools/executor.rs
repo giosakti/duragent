@@ -1,6 +1,6 @@
 //! Tool executor for running tools in agentic workflows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -271,10 +271,14 @@ impl ToolExecutor {
     }
 
     /// Generate tool definitions for the LLM.
-    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+    ///
+    /// If `filter` is provided, only tools whose names are in the filter
+    /// will be included. This controls what the LLM sees, not what can execute.
+    pub fn tool_definitions(&self, filter: Option<&HashSet<String>>) -> Vec<ToolDefinition> {
         self.tools
-            .values()
-            .map(|config| match config {
+            .iter()
+            .filter(|(name, _)| filter.is_none_or(|f| f.contains(*name)))
+            .map(|(_, config)| match config {
                 ToolConfig::Builtin { name } if name == "bash" => bash::definition(),
                 ToolConfig::Builtin { name } if name == "schedule_task" => {
                     schedule::schedule_task_definition()
@@ -547,7 +551,7 @@ mod tests {
             name: "bash".to_string(),
         }]);
 
-        let defs = executor.tool_definitions();
+        let defs = executor.tool_definitions(None);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].function.name, "bash");
         assert!(defs[0].function.parameters.is_some());
@@ -562,7 +566,7 @@ mod tests {
             description: Some("Run git commands".to_string()),
         }]);
 
-        let defs = executor.tool_definitions();
+        let defs = executor.tool_definitions(None);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].function.name, "git-helper");
         assert_eq!(defs[0].function.description, "Run git commands");
@@ -582,7 +586,7 @@ mod tests {
             },
         ]);
 
-        let defs = executor.tool_definitions();
+        let defs = executor.tool_definitions(None);
         assert_eq!(defs.len(), 2);
     }
 
@@ -592,7 +596,7 @@ mod tests {
             name: "unknown-builtin".to_string(),
         }]);
 
-        let defs = executor.tool_definitions();
+        let defs = executor.tool_definitions(None);
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].function.name, "unknown-builtin");
         assert!(defs[0].function.description.contains("unknown-builtin"));

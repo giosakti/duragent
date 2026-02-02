@@ -14,12 +14,13 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::agent::AgentStore;
+use crate::context::ContextBuilder;
 use crate::gateway::GatewayManager;
 use crate::llm::{Message, ProviderRegistry, Role};
 use crate::sandbox::Sandbox;
 use crate::session::{
     AgenticResult, ChatSessionCache, EventContext, SessionEventPayload, SessionLocks, SessionStore,
-    build_system_message, persist_assistant_message, record_event, run_agentic_loop,
+    persist_assistant_message, record_event, run_agentic_loop,
 };
 use crate::tools::ToolExecutor;
 
@@ -635,18 +636,23 @@ async fn execute_task_payload(
     )
     .with_session_id(session_id.clone());
 
-    // Build messages
+    // Build messages using StructuredContext
     let history = config
         .sessions
         .get_messages(&session_id)
         .await
         .unwrap_or_default();
-    let system_message = build_system_message(agent);
-    let mut messages = Vec::new();
-    if let Some(sys) = system_message {
-        messages.push(Message::text(Role::System, sys));
-    }
-    messages.extend(history);
+    let messages = ContextBuilder::new()
+        .from_agent_spec(agent)
+        .with_messages(history)
+        .build()
+        .render(
+            &agent.model.name,
+            agent.model.temperature,
+            agent.model.max_output_tokens,
+            vec![], // Tools handled by agentic loop via executor
+        )
+        .messages;
 
     // Run agentic loop
     let event_ctx = EventContext {
@@ -656,7 +662,7 @@ async fn execute_task_payload(
         session_locks: config.session_locks.clone(),
     };
 
-    let result = run_agentic_loop(provider, &executor, agent, messages, &event_ctx)
+    let result = run_agentic_loop(provider, &executor, agent, messages, &event_ctx, None)
         .await
         .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 
