@@ -37,8 +37,10 @@ async fn event_write_read_roundtrip() {
         SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: session_id.to_string(),
                 agent: "test-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         ),
         SessionEvent::new(
@@ -78,8 +80,7 @@ async fn event_write_read_roundtrip() {
 
     assert_eq!(read_events[0].seq, 1);
     match &read_events[0].payload {
-        SessionEventPayload::SessionStart { session_id, agent } => {
-            assert_eq!(session_id, "test_session");
+        SessionEventPayload::SessionStart { agent, .. } => {
             assert_eq!(agent, "test-agent");
         }
         _ => panic!("expected SessionStart"),
@@ -314,8 +315,10 @@ async fn events_and_snapshot_coordinate_recovery() {
         .append(&SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: session_id.to_string(),
                 agent: "recovery-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         ))
         .await
@@ -800,8 +803,10 @@ async fn all_event_types_roundtrip() {
         SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: session_id.to_string(),
                 agent: "test-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         ),
         SessionEvent::new(

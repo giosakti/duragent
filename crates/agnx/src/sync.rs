@@ -14,6 +14,9 @@ pub const DEFAULT_CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
 /// Default max idle age before a lock is considered stale (2 hours).
 pub const DEFAULT_MAX_IDLE_AGE: Duration = Duration::from_secs(7200);
 
+/// Internal storage type for keyed locks: maps key to (lock, last_access_time).
+type LockStorage = DashMap<String, (Arc<Mutex<()>>, Instant)>;
+
 /// Per-key async mutex with automatic stale entry cleanup.
 ///
 /// Provides fine-grained locking where different keys can be accessed concurrently
@@ -35,7 +38,7 @@ pub const DEFAULT_MAX_IDLE_AGE: Duration = Duration::from_secs(7200);
 /// ```
 #[derive(Clone)]
 pub struct KeyedLocks {
-    locks: Arc<DashMap<String, (Arc<Mutex<()>>, Instant)>>,
+    locks: Arc<LockStorage>,
 }
 
 impl KeyedLocks {

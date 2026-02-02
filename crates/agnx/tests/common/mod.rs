@@ -11,7 +11,7 @@ use agnx::gateway::GatewayManager;
 use agnx::llm::ProviderRegistry;
 use agnx::sandbox::TrustSandbox;
 use agnx::server::{self, AppState};
-use agnx::session::SessionStore;
+use agnx::session::SessionRegistry;
 
 /// Create a test app with empty state.
 pub async fn test_app() -> Router {
@@ -29,8 +29,7 @@ pub async fn test_app() -> Router {
     let state = AppState {
         agents: empty_agent_store().await,
         providers: ProviderRegistry::new(),
-        sessions: SessionStore::new(),
-        sessions_path,
+        session_registry: SessionRegistry::new(sessions_path),
         idle_timeout_seconds: 60,
         keep_alive_interval_seconds: 15,
         background_tasks: BackgroundTasks::new(),
@@ -39,7 +38,6 @@ pub async fn test_app() -> Router {
         gateways: GatewayManager::default(),
         sandbox: Arc::new(TrustSandbox::new()),
         policy_locks: agnx::sync::KeyedLocks::new(),
-        session_locks: agnx::sync::KeyedLocks::new(),
         scheduler: None,
     };
 

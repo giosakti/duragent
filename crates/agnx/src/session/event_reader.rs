@@ -98,6 +98,7 @@ impl EventReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::OnDisconnect;
     use crate::llm::Usage;
     use crate::session::{EventWriter, SessionEventPayload};
     use tempfile::TempDir;
@@ -161,8 +162,10 @@ mod tests {
             SessionEvent::new(
                 1,
                 SessionEventPayload::SessionStart {
-                    session_id: "test_session".to_string(),
                     agent: "my-agent".to_string(),
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
                 },
             ),
             SessionEvent::new(

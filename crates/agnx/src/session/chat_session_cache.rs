@@ -73,19 +73,19 @@ impl ChatSessionCache {
     /// * `creator` - Closure that creates a new session_id if needed
     ///
     /// Returns the existing session_id if found and valid, or the result of calling the creator.
-    pub async fn get_or_insert_with<V, VFut, C, CFut>(
+    pub async fn get_or_insert_with<V, VFut, C, CFut, E>(
         &self,
         gateway: &str,
         chat_id: &str,
         agent: &str,
         validator: V,
         creator: C,
-    ) -> String
+    ) -> Result<String, E>
     where
         V: Fn(String) -> VFut,
         VFut: std::future::Future<Output = bool>,
         C: FnOnce() -> CFut,
-        CFut: std::future::Future<Output = String>,
+        CFut: std::future::Future<Output = Result<String, E>>,
     {
         let key = Self::key(gateway, chat_id, agent);
         let lock = self.inflight.get(&key);
@@ -97,7 +97,7 @@ impl ChatSessionCache {
             cache.get(&key).cloned()
         } {
             if validator(session_id.clone()).await {
-                return session_id;
+                return Ok(session_id);
             }
 
             // Session was deleted, remove stale entry
@@ -106,13 +106,13 @@ impl ChatSessionCache {
         }
 
         // Create new session and insert
-        let session_id = creator().await;
+        let session_id = creator().await?;
         let mut cache = self.cache.write().await;
         if let Some(existing) = cache.get(&key) {
-            return existing.clone();
+            return Ok(existing.clone());
         }
         cache.insert(key, session_id.clone());
-        session_id
+        Ok(session_id)
     }
 
     /// Rebuild the cache from recovered sessions.

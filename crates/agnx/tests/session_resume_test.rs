@@ -851,8 +851,10 @@ async fn resume_ignores_session_start_events() {
         .append(&SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: session_id.to_string(),
                 agent: "test-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         ))
         .await
@@ -1053,8 +1055,10 @@ async fn resume_with_status_change_and_messages() {
         .append(&SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
-                session_id: session_id.to_string(),
                 agent: "agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
             },
         ))
         .await

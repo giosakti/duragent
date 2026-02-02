@@ -13,10 +13,7 @@ use std::time::Duration;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
-use crate::sync::KeyedLocks;
-
 /// Default timeout for message handler execution (5 minutes).
-/// This prevents hung LLM calls from blocking the per-session lock indefinitely.
 const DEFAULT_MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(300);
 
 use agnx_gateway_protocol::{
@@ -43,11 +40,6 @@ struct GatewayManagerInner {
     /// Message handler for incoming messages.
     handler: Option<Arc<dyn MessageHandler>>,
 
-    /// Per-session locks for serializing event processing.
-    /// Key format: "{gateway}:{chat_id}" - ensures events for the same session
-    /// are processed sequentially while different sessions can process concurrently.
-    processing_locks: KeyedLocks,
-
     /// Timeout for message handler execution.
     message_handler_timeout: Duration,
 }
@@ -59,14 +51,13 @@ impl GatewayManager {
     /// (which typically make LLM calls) before timing out. This should match the
     /// server's `request_timeout_seconds` config for consistency.
     ///
-    /// Spawns a background task that periodically cleans up stale session locks
-    /// to prevent unbounded memory growth from accumulated lock entries.
+    /// Note: Message handling runs concurrently across chats. The gateway handler
+    /// applies per-session serialization to preserve ordering where needed.
     pub fn new(message_handler_timeout: Duration) -> Self {
         Self {
             inner: Arc::new(RwLock::new(GatewayManagerInner {
                 gateways: HashMap::new(),
                 handler: None,
-                processing_locks: KeyedLocks::with_cleanup("processing_locks"),
                 message_handler_timeout,
             })),
         }
@@ -273,27 +264,21 @@ impl GatewayManager {
                         "Message received from gateway"
                     );
 
-                    // Get handler, processing locks, and timeout
-                    let (handler, processing_locks, handler_timeout) = {
+                    // Get handler and timeout (handler applies per-session serialization)
+                    let (handler, handler_timeout) = {
                         let inner = self.inner.read().await;
-                        (
-                            inner.handler.clone(),
-                            inner.processing_locks.clone(),
-                            inner.message_handler_timeout,
-                        )
+                        (inner.handler.clone(), inner.message_handler_timeout)
                     };
 
                     if let Some(handler) = handler {
                         let manager = self.clone();
                         let gateway = gateway.clone();
-                        let lock_key = format!("{}:{}", gateway, data.routing.chat_id);
 
                         tokio::spawn(async move {
-                            // Serialize within (gateway, chat_id)
-                            let lock = processing_locks.get(&lock_key);
-                            let _guard = lock.lock().await;
+                            // No per-chat lock here. The gateway handler serializes per session
+                            // to preserve message ordering while allowing cross-chat parallelism.
 
-                            // Wrap handler with timeout to prevent hung LLM calls from blocking
+                            // Wrap handler with timeout to prevent hung LLM calls
                             let handler_result = tokio::time::timeout(
                                 handler_timeout,
                                 handler.handle_message(&gateway, &data.routing, &data.content),
@@ -432,27 +417,21 @@ impl GatewayManager {
                         "Callback query received"
                     );
 
-                    // Get handler, processing locks, and timeout
-                    let (handler, processing_locks, handler_timeout) = {
+                    // Get handler and timeout (no per-chat lock - session actor serializes state)
+                    let (handler, handler_timeout) = {
                         let inner = self.inner.read().await;
-                        (
-                            inner.handler.clone(),
-                            inner.processing_locks.clone(),
-                            inner.message_handler_timeout,
-                        )
+                        (inner.handler.clone(), inner.message_handler_timeout)
                     };
 
                     if let Some(handler) = handler {
                         let manager = self.clone();
                         let gateway = gateway.clone();
-                        let lock_key = format!("{}:{}", gateway, data.chat_id);
 
                         tokio::spawn(async move {
-                            // Serialize within (gateway, chat_id)
-                            let lock = processing_locks.get(&lock_key);
-                            let _guard = lock.lock().await;
+                            // No per-chat lock - session actor handles state serialization.
+                            // For approval flows, the actor ensures approval state consistency.
 
-                            // Wrap handler with timeout to prevent hung operations from blocking
+                            // Wrap handler with timeout to prevent hung operations
                             let handler_result = tokio::time::timeout(
                                 handler_timeout,
                                 handler.handle_callback_query(&gateway, &data),
