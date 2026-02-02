@@ -18,14 +18,15 @@ use super::{GatewayManager, MessageHandler, build_approval_keyboard};
 use crate::agent::{AgentStore, PolicyLocks};
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
+use crate::context::ContextBuilder;
 use crate::llm::{Message, ProviderRegistry, Role};
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 use crate::session::{
     AgenticResult, ApprovalDecisionType, ChatSessionCache, EventContext, SessionContext,
-    SessionEventPayload, SessionLocks, SessionStore, build_chat_request, build_system_message,
-    clear_pending_approval, commit_event, get_pending_approval, persist_assistant_message,
-    record_event, resume_agentic_loop, run_agentic_loop, set_pending_approval,
+    SessionEventPayload, SessionLocks, SessionStore, clear_pending_approval, commit_event,
+    get_pending_approval, persist_assistant_message, record_event, resume_agentic_loop,
+    run_agentic_loop, set_pending_approval,
 };
 use crate::tools::{ToolExecutionContext, ToolExecutor, ToolResult};
 
@@ -296,14 +297,17 @@ impl GatewayMessageHandler {
             .get_messages(session_id)
             .await
             .unwrap_or_default();
-        let system_message = build_system_message(agent);
-        let chat_request = build_chat_request(
-            &agent.model.name,
-            system_message.as_deref(),
-            &history,
-            agent.model.temperature,
-            agent.model.max_output_tokens,
-        );
+
+        // Build structured context and render to ChatRequest
+        let chat_request = ContextBuilder::new()
+            .from_agent_spec(agent)
+            .with_messages(history)
+            .build()
+            .render(
+                &agent.model.name,
+                agent.model.temperature,
+                agent.model.max_output_tokens,
+            );
 
         let response = match provider.chat(chat_request).await {
             Ok(resp) => resp,
@@ -373,18 +377,22 @@ impl GatewayMessageHandler {
                 });
         }
 
-        // Build initial messages from history
+        // Build initial messages from history using StructuredContext
         let history = self
             .sessions
             .get_messages(session_id)
             .await
             .unwrap_or_default();
-        let system_message = build_system_message(agent);
-        let mut messages = Vec::new();
-        if let Some(sys) = system_message {
-            messages.push(Message::text(Role::System, sys));
-        }
-        messages.extend(history);
+        let messages = ContextBuilder::new()
+            .from_agent_spec(agent)
+            .with_messages(history)
+            .build()
+            .render(
+                &agent.model.name,
+                agent.model.temperature,
+                agent.model.max_output_tokens,
+            )
+            .messages;
 
         // Run agentic loop
         let event_ctx = EventContext {

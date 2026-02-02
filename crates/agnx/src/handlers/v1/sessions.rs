@@ -20,14 +20,15 @@ use crate::api::{
     PendingApprovalResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
     SessionSummary,
 };
+use crate::context::ContextBuilder;
 use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider, Message, Role};
 use crate::server::AppState;
 use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, EventContext, SessionContext,
-    SessionEventPayload, StreamConfig, build_chat_request, build_system_message,
-    clear_pending_approval, commit_event, get_pending_approval, persist_assistant_message,
-    record_event, resume_agentic_loop, run_agentic_loop, set_pending_approval,
+    SessionEventPayload, StreamConfig, clear_pending_approval, commit_event, get_pending_approval,
+    persist_assistant_message, record_event, resume_agentic_loop, run_agentic_loop,
+    set_pending_approval,
 };
 use crate::tools::{ToolExecutor, ToolResult};
 
@@ -598,7 +599,7 @@ struct ChatContext {
 
 /// Prepare chat context for LLM request.
 ///
-/// Validates session and agent, adds user message, builds system prompt and history,
+/// Validates session and agent, adds user message, builds structured context,
 /// and returns the ChatRequest with the provider and agent configuration.
 async fn prepare_chat_context(
     state: &AppState,
@@ -646,7 +647,6 @@ async fn prepare_chat_context(
         .get_messages(session_id)
         .await
         .unwrap_or_default();
-    let system_message = build_system_message(agent);
 
     let Some(provider) = state
         .providers
@@ -657,10 +657,15 @@ async fn prepare_chat_context(
         ));
     };
 
-    let chat_request = build_chat_request(
+    // Build structured context from agent spec and history
+    let structured_context = ContextBuilder::new()
+        .from_agent_spec(agent)
+        .with_messages(history)
+        .build();
+
+    // Render to ChatRequest
+    let chat_request = structured_context.render(
         &agent.model.name,
-        system_message.as_deref(),
-        &history,
         agent.model.temperature,
         agent.model.max_output_tokens,
     );
