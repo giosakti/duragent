@@ -1,5 +1,7 @@
 //! Builder for constructing StructuredContext from various sources.
 
+use std::collections::HashSet;
+
 use crate::agent::AgentSpec;
 use crate::llm::{Message, ToolDefinition};
 
@@ -61,9 +63,9 @@ impl ContextBuilder {
         self
     }
 
-    /// Add conversation history messages.
-    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
-        self.context.set_messages(messages);
+    /// Add a custom system block.
+    pub fn add_block(mut self, block: SystemBlock) -> Self {
+        self.context.add_block(block);
         self
     }
 
@@ -73,9 +75,15 @@ impl ContextBuilder {
         self
     }
 
-    /// Add a custom system block.
-    pub fn add_block(mut self, block: SystemBlock) -> Self {
-        self.context.add_block(block);
+    /// Set tool filter to restrict which tools the LLM sees.
+    pub fn with_tool_filter(mut self, filter: HashSet<String>) -> Self {
+        self.context.tool_filter = Some(filter);
+        self
+    }
+
+    /// Add conversation history messages.
+    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
+        self.context.set_messages(messages);
         self
     }
 
@@ -200,5 +208,17 @@ mod tests {
         assert_eq!(request.model, "gpt-4");
         assert_eq!(request.messages.len(), 2);
         assert_eq!(request.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn builder_with_tool_filter() {
+        use std::collections::HashSet;
+
+        let filter = HashSet::from_iter(["bash".to_string()]);
+
+        let ctx = ContextBuilder::new().with_tool_filter(filter).build();
+
+        assert!(ctx.tool_filter.is_some());
+        assert_eq!(ctx.tool_filter.unwrap().len(), 1);
     }
 }

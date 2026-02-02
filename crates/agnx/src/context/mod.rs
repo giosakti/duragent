@@ -9,6 +9,8 @@ mod builder;
 
 pub use builder::ContextBuilder;
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,10 @@ pub struct StructuredContext {
     pub directives: Vec<DirectiveEntry>,
     /// Tool definitions available to the model.
     pub tools: Vec<ToolDefinition>,
+    /// If Some, only these tools are rendered to the LLM.
+    /// If None, all tools are available. This is a context concern
+    /// (what the LLM sees), not a policy concern (what's allowed to execute).
+    pub tool_filter: Option<HashSet<String>>,
     /// Conversation messages (user/assistant history).
     pub messages: Vec<Message>,
 }
@@ -56,6 +62,8 @@ pub enum BlockSource {
     Overlay,
     /// From a hook.
     Hook { name: String },
+    /// From an active skill.
+    Skill { name: String },
     /// Session-specific (transient).
     Session,
 }
@@ -99,10 +107,12 @@ pub mod priority {
     pub const INSTRUCTIONS: i32 = 200;
     /// Hook-injected blocks.
     pub const HOOK: i32 = 300;
+    /// Skill-injected blocks (active skill context).
+    pub const SKILL: i32 = 400;
     /// Session-specific additions.
-    pub const SESSION: i32 = 400;
+    pub const SESSION: i32 = 500;
     /// Runtime directives.
-    pub const DIRECTIVES: i32 = 500;
+    pub const DIRECTIVES: i32 = 600;
 }
 
 impl StructuredContext {
@@ -126,6 +136,11 @@ impl StructuredContext {
         self.tools.push(tool);
     }
 
+    /// Set tool filter to restrict which tools the LLM sees.
+    pub fn set_tool_filter(&mut self, filter: Option<HashSet<String>>) {
+        self.tool_filter = filter;
+    }
+
     /// Set conversation messages.
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
@@ -134,7 +149,8 @@ impl StructuredContext {
     /// Render to a final ChatRequest.
     ///
     /// This combines all system blocks into a single system message,
-    /// appends directives, and includes tools.
+    /// appends directives, and includes tools. Tools are filtered based
+    /// on `tool_filter` if set.
     pub fn render(
         &self,
         model: &str,
@@ -150,15 +166,26 @@ impl StructuredContext {
 
         messages.extend(self.messages.iter().cloned());
 
+        // Filter tools if a filter is set
+        let filtered_tools = if let Some(ref filter) = self.tool_filter {
+            self.tools
+                .iter()
+                .filter(|t| filter.contains(&t.function.name))
+                .cloned()
+                .collect()
+        } else {
+            self.tools.clone()
+        };
+
         ChatRequest {
             model: model.to_string(),
             messages,
             temperature,
             max_tokens,
-            tools: if self.tools.is_empty() {
+            tools: if filtered_tools.is_empty() {
                 None
             } else {
-                Some(self.tools.clone())
+                Some(filtered_tools)
             },
         }
     }
@@ -350,5 +377,72 @@ mod tests {
         assert_eq!(summary.directive_count, 1);
         assert_eq!(summary.tool_count, 0);
         assert_eq!(summary.message_count, 2);
+    }
+
+    // ------------------------------------------------------------------------
+    // Tool filtering
+    // ------------------------------------------------------------------------
+
+    fn make_tool(name: &str) -> crate::llm::ToolDefinition {
+        crate::llm::ToolDefinition {
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionDefinition {
+                name: name.to_string(),
+                description: format!("Tool: {}", name),
+                parameters: None,
+            },
+        }
+    }
+
+    #[test]
+    fn render_without_filter_includes_all_tools() {
+        let mut ctx = StructuredContext::new();
+        ctx.tools = vec![make_tool("bash"), make_tool("deploy"), make_tool("git")];
+        // No filter set (default)
+
+        let request = ctx.render("gpt-4", None, None);
+
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn render_with_empty_filter_includes_no_tools() {
+        let mut ctx = StructuredContext::new();
+        ctx.tools = vec![make_tool("bash"), make_tool("deploy")];
+        ctx.tool_filter = Some(HashSet::new());
+
+        let request = ctx.render("gpt-4", None, None);
+
+        assert!(request.tools.is_none());
+    }
+
+    #[test]
+    fn render_with_filter_restricts_tools() {
+        let mut ctx = StructuredContext::new();
+        ctx.tools = vec![make_tool("bash"), make_tool("deploy"), make_tool("git")];
+        ctx.tool_filter = Some(HashSet::from_iter(["bash".to_string(), "git".to_string()]));
+
+        let request = ctx.render("gpt-4", None, None);
+
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 2);
+        let names: Vec<_> = tools.iter().map(|t| &t.function.name).collect();
+        assert!(names.contains(&&"bash".to_string()));
+        assert!(names.contains(&&"git".to_string()));
+        assert!(!names.contains(&&"deploy".to_string()));
+    }
+
+    #[test]
+    fn block_source_skill_variant() {
+        let source = BlockSource::Skill {
+            name: "deploy-skill".to_string(),
+        };
+        assert_eq!(
+            source,
+            BlockSource::Skill {
+                name: "deploy-skill".to_string()
+            }
+        );
     }
 }
