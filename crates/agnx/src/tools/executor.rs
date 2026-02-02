@@ -277,7 +277,7 @@ impl ToolExecutor {
     pub fn tool_definitions(&self, filter: Option<&HashSet<String>>) -> Vec<ToolDefinition> {
         self.tools
             .iter()
-            .filter(|(name, _)| filter.map_or(true, |f| f.contains(*name)))
+            .filter(|(name, _)| filter.is_none_or(|f| f.contains(*name)))
             .map(|(_, config)| match config {
                 ToolConfig::Builtin { name } if name == "bash" => bash::definition(),
                 ToolConfig::Builtin { name } if name == "schedule_task" => {
