@@ -50,6 +50,64 @@ impl ChatSessionCache {
         cache.insert(key, session_id.to_string());
     }
 
+    /// Atomically get or insert a session_id for a (gateway, chat_id, agent) tuple.
+    ///
+    /// This prevents race conditions where two concurrent callers could both miss
+    /// the cache and create duplicate sessions. The closures are only called if no
+    /// valid entry exists for this key.
+    ///
+    /// # Arguments
+    /// * `gateway` - Gateway name
+    /// * `chat_id` - Chat identifier
+    /// * `agent` - Agent name
+    /// * `validator` - Closure that returns true if the cached session_id is still valid
+    /// * `creator` - Closure that creates a new session_id if needed
+    ///
+    /// Returns the existing session_id if found and valid, or the result of calling the creator.
+    pub async fn get_or_insert_with<V, VFut, C, CFut>(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        agent: &str,
+        validator: V,
+        creator: C,
+    ) -> String
+    where
+        V: Fn(String) -> VFut,
+        VFut: std::future::Future<Output = bool>,
+        C: FnOnce() -> CFut,
+        CFut: std::future::Future<Output = String>,
+    {
+        let key = Self::key(gateway, chat_id, agent);
+
+        // First, try to get with just a read lock (common case)
+        {
+            let cache = self.cache.read().await;
+            if let Some(session_id) = cache.get(&key)
+                && validator(session_id.clone()).await
+            {
+                return session_id.clone();
+            }
+        }
+
+        // Not found or invalid - need write lock for insertion
+        let mut cache = self.cache.write().await;
+
+        // Double-check after acquiring write lock (another thread may have inserted)
+        if let Some(session_id) = cache.get(&key) {
+            if validator(session_id.clone()).await {
+                return session_id.clone();
+            }
+            // Session was deleted, remove stale entry
+            cache.remove(&key);
+        }
+
+        // Create new session and insert
+        let session_id = creator().await;
+        cache.insert(key, session_id.clone());
+        session_id
+    }
+
     /// Rebuild the cache from recovered sessions.
     ///
     /// Scans all session snapshots in the sessions directory and rebuilds

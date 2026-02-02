@@ -26,9 +26,9 @@ use crate::llm::{ChatRequest, LLMProvider, Message, Role};
 use crate::server::AppState;
 use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, EventContext, SessionContext,
-    SessionEventPayload, StreamConfig, clear_pending_approval, commit_event, get_pending_approval,
-    persist_assistant_message, record_event, resume_agentic_loop, run_agentic_loop,
-    set_pending_approval,
+    SessionEventPayload, StreamConfig, clear_pending_approval_internal, commit_event,
+    get_pending_approval, get_session_lock, persist_assistant_message, record_event,
+    resume_agentic_loop, run_agentic_loop, set_pending_approval,
 };
 use crate::tools::{ToolExecutor, ToolResult};
 
@@ -361,6 +361,12 @@ pub async fn approve_command(
         return problem_details::not_found("session not found").into_response();
     };
 
+    // Acquire session lock to prevent concurrent approval requests from racing.
+    // This lock is held until after we clear the pending approval, ensuring
+    // atomic read-validate-process-clear semantics.
+    let approval_lock = get_session_lock(&state.session_locks, &session_id);
+    let _approval_guard = approval_lock.lock().await;
+
     // Load pending approval from snapshot
     let pending = match get_pending_approval(&state.sessions_path, &session_id).await {
         Ok(Some(p)) => p,
@@ -480,14 +486,7 @@ pub async fn approve_command(
     };
 
     // Clear pending approval
-    if let Err(e) = clear_pending_approval(
-        &state.sessions,
-        &state.sessions_path,
-        &session_id,
-        &state.session_locks,
-    )
-    .await
-    {
+    if let Err(e) = clear_pending_approval_internal(&state.sessions_path, &session_id).await {
         debug!(error = %e, "Failed to clear pending approval");
     }
 

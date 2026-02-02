@@ -224,10 +224,12 @@ impl SchedulerService {
             }
         };
 
-        // Update state with next run time
-        let mut state = self.store.get_state(&schedule.id).await.unwrap_or_default();
-        state.next_run_at = Some(next_run);
-        self.store.update_state(&schedule.id, state).await;
+        // Update state with next run time (atomic to prevent race conditions)
+        self.store
+            .update_state_atomically(&schedule.id, |state| {
+                state.next_run_at = Some(next_run);
+            })
+            .await;
 
         let delay = next_run
             .signed_duration_since(Utc::now())
@@ -306,13 +308,14 @@ impl SchedulerService {
                     "Clearing stuck run"
                 );
 
-                let new_state = ScheduleState {
-                    running_since: None,
-                    last_status: Some(RunStatus::Error),
-                    last_error: Some("Run stuck (timeout)".to_string()),
-                    ..state
-                };
-                self.store.update_state(&schedule.id, new_state).await;
+                // Update atomically to prevent race conditions
+                self.store
+                    .update_state_atomically(&schedule.id, |state| {
+                        state.running_since = None;
+                        state.last_status = Some(RunStatus::Error);
+                        state.last_error = Some("Run stuck (timeout)".to_string());
+                    })
+                    .await;
 
                 // Log the failure
                 let entry = RunLogEntry {
@@ -355,7 +358,14 @@ fn execute_schedule(
         let semaphore_for_reschedule = semaphore.clone();
 
         // Acquire semaphore permit to limit concurrent executions
-        let _permit = semaphore.acquire().await.expect("semaphore closed");
+        // If the semaphore is closed (during shutdown), exit gracefully
+        let _permit = match semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                debug!(schedule_id = %schedule_id, "Semaphore closed during shutdown, skipping execution");
+                return;
+            }
+        };
 
         let start = Utc::now();
         let start_instant = std::time::Instant::now();
@@ -375,13 +385,12 @@ fn execute_schedule(
             }
         };
 
-        // Mark as running
-        let state = store.get_state(&schedule_id).await.unwrap_or_default();
-        let running_state = ScheduleState {
-            running_since: Some(start),
-            ..state
-        };
-        store.update_state(&schedule_id, running_state).await;
+        // Mark as running (atomic to prevent race conditions)
+        store
+            .update_state_atomically(&schedule_id, |state| {
+                state.running_since = Some(start);
+            })
+            .await;
 
         // Execute with retry logic
         let max_attempts = schedule
@@ -727,48 +736,71 @@ async fn execute_task_payload(
 /// Uses the shared `ChatSessionCache` to reuse existing sessions for the same
 /// (gateway, chat_id, agent) tuple. This allows scheduled task results to appear
 /// in the same conversation as interactive messages.
+///
+/// This function is atomic - it prevents race conditions where two concurrent
+/// scheduled tasks could both miss the cache and create duplicate sessions.
 async fn get_or_create_session(
     config: &SchedulerConfigRef,
     gateway: &str,
     chat_id: &str,
     agent: &str,
 ) -> Result<String> {
-    // Check cache for existing session
-    if let Some(session_id) = config.chat_session_cache.get(gateway, chat_id, agent).await {
-        // Verify session still exists
-        if config.sessions.get(&session_id).await.is_some() {
-            debug!(
-                session_id = %session_id,
-                gateway = %gateway,
-                chat_id = %chat_id,
-                agent = %agent,
-                "Reusing existing session for scheduled task"
-            );
-            return Ok(session_id);
-        }
-    }
+    let sessions = config.sessions.clone();
+    let sessions_for_create = config.sessions.clone();
+    let sessions_path = config.sessions_path.clone();
+    let session_locks = config.session_locks.clone();
+    let agent_owned = agent.to_string();
+    let gateway_owned = gateway.to_string();
+    let chat_id_owned = chat_id.to_string();
 
-    // Create new session
-    let session = config.sessions.create(agent).await;
-    let session_id = session.id.clone();
-
-    // Record session start
-    let _ = record_event(
-        &config.sessions,
-        &config.sessions_path,
-        &session_id,
-        SessionEventPayload::SessionStart {
-            session_id: session_id.clone(),
-            agent: agent.to_string(),
-        },
-        &config.session_locks,
-    )
-    .await;
-
-    // Store in shared cache
-    config
+    let session_id = config
         .chat_session_cache
-        .insert(gateway, chat_id, agent, &session_id)
+        .get_or_insert_with(
+            gateway,
+            chat_id,
+            agent,
+            // Validator: check if session still exists in store
+            |session_id| {
+                let sessions = sessions.clone();
+                async move { sessions.get(&session_id).await.is_some() }
+            },
+            // Creator: create new session atomically
+            || {
+                let sessions = sessions_for_create;
+                let sessions_path = sessions_path;
+                let session_locks = session_locks;
+                let agent = agent_owned;
+                let gateway = gateway_owned;
+                let chat_id = chat_id_owned;
+                async move {
+                    let session = sessions.create(&agent).await;
+                    let session_id = session.id.clone();
+
+                    // Record session start
+                    let _ = record_event(
+                        &sessions,
+                        &sessions_path,
+                        &session_id,
+                        SessionEventPayload::SessionStart {
+                            session_id: session_id.clone(),
+                            agent: agent.to_string(),
+                        },
+                        &session_locks,
+                    )
+                    .await;
+
+                    debug!(
+                        session_id = %session_id,
+                        gateway = %gateway,
+                        chat_id = %chat_id,
+                        agent = %agent,
+                        "Created session for scheduled task"
+                    );
+
+                    session_id
+                }
+            },
+        )
         .await;
 
     debug!(
@@ -776,7 +808,7 @@ async fn get_or_create_session(
         gateway = %gateway,
         chat_id = %chat_id,
         agent = %agent,
-        "Created session for scheduled task"
+        "Got session for scheduled task"
     );
 
     Ok(session_id)

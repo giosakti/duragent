@@ -47,12 +47,9 @@ impl ScheduleStore {
     /// Call this on startup to restore persisted schedules.
     pub async fn load(&self) -> Result<LoadResult> {
         // Ensure directory exists
-        if !self.schedules_path.exists() {
-            fs::create_dir_all(&self.schedules_path)
-                .await
-                .map_err(|e| SchedulerError::Storage(e.to_string()))?;
-            return Ok(LoadResult::default());
-        }
+        fs::create_dir_all(&self.schedules_path)
+            .await
+            .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
         let mut loaded = 0;
         let mut errors = Vec::new();
@@ -141,6 +138,22 @@ impl ScheduleStore {
         inner.states.insert(id.to_string(), state);
     }
 
+    /// Atomically update runtime state for a schedule.
+    ///
+    /// This prevents read-modify-write races by holding the lock during the entire operation.
+    /// The closure receives a mutable reference to the current state (or default if none exists).
+    pub async fn update_state_atomically<F>(&self, id: &str, f: F)
+    where
+        F: FnOnce(&mut ScheduleState),
+    {
+        let mut inner = self.inner.write().await;
+        let state = inner
+            .states
+            .entry(id.to_string())
+            .or_insert_with(ScheduleState::default);
+        f(state);
+    }
+
     /// List schedules for an agent.
     pub async fn list_by_agent(&self, agent: &str) -> Vec<Schedule> {
         let inner = self.inner.read().await;
@@ -193,12 +206,18 @@ impl ScheduleStore {
             inner.states.remove(id);
         }
 
-        // Remove from disk
+        // Remove from disk (ignore NotFound - already deleted)
         let path = self.schedule_path(id);
-        if path.exists() {
-            fs::remove_file(&path).await.map_err(|e| {
-                SchedulerError::Storage(format!("delete {}: {}", path.display(), e))
-            })?;
+        match fs::remove_file(&path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(SchedulerError::Storage(format!(
+                    "delete {}: {}",
+                    path.display(),
+                    e
+                )));
+            }
         }
 
         debug!(schedule_id = %id, "Deleted schedule");

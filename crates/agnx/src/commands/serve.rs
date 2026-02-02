@@ -69,8 +69,10 @@ pub async fn run(
     };
     info!(mode = %sandbox.mode(), "Sandbox initialized");
 
-    // Initialize gateway manager
-    let gateways = GatewayManager::new();
+    // Initialize gateway manager with configured timeout
+    let gateways = GatewayManager::new(std::time::Duration::from_secs(
+        config.server.request_timeout_seconds,
+    ));
 
     // Per-session locks for disk I/O (shared with app state)
     let session_locks: agnx::session::SessionLocks = Arc::new(dashmap::DashMap::new());

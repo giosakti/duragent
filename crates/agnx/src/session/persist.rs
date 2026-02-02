@@ -55,7 +55,10 @@ pub struct SessionContext<'a> {
 // ============================================================================
 
 /// Get or create a lock for a session.
-fn get_session_lock(locks: &SessionLocks, session_id: &str) -> Arc<Mutex<()>> {
+///
+/// This is used internally for disk I/O operations and can also be used
+/// by handlers that need to protect critical sections involving session state.
+pub fn get_session_lock(locks: &SessionLocks, session_id: &str) -> Arc<Mutex<()>> {
     locks
         .entry(session_id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -258,6 +261,14 @@ pub async fn clear_pending_approval(
     let lock = get_session_lock(session_locks, session_id);
     let _guard = lock.lock().await;
 
+    clear_pending_approval_internal(sessions_path, session_id).await
+}
+
+/// Clear a pending approval without acquiring the lock.
+///
+/// Use this when the caller already holds the session lock to avoid deadlock.
+/// For external callers, use `clear_pending_approval` instead.
+pub async fn clear_pending_approval_internal(sessions_path: &Path, session_id: &str) -> Result<()> {
     // Load existing snapshot
     let snapshot = super::load_snapshot(sessions_path, session_id)
         .await?

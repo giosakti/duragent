@@ -71,11 +71,13 @@ impl RunLog {
     ) -> std::io::Result<Vec<RunLogEntry>> {
         let path = self.log_path(schedule_id);
 
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let content = fs::read_to_string(&path).await?;
+        let content = match fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(e),
+        };
         let entries: Vec<RunLogEntry> = content
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
@@ -89,10 +91,11 @@ impl RunLog {
     /// Delete the log file for a schedule.
     pub async fn delete(&self, schedule_id: &str) -> std::io::Result<()> {
         let path = self.log_path(schedule_id);
-        if path.exists() {
-            fs::remove_file(&path).await?;
+        match fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
 
     /// Prune a log file to keep only the most recent entries.

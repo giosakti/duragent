@@ -36,7 +36,7 @@ pub async fn test_app() -> Router {
         background_tasks: BackgroundTasks::new(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         admin_token: None,
-        gateways: GatewayManager::new(),
+        gateways: GatewayManager::default(),
         sandbox: Arc::new(TrustSandbox::new()),
         policy_locks: Arc::new(dashmap::DashMap::new()),
         session_locks: Arc::new(dashmap::DashMap::new()),
