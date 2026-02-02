@@ -22,13 +22,13 @@ use crate::api::{
 };
 use crate::context::ContextBuilder;
 use crate::handlers::problem_details;
-use crate::llm::{ChatRequest, LLMProvider, Message, Role};
+use crate::llm::{ChatRequest, LLMProvider};
 use crate::server::AppState;
 use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, EventContext, SessionContext,
     SessionEventPayload, StreamConfig, clear_pending_approval_internal, commit_event,
-    get_pending_approval, persist_assistant_message, record_event, resume_agentic_loop,
-    run_agentic_loop, set_pending_approval,
+    get_pending_approval, persist_assistant_message, persist_user_message, record_event_internal,
+    resume_agentic_loop, run_agentic_loop, set_pending_approval,
 };
 use crate::tools::{ToolExecutor, ToolResult};
 
@@ -399,8 +399,8 @@ pub async fn approve_command(
         ApprovalDecision::Deny => ApprovalDecisionType::Deny,
     };
 
-    // Record the approval decision event
-    if let Err(e) = record_event(
+    // Record the approval decision event (using internal variant since lock is held)
+    if let Err(e) = record_event_internal(
         &state.sessions,
         &state.sessions_path,
         &session_id,
@@ -408,7 +408,6 @@ pub async fn approve_command(
             call_id: req.call_id.clone(),
             decision,
         },
-        &state.session_locks,
     )
     .await
     {
@@ -564,7 +563,6 @@ pub async fn approve_command(
 enum SendMessageError {
     SessionNotFound,
     AgentNotFound,
-    MessageAddFailed,
     PersistFailed(String),
     ProviderNotConfigured(String),
 }
@@ -575,9 +573,6 @@ impl IntoResponse for SendMessageError {
             Self::SessionNotFound => problem_details::not_found("session not found"),
             Self::AgentNotFound => {
                 problem_details::internal_error("session references non-existent agent")
-            }
-            Self::MessageAddFailed => {
-                problem_details::internal_error("failed to add message to session")
             }
             Self::PersistFailed(msg) => problem_details::internal_error(msg),
             Self::ProviderNotConfigured(provider) => problem_details::internal_error(format!(
@@ -615,24 +610,12 @@ async fn prepare_chat_context(
         return Err(SendMessageError::AgentNotFound);
     };
 
-    let content_for_event = user_content.clone();
-    let user_message = Message::text(Role::User, user_content);
-    if state
-        .sessions
-        .add_message(session_id, user_message)
-        .await
-        .is_err()
-    {
-        return Err(SendMessageError::MessageAddFailed);
-    }
-
-    if let Err(e) = record_event(
+    // Persist user message (disk-first for durability)
+    if let Err(e) = persist_user_message(
         &state.sessions,
         &state.sessions_path,
         session_id,
-        SessionEventPayload::UserMessage {
-            content: content_for_event,
-        },
+        user_content,
         &state.session_locks,
     )
     .await

@@ -19,14 +19,14 @@ use crate::agent::{AgentStore, PolicyLocks};
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
 use crate::context::ContextBuilder;
-use crate::llm::{Message, ProviderRegistry, Role};
+use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 use crate::session::{
     AgenticResult, ApprovalDecisionType, ChatSessionCache, EventContext, SessionContext,
-    SessionEventPayload, SessionLocks, SessionStore, clear_pending_approval, commit_event,
-    get_pending_approval, persist_assistant_message, record_event, resume_agentic_loop,
-    run_agentic_loop, set_pending_approval,
+    SessionEventPayload, SessionLocks, SessionStore, clear_pending_approval_internal, commit_event,
+    get_pending_approval, persist_assistant_message, persist_user_message, record_event_internal,
+    resume_agentic_loop, run_agentic_loop, set_pending_approval,
 };
 use crate::tools::{ToolExecutionContext, ToolExecutor, ToolResult};
 
@@ -276,31 +276,18 @@ impl GatewayMessageHandler {
         let session = self.sessions.get(session_id).await?;
         let agent = self.agents.get(&session.agent)?;
 
-        // Add user message to session
-        let user_message = Message::text(Role::User, text);
-        if self
-            .sessions
-            .add_message(session_id, user_message)
-            .await
-            .is_err()
-        {
-            error!(session_id = %session_id, "Failed to add user message");
-            return None;
-        }
-
-        // Record user message event
-        if let Err(e) = record_event(
+        // Persist user message (disk-first for durability)
+        if let Err(e) = persist_user_message(
             &self.sessions,
             &self.sessions_path,
             session_id,
-            SessionEventPayload::UserMessage {
-                content: text.to_string(),
-            },
+            text.to_string(),
             &self.session_locks,
         )
         .await
         {
-            error!(error = %e, "Failed to persist user message event");
+            error!(session_id = %session_id, error = %e, "Failed to persist user message");
+            return None;
         }
 
         // Route to agentic loop if agent has tools configured
@@ -632,8 +619,8 @@ impl MessageHandler for GatewayMessageHandler {
             ApprovalDecisionType::Deny => format!("✗ Denied: {}", command_preview),
         };
 
-        // Record the approval decision event
-        if let Err(e) = record_event(
+        // Record the approval decision event (using internal variant since lock is held)
+        if let Err(e) = record_event_internal(
             &self.sessions,
             &self.sessions_path,
             &session_id,
@@ -641,7 +628,6 @@ impl MessageHandler for GatewayMessageHandler {
                 call_id: pending.call_id.clone(),
                 decision: decision_type,
             },
-            &self.session_locks,
         )
         .await
         {
@@ -728,15 +714,8 @@ impl MessageHandler for GatewayMessageHandler {
             }
         };
 
-        // Clear pending approval
-        if let Err(e) = clear_pending_approval(
-            &self.sessions,
-            &self.sessions_path,
-            &session_id,
-            &self.session_locks,
-        )
-        .await
-        {
+        // Clear pending approval (using internal variant since lock is held)
+        if let Err(e) = clear_pending_approval_internal(&self.sessions_path, &session_id).await {
             debug!(error = %e, "Failed to clear pending approval");
         }
 

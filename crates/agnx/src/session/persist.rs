@@ -103,6 +103,19 @@ pub async fn record_event(
     let lock = session_locks.get(session_id);
     let _guard = lock.lock().await;
 
+    record_event_internal(sessions, sessions_path, session_id, payload).await
+}
+
+/// Record an event without acquiring the lock.
+///
+/// Use this when the caller already holds the session lock to avoid deadlock.
+/// For external callers, use `record_event` instead.
+pub async fn record_event_internal(
+    sessions: &SessionStore,
+    sessions_path: &Path,
+    session_id: &str,
+    payload: SessionEventPayload,
+) -> Result<u64> {
     // 1. Peek next sequence number (doesn't modify in-memory state yet)
     let seq = sessions.peek_next_event_seq(session_id).await?;
 
@@ -119,8 +132,8 @@ pub async fn record_event(
 /// Persist an assistant message to the session store and event log.
 ///
 /// This consolidates the common pattern of:
-/// 1. Adding the message to the in-memory session store
-/// 2. Recording the event to the JSONL event log
+/// 1. Recording the event to the JSONL event log (disk first for durability)
+/// 2. Adding the message to the in-memory session store
 ///
 /// Returns the event sequence number on success.
 pub async fn persist_assistant_message(
@@ -132,21 +145,64 @@ pub async fn persist_assistant_message(
     usage: Option<Usage>,
     session_locks: &SessionLocks,
 ) -> Result<u64> {
-    let assistant_message = Message::text(Role::Assistant, content.clone());
-    sessions.add_message(session_id, assistant_message).await?;
+    // Acquire lock
+    let lock = session_locks.get(session_id);
+    let _guard = lock.lock().await;
 
-    record_event(
+    // Disk first (durable state)
+    let seq = record_event_internal(
         sessions,
         sessions_path,
         session_id,
         SessionEventPayload::AssistantMessage {
             agent: agent.to_string(),
-            content,
+            content: content.clone(),
             usage,
         },
-        session_locks,
     )
-    .await
+    .await?;
+
+    // Memory second (only after disk succeeds)
+    let assistant_message = Message::text(Role::Assistant, content);
+    sessions.add_message(session_id, assistant_message).await?;
+
+    Ok(seq)
+}
+
+/// Persist a user message to the session store and event log.
+///
+/// This consolidates the common pattern of:
+/// 1. Recording the event to the JSONL event log (disk first for durability)
+/// 2. Adding the message to the in-memory session store
+///
+/// Returns the event sequence number on success.
+pub async fn persist_user_message(
+    sessions: &SessionStore,
+    sessions_path: &Path,
+    session_id: &str,
+    content: String,
+    session_locks: &SessionLocks,
+) -> Result<u64> {
+    // Acquire lock
+    let lock = session_locks.get(session_id);
+    let _guard = lock.lock().await;
+
+    // Disk first (durable state)
+    let seq = record_event_internal(
+        sessions,
+        sessions_path,
+        session_id,
+        SessionEventPayload::UserMessage {
+            content: content.clone(),
+        },
+    )
+    .await?;
+
+    // Memory second (only after disk succeeds)
+    let user_message = Message::text(Role::User, content);
+    sessions.add_message(session_id, user_message).await?;
+
+    Ok(seq)
 }
 
 /// Write a snapshot without recording an event.

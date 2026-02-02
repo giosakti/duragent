@@ -35,8 +35,8 @@ pub use snapshot_writer::write_snapshot;
 // Persistence and recovery
 pub use persist::{
     SessionContext, clear_pending_approval, clear_pending_approval_internal, commit_event,
-    get_pending_approval, persist_assistant_message, record_event, set_pending_approval,
-    write_session_snapshot,
+    get_pending_approval, persist_assistant_message, persist_user_message, record_event,
+    record_event_internal, set_pending_approval, write_session_snapshot,
 };
 pub use recover::{RecoveryResult, recover_sessions};
 pub use resume::{ResumedSession, resume_session};

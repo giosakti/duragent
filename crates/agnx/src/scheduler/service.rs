@@ -21,11 +21,11 @@ const MAX_CONCURRENT_EXECUTIONS: usize = 5;
 use crate::agent::AgentStore;
 use crate::context::ContextBuilder;
 use crate::gateway::GatewayManager;
-use crate::llm::{Message, ProviderRegistry, Role};
+use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::session::{
     AgenticResult, ChatSessionCache, EventContext, SessionEventPayload, SessionLocks, SessionStore,
-    persist_assistant_message, record_event, run_agentic_loop,
+    persist_assistant_message, persist_user_message, record_event, run_agentic_loop,
 };
 use crate::tools::ToolExecutor;
 
@@ -618,38 +618,27 @@ async fn execute_task_payload(
     )
     .await?;
 
-    // Build task message
-    let task_message = Message::text(
-        Role::User,
-        format!(
-            "[Scheduled Task]\n\n{}\n\n(This is an automated task. Send the result to this chat.)",
-            task
-        ),
+    // Build task message content
+    let task_message_content = format!(
+        "[Scheduled Task]\n\n{}\n\n(This is an automated task. Send the result to this chat.)",
+        task
     );
 
-    // Add to session
-    if config
-        .sessions
-        .add_message(&session_id, task_message.clone())
-        .await
-        .is_err()
-    {
-        return Err(SchedulerError::ExecutionFailed(
-            "Failed to add task message".to_string(),
-        ));
-    }
-
-    // Record user message event
-    let _ = record_event(
+    // Persist user message (disk-first for durability)
+    if let Err(e) = persist_user_message(
         &config.sessions,
         &config.sessions_path,
         &session_id,
-        SessionEventPayload::UserMessage {
-            content: task_message.content.clone().unwrap_or_default(),
-        },
+        task_message_content,
         &config.session_locks,
     )
-    .await;
+    .await
+    {
+        return Err(SchedulerError::ExecutionFailed(format!(
+            "Failed to persist task message: {}",
+            e
+        )));
+    }
 
     // Create tool executor (without execution context - schedules don't create nested schedules)
     let executor = ToolExecutor::new(
