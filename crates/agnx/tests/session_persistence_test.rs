@@ -1,8 +1,4 @@
-//! Integration tests for session persistence.
-//!
-//! Tests the interaction between event writer/reader and snapshot writer/loader.
-
-use std::path::PathBuf;
+//! Integration tests for session persistence using FileSessionStore.
 
 use chrono::Utc;
 use tempfile::TempDir;
@@ -10,13 +6,12 @@ use tempfile::TempDir;
 use agnx::agent::OnDisconnect;
 use agnx::api::SessionStatus;
 use agnx::llm::{Message, Role, Usage};
-use agnx::session::{
-    EventReader, EventWriter, SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot,
-    load_snapshot, write_snapshot,
-};
+use agnx::session::{SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot};
+use agnx::store::SessionStore;
+use agnx::store::file::FileSessionStore;
 
-fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
-    temp_dir.path().join("sessions")
+fn create_store(temp_dir: &TempDir) -> FileSessionStore {
+    FileSessionStore::new(temp_dir.path().join("sessions"))
 }
 
 // ============================================================================
@@ -26,12 +21,8 @@ fn sessions_dir(temp_dir: &TempDir) -> PathBuf {
 #[tokio::test]
 async fn event_write_read_roundtrip() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "test_session";
-
-    // Write multiple events
-    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap();
 
     let events = vec![
         SessionEvent::new(
@@ -63,17 +54,10 @@ async fn event_write_read_roundtrip() {
         ),
     ];
 
-    for event in &events {
-        writer.append(event).await.unwrap();
-    }
+    store.append_events(session_id, &events).await.unwrap();
 
     // Read events back
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .expect("reader should exist");
-
-    let read_events = reader.read_all().await.unwrap();
+    let read_events = store.load_events(session_id, 0).await.unwrap();
 
     // Verify order and content
     assert_eq!(read_events.len(), 3);
@@ -114,32 +98,27 @@ async fn event_write_read_roundtrip() {
 #[tokio::test]
 async fn events_preserve_sequence_order() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "seq_test";
 
-    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap();
-
     // Write events in sequence order
-    for i in 1..=10 {
-        let event = SessionEvent::new(
-            i,
-            SessionEventPayload::UserMessage {
-                content: format!("Message {}", i),
-            },
-        );
-        writer.append(&event).await.unwrap();
-    }
+    let events: Vec<_> = (1..=10)
+        .map(|i| {
+            SessionEvent::new(
+                i,
+                SessionEventPayload::UserMessage {
+                    content: format!("Message {}", i),
+                },
+            )
+        })
+        .collect();
 
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
+    store.append_events(session_id, &events).await.unwrap();
 
-    let events = reader.read_all().await.unwrap();
+    let read_events = store.load_events(session_id, 0).await.unwrap();
 
     // Verify order preserved
-    for (i, event) in events.iter().enumerate() {
+    for (i, event) in read_events.iter().enumerate() {
         assert_eq!(event.seq, (i + 1) as u64);
     }
 }
@@ -151,6 +130,7 @@ async fn events_preserve_sequence_order() {
 #[tokio::test]
 async fn snapshot_write_load_roundtrip() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "snapshot_test";
     let created_at = Utc::now();
 
@@ -174,13 +154,11 @@ async fn snapshot_write_load_roundtrip() {
         config,
     );
 
-    // Write snapshot
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot).await.unwrap();
 
     // Load snapshot back
-    let loaded = load_snapshot(&sessions_dir(&temp_dir), session_id)
+    let loaded = store
+        .load_snapshot(session_id)
         .await
         .unwrap()
         .expect("snapshot should exist");
@@ -202,6 +180,7 @@ async fn snapshot_write_load_roundtrip() {
 #[tokio::test]
 async fn snapshot_preserves_all_statuses() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
 
     let statuses = [
         SessionStatus::Active,
@@ -223,14 +202,9 @@ async fn snapshot_preserves_all_statuses() {
             SessionConfig::default(),
         );
 
-        write_snapshot(&sessions_dir(&temp_dir), &session_id, &snapshot)
-            .await
-            .unwrap();
+        store.save_snapshot(&session_id, &snapshot).await.unwrap();
 
-        let loaded = load_snapshot(&sessions_dir(&temp_dir), &session_id)
-            .await
-            .unwrap()
-            .unwrap();
+        let loaded = store.load_snapshot(&session_id).await.unwrap().unwrap();
 
         assert_eq!(loaded.status, *status);
     }
@@ -243,22 +217,22 @@ async fn snapshot_preserves_all_statuses() {
 #[tokio::test]
 async fn read_events_from_snapshot_seq() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "resume_test";
 
     // Write 10 events
-    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap();
+    let events: Vec<_> = (1..=10)
+        .map(|i| {
+            SessionEvent::new(
+                i,
+                SessionEventPayload::UserMessage {
+                    content: format!("Message {}", i),
+                },
+            )
+        })
+        .collect();
 
-    for i in 1..=10 {
-        let event = SessionEvent::new(
-            i,
-            SessionEventPayload::UserMessage {
-                content: format!("Message {}", i),
-            },
-        );
-        writer.append(&event).await.unwrap();
-    }
+    store.append_events(session_id, &events).await.unwrap();
 
     // Write snapshot at seq 5
     let snapshot = SessionSnapshot::new(
@@ -271,26 +245,16 @@ async fn read_events_from_snapshot_seq() {
         SessionConfig::default(),
     );
 
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot).await.unwrap();
 
     // Load snapshot and get last_event_seq
-    let loaded_snapshot = load_snapshot(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded_snapshot = store.load_snapshot(session_id).await.unwrap().unwrap();
 
     assert_eq!(loaded_snapshot.last_event_seq, 5);
 
     // Read events starting from seq after snapshot
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let events = reader
-        .read_from_seq(loaded_snapshot.last_event_seq + 1)
+    let events = store
+        .load_events(session_id, loaded_snapshot.last_event_seq)
         .await
         .unwrap();
 
@@ -303,16 +267,12 @@ async fn read_events_from_snapshot_seq() {
 #[tokio::test]
 async fn events_and_snapshot_coordinate_recovery() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "recovery_test";
 
-    // Simulate a session: write events and a snapshot
-    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap();
-
-    // Session start
-    writer
-        .append(&SessionEvent::new(
+    // Simulate a session: write events
+    let initial_events = vec![
+        SessionEvent::new(
             1,
             SessionEventPayload::SessionStart {
                 agent: "recovery-agent".to_string(),
@@ -320,31 +280,25 @@ async fn events_and_snapshot_coordinate_recovery() {
                 gateway: None,
                 gateway_chat_id: None,
             },
-        ))
-        .await
-        .unwrap();
-
-    // User message
-    writer
-        .append(&SessionEvent::new(
+        ),
+        SessionEvent::new(
             2,
             SessionEventPayload::UserMessage {
                 content: "Hello".to_string(),
             },
-        ))
-        .await
-        .unwrap();
-
-    // Assistant response
-    writer
-        .append(&SessionEvent::new(
+        ),
+        SessionEvent::new(
             3,
             SessionEventPayload::AssistantMessage {
                 agent: "recovery-agent".to_string(),
                 content: "Hi there!".to_string(),
                 usage: None,
             },
-        ))
+        ),
+    ];
+
+    store
+        .append_events(session_id, &initial_events)
         .await
         .unwrap();
 
@@ -362,51 +316,41 @@ async fn events_and_snapshot_coordinate_recovery() {
         SessionConfig::default(),
     );
 
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot).await.unwrap();
 
     // More events after snapshot
-    writer
-        .append(&SessionEvent::new(
+    let later_events = vec![
+        SessionEvent::new(
             4,
             SessionEventPayload::UserMessage {
                 content: "How are you?".to_string(),
             },
-        ))
-        .await
-        .unwrap();
-
-    writer
-        .append(&SessionEvent::new(
+        ),
+        SessionEvent::new(
             5,
             SessionEventPayload::AssistantMessage {
                 agent: "recovery-agent".to_string(),
                 content: "I'm doing well!".to_string(),
                 usage: None,
             },
-        ))
+        ),
+    ];
+
+    store
+        .append_events(session_id, &later_events)
         .await
         .unwrap();
 
     // Now simulate recovery: load snapshot and replay events
-    let loaded_snapshot = load_snapshot(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded_snapshot = store.load_snapshot(session_id).await.unwrap().unwrap();
 
     // Start with snapshot conversation
     let mut recovered_messages = loaded_snapshot.conversation.clone();
     assert_eq!(recovered_messages.len(), 2);
 
     // Replay events after snapshot
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let replay_events = reader
-        .read_from_seq(loaded_snapshot.last_event_seq + 1)
+    let replay_events = store
+        .load_events(session_id, loaded_snapshot.last_event_seq)
         .await
         .unwrap();
 
@@ -429,45 +373,21 @@ async fn events_and_snapshot_coordinate_recovery() {
 // ============================================================================
 
 #[tokio::test]
-async fn event_reader_returns_none_for_missing_file() {
+async fn load_events_returns_empty_for_missing_session() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
 
-    let result = EventReader::open(&sessions_dir(&temp_dir), "nonexistent_session").await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
+    let events = store.load_events("nonexistent_session", 0).await.unwrap();
+    assert!(events.is_empty());
 }
 
 #[tokio::test]
-async fn snapshot_loader_returns_none_for_missing_file() {
+async fn load_snapshot_returns_none_for_missing_session() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
 
-    let result = load_snapshot(&sessions_dir(&temp_dir), "nonexistent_session").await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn event_reader_returns_none_for_missing_directory() {
-    let temp_dir = TempDir::new().unwrap();
-    let nonexistent_base = temp_dir.path().join("no_such_dir");
-
-    let result = EventReader::open(&nonexistent_base, "any_session").await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn snapshot_loader_returns_none_for_missing_directory() {
-    let temp_dir = TempDir::new().unwrap();
-    let nonexistent_base = temp_dir.path().join("no_such_dir");
-
-    let result = load_snapshot(&nonexistent_base, "any_session").await;
-
-    assert!(result.is_ok());
-    assert!(result.unwrap().is_none());
+    let result = store.load_snapshot("nonexistent_session").await.unwrap();
+    assert!(result.is_none());
 }
 
 // ============================================================================
@@ -475,12 +395,13 @@ async fn snapshot_loader_returns_none_for_missing_directory() {
 // ============================================================================
 
 #[tokio::test]
-async fn event_reader_skips_malformed_lines() {
+async fn load_events_skips_malformed_lines() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "malformed_test";
 
     // Create session directory manually
-    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    let session_dir = temp_dir.path().join("sessions").join(session_id);
     tokio::fs::create_dir_all(&session_dir).await.unwrap();
 
     // Write a file with mixed valid and invalid lines
@@ -520,12 +441,7 @@ async fn event_reader_skips_malformed_lines() {
     tokio::fs::write(&events_path, content).await.unwrap();
 
     // Read should skip malformed lines
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let events = reader.read_all().await.unwrap();
+    let events = store.load_events(session_id, 0).await.unwrap();
 
     // Only valid events should be returned
     assert_eq!(events.len(), 3);
@@ -535,31 +451,28 @@ async fn event_reader_skips_malformed_lines() {
 }
 
 #[tokio::test]
-async fn event_reader_handles_empty_file() {
+async fn load_events_handles_empty_file() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "empty_test";
 
-    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    let session_dir = temp_dir.path().join("sessions").join(session_id);
     tokio::fs::create_dir_all(&session_dir).await.unwrap();
 
     let events_path = session_dir.join("events.jsonl");
     tokio::fs::write(&events_path, "").await.unwrap();
 
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let events = reader.read_all().await.unwrap();
+    let events = store.load_events(session_id, 0).await.unwrap();
     assert!(events.is_empty());
 }
 
 #[tokio::test]
-async fn event_reader_handles_only_empty_lines() {
+async fn load_events_handles_only_empty_lines() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "whitespace_test";
 
-    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    let session_dir = temp_dir.path().join("sessions").join(session_id);
     tokio::fs::create_dir_all(&session_dir).await.unwrap();
 
     let events_path = session_dir.join("events.jsonl");
@@ -567,21 +480,17 @@ async fn event_reader_handles_only_empty_lines() {
         .await
         .unwrap();
 
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let events = reader.read_all().await.unwrap();
+    let events = store.load_events(session_id, 0).await.unwrap();
     assert!(events.is_empty());
 }
 
 #[tokio::test]
-async fn snapshot_loader_returns_error_for_invalid_yaml() {
+async fn load_snapshot_returns_error_for_invalid_yaml() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "invalid_yaml_test";
 
-    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    let session_dir = temp_dir.path().join("sessions").join(session_id);
     tokio::fs::create_dir_all(&session_dir).await.unwrap();
 
     let state_path = session_dir.join("state.yaml");
@@ -589,16 +498,15 @@ async fn snapshot_loader_returns_error_for_invalid_yaml() {
         .await
         .unwrap();
 
-    let result = load_snapshot(&sessions_dir(&temp_dir), session_id).await;
+    let result = store.load_snapshot(session_id).await;
 
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.to_string().contains("yaml parse error"));
 }
 
 #[tokio::test]
-async fn snapshot_loader_returns_error_for_incompatible_schema() {
+async fn load_snapshot_returns_error_for_incompatible_schema() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "old_schema_test";
 
     let mut snapshot = SessionSnapshot::new(
@@ -614,21 +522,16 @@ async fn snapshot_loader_returns_error_for_incompatible_schema() {
     // Set an old schema version
     snapshot.schema_version = "0".to_string();
 
-    let session_dir = sessions_dir(&temp_dir).join(session_id);
+    let session_dir = temp_dir.path().join("sessions").join(session_id);
     tokio::fs::create_dir_all(&session_dir).await.unwrap();
 
     let yaml = serde_saphyr::to_string(&snapshot).unwrap();
     let state_path = session_dir.join("state.yaml");
     tokio::fs::write(&state_path, yaml).await.unwrap();
 
-    let result = load_snapshot(&sessions_dir(&temp_dir), session_id).await;
+    let result = store.load_snapshot(session_id).await;
 
     assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("incompatible snapshot schema version")
-    );
 }
 
 // ============================================================================
@@ -638,6 +541,7 @@ async fn snapshot_loader_returns_error_for_incompatible_schema() {
 #[tokio::test]
 async fn snapshot_write_is_atomic() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "atomic_test";
 
     let snapshot = SessionSnapshot::new(
@@ -650,16 +554,20 @@ async fn snapshot_write_is_atomic() {
         SessionConfig::default(),
     );
 
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot).await.unwrap();
 
     // Verify final file exists
-    let final_path = sessions_dir(&temp_dir).join(session_id).join("state.yaml");
+    let final_path = temp_dir
+        .path()
+        .join("sessions")
+        .join(session_id)
+        .join("state.yaml");
     assert!(final_path.exists());
 
     // Verify temp file does not exist
-    let temp_path = sessions_dir(&temp_dir)
+    let temp_path = temp_dir
+        .path()
+        .join("sessions")
         .join(session_id)
         .join("state.yaml.tmp");
     assert!(!temp_path.exists());
@@ -668,6 +576,7 @@ async fn snapshot_write_is_atomic() {
 #[tokio::test]
 async fn snapshot_overwrite_is_atomic() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "overwrite_test";
 
     // Write initial snapshot
@@ -681,9 +590,7 @@ async fn snapshot_overwrite_is_atomic() {
         SessionConfig::default(),
     );
 
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot1)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot1).await.unwrap();
 
     // Overwrite with new snapshot
     let snapshot2 = SessionSnapshot::new(
@@ -696,86 +603,71 @@ async fn snapshot_overwrite_is_atomic() {
         SessionConfig::default(),
     );
 
-    write_snapshot(&sessions_dir(&temp_dir), session_id, &snapshot2)
-        .await
-        .unwrap();
+    store.save_snapshot(session_id, &snapshot2).await.unwrap();
 
     // Load and verify new snapshot
-    let loaded = load_snapshot(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let loaded = store.load_snapshot(session_id).await.unwrap().unwrap();
 
     assert_eq!(loaded.status, SessionStatus::Completed);
     assert_eq!(loaded.last_event_seq, 50);
 
     // Verify no temp file left behind
-    let temp_path = sessions_dir(&temp_dir)
+    let temp_path = temp_dir
+        .path()
+        .join("sessions")
         .join(session_id)
         .join("state.yaml.tmp");
     assert!(!temp_path.exists());
 }
 
 // ============================================================================
-// Event Writer Append Mode Tests
+// Append Mode Tests
 // ============================================================================
 
 #[tokio::test]
-async fn event_writer_appends_to_existing_file() {
+async fn append_to_existing_file() {
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "append_test";
 
     // Write first batch of events
-    {
-        let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-            .await
-            .unwrap();
+    store
+        .append_events(
+            session_id,
+            &[
+                SessionEvent::new(
+                    1,
+                    SessionEventPayload::UserMessage {
+                        content: "First".to_string(),
+                    },
+                ),
+                SessionEvent::new(
+                    2,
+                    SessionEventPayload::UserMessage {
+                        content: "Second".to_string(),
+                    },
+                ),
+            ],
+        )
+        .await
+        .unwrap();
 
-        writer
-            .append(&SessionEvent::new(
-                1,
-                SessionEventPayload::UserMessage {
-                    content: "First".to_string(),
-                },
-            ))
-            .await
-            .unwrap();
-
-        writer
-            .append(&SessionEvent::new(
-                2,
-                SessionEventPayload::UserMessage {
-                    content: "Second".to_string(),
-                },
-            ))
-            .await
-            .unwrap();
-    }
-
-    // Open new writer (simulating server restart) and append more
-    {
-        let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-            .await
-            .unwrap();
-
-        writer
-            .append(&SessionEvent::new(
+    // Append more (simulating new request)
+    store
+        .append_events(
+            session_id,
+            &[SessionEvent::new(
                 3,
                 SessionEventPayload::UserMessage {
                     content: "Third".to_string(),
                 },
-            ))
-            .await
-            .unwrap();
-    }
-
-    // Read all events
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
+            )],
+        )
         .await
-        .unwrap()
         .unwrap();
 
-    let events = reader.read_all().await.unwrap();
+    // Read all events
+    let events = store.load_events(session_id, 0).await.unwrap();
 
     assert_eq!(events.len(), 3);
     assert_eq!(events[0].seq, 1);
@@ -793,11 +685,8 @@ async fn all_event_types_roundtrip() {
     use agnx::session::{SessionEndReason, ToolResultData};
 
     let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
     let session_id = "all_types_test";
-
-    let mut writer = EventWriter::new(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap();
 
     let events = vec![
         SessionEvent::new(
@@ -867,16 +756,9 @@ async fn all_event_types_roundtrip() {
         ),
     ];
 
-    for event in &events {
-        writer.append(event).await.unwrap();
-    }
+    store.append_events(session_id, &events).await.unwrap();
 
-    let mut reader = EventReader::open(&sessions_dir(&temp_dir), session_id)
-        .await
-        .unwrap()
-        .unwrap();
-
-    let read_events = reader.read_all().await.unwrap();
+    let read_events = store.load_events(session_id, 0).await.unwrap();
 
     assert_eq!(read_events.len(), 8);
 

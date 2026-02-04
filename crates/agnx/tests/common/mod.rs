@@ -12,6 +12,7 @@ use agnx::llm::ProviderRegistry;
 use agnx::sandbox::TrustSandbox;
 use agnx::server::{self, AppState};
 use agnx::session::SessionRegistry;
+use agnx::store::file::{FileAgentCatalog, FilePolicyStore, FileSessionStore};
 
 /// Create a test app with empty state.
 pub async fn test_app() -> Router {
@@ -25,11 +26,15 @@ pub async fn test_app() -> Router {
     let tmp = Box::leak(Box::new(tmp));
     let sessions_path = tmp.path().join("sessions");
 
+    let session_store = Arc::new(FileSessionStore::new(&sessions_path));
+    let agents_dir = tmp.path().join("agents");
+    let policy_store: Arc<dyn agnx::store::PolicyStore> =
+        Arc::new(FilePolicyStore::new(&agents_dir));
     let (shutdown_tx, _shutdown_rx) = server::shutdown_channel();
     let state = AppState {
         agents: empty_agent_store().await,
         providers: ProviderRegistry::new(),
-        session_registry: SessionRegistry::new(sessions_path),
+        session_registry: SessionRegistry::new(session_store),
         idle_timeout_seconds: 60,
         keep_alive_interval_seconds: 15,
         background_tasks: BackgroundTasks::new(),
@@ -37,6 +42,7 @@ pub async fn test_app() -> Router {
         admin_token: None,
         gateways: GatewayManager::default(),
         sandbox: Arc::new(TrustSandbox::new()),
+        policy_store,
         policy_locks: agnx::sync::KeyedLocks::new(),
         scheduler: None,
     };
@@ -57,5 +63,6 @@ pub async fn empty_agent_store() -> AgentStore {
     let tmp = Box::leak(Box::new(tmp));
     let agents_dir = tmp.path().join("agents");
 
-    AgentStore::scan(&agents_dir).await.store
+    let catalog = FileAgentCatalog::new(&agents_dir);
+    AgentStore::from_catalog(&catalog).await.store
 }
