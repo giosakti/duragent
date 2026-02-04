@@ -4,7 +4,6 @@
 //! and executing them when they fire.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,34 +25,31 @@ use crate::sandbox::Sandbox;
 use crate::session::{
     AgenticResult, ChatSessionCache, SessionHandle, SessionRegistry, run_agentic_loop,
 };
+use crate::store::{PolicyStore, RunLogStore, ScheduleStore as ScheduleStoreTrait};
 use crate::tools::ToolExecutor;
 
 use super::error::{Result, SchedulerError};
-use super::run_log::RunLog;
 use super::schedule::{
     RunLogEntry, RunStatus, Schedule, ScheduleId, SchedulePayload, ScheduleState, ScheduleStatus,
     ScheduleTiming,
 };
-use super::store::ScheduleStore;
+use super::schedule_cache::ScheduleCache;
+
+/// Type alias for the run log store trait object.
+type RunLogStoreRef = Arc<dyn RunLogStore>;
 
 /// Timeout for stuck run detection (2 hours).
 const STUCK_RUN_TIMEOUT_SECS: i64 = 2 * 60 * 60;
 
-/// Command to the scheduler service.
-enum SchedulerCommand {
-    /// Add a new schedule.
-    Add(Box<Schedule>),
-    /// Cancel a schedule.
-    Cancel(ScheduleId),
-    /// Shutdown the service.
-    Shutdown,
-}
+// ============================================================================
+// Public API
+// ============================================================================
 
 /// Handle for interacting with the scheduler service.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     command_tx: mpsc::Sender<SchedulerCommand>,
-    store: ScheduleStore,
+    cache: ScheduleCache,
 }
 
 impl SchedulerHandle {
@@ -65,7 +61,7 @@ impl SchedulerHandle {
         validate_timing(&schedule.timing)?;
 
         // Store first
-        self.store.create(schedule.clone()).await?;
+        self.cache.create(schedule.clone()).await?;
 
         // Notify service
         let _ = self
@@ -80,7 +76,7 @@ impl SchedulerHandle {
     pub async fn cancel_schedule(&self, id: &str, agent: &str) -> Result<()> {
         // Verify ownership
         let schedule = self
-            .store
+            .cache
             .get(id)
             .await
             .ok_or_else(|| SchedulerError::NotFound(id.to_string()))?;
@@ -90,7 +86,7 @@ impl SchedulerHandle {
         }
 
         // Update status
-        self.store
+        self.cache
             .update_status(id, ScheduleStatus::Cancelled)
             .await?;
 
@@ -105,7 +101,7 @@ impl SchedulerHandle {
 
     /// List schedules for an agent.
     pub async fn list_schedules(&self, agent: &str) -> Vec<Schedule> {
-        self.store.list_by_agent(agent).await
+        self.cache.list_by_agent(agent).await
     }
 
     /// Shutdown the scheduler.
@@ -116,19 +112,23 @@ impl SchedulerHandle {
 
 /// Configuration for the scheduler service.
 pub struct SchedulerConfig {
-    pub schedules_path: PathBuf,
+    /// Storage backend for schedule persistence.
+    pub schedule_store: Arc<dyn ScheduleStoreTrait>,
+    /// Storage backend for run log persistence.
+    pub run_log_store: RunLogStoreRef,
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
     pub session_registry: SessionRegistry,
     pub gateways: GatewayManager,
     pub sandbox: Arc<dyn Sandbox>,
+    pub policy_store: Arc<dyn PolicyStore>,
     pub chat_session_cache: ChatSessionCache,
 }
 
 /// The scheduler service.
 pub struct SchedulerService {
-    store: ScheduleStore,
-    run_log: RunLog,
+    cache: ScheduleCache,
+    run_log: RunLogStoreRef,
     config: SchedulerConfig,
     /// Active timers by schedule ID.
     timers: Arc<RwLock<HashMap<ScheduleId, oneshot::Sender<()>>>>,
@@ -139,11 +139,11 @@ pub struct SchedulerService {
 impl SchedulerService {
     /// Create a new scheduler service.
     pub fn new(config: SchedulerConfig) -> Self {
-        let store = ScheduleStore::new(config.schedules_path.clone());
-        let run_log = RunLog::new(config.schedules_path.join("runs"));
+        let cache = ScheduleCache::new(config.schedule_store.clone());
+        let run_log = config.run_log_store.clone();
 
         Self {
-            store,
+            cache,
             run_log,
             config,
             timers: Arc::new(RwLock::new(HashMap::new())),
@@ -158,16 +158,16 @@ impl SchedulerService {
         let (command_tx, command_rx) = mpsc::channel(100);
         let handle = SchedulerHandle {
             command_tx,
-            store: self.store.clone(),
+            cache: self.cache.clone(),
         };
 
         // Load existing schedules
-        if let Err(e) = self.store.load().await {
+        if let Err(e) = self.cache.load().await {
             error!(error = %e, "Failed to load schedules");
         }
 
         // Start all active schedule timers
-        let schedules = self.store.list_active().await;
+        let schedules = self.cache.list_active().await;
         for schedule in schedules {
             self.start_timer(&schedule).await;
         }
@@ -222,7 +222,7 @@ impl SchedulerService {
         };
 
         // Update state with next run time (atomic to prevent race conditions)
-        self.store
+        self.cache
             .update_state_atomically(&schedule.id, |state| {
                 state.next_run_at = Some(next_run);
             })
@@ -250,7 +250,7 @@ impl SchedulerService {
 
         // Clone what we need for the spawned task
         let schedule_id = schedule.id.clone();
-        let store = self.store.clone();
+        let cache = self.cache.clone();
         let run_log = self.run_log.clone();
         let timers = self.timers.clone();
         let semaphore = self.execution_semaphore.clone();
@@ -260,6 +260,7 @@ impl SchedulerService {
             session_registry: self.config.session_registry.clone(),
             gateways: self.config.gateways.clone(),
             sandbox: self.config.sandbox.clone(),
+            policy_store: self.config.policy_store.clone(),
             chat_session_cache: self.config.chat_session_cache.clone(),
         };
 
@@ -269,7 +270,7 @@ impl SchedulerService {
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {
                     // Timer fired - execute
-                    execute_schedule(schedule_id, store, run_log, config, timers, semaphore).await;
+                    execute_schedule(schedule_id, cache, run_log, config, timers, semaphore).await;
                 }
                 _ = cancel_rx => {
                     debug!(schedule_id = %schedule_id, "Timer cancelled");
@@ -289,11 +290,11 @@ impl SchedulerService {
 
     /// Clear runs that appear stuck (running_since > 2 hours).
     async fn clear_stuck_runs(&self) {
-        let schedules = self.store.list_active().await;
+        let schedules = self.cache.list_active().await;
         let cutoff = Utc::now() - chrono::Duration::seconds(STUCK_RUN_TIMEOUT_SECS);
 
         for schedule in schedules {
-            if let Some(state) = self.store.get_state(&schedule.id).await
+            if let Some(state) = self.cache.get_state(&schedule.id).await
                 && let Some(running_since) = state.running_since
                 && running_since < cutoff
             {
@@ -304,7 +305,7 @@ impl SchedulerService {
                 );
 
                 // Update atomically to prevent race conditions
-                self.store
+                self.cache
                     .update_state_atomically(&schedule.id, |state| {
                         state.running_since = None;
                         state.last_status = Some(RunStatus::Error);
@@ -326,6 +327,20 @@ impl SchedulerService {
     }
 }
 
+// ============================================================================
+// Internal Types
+// ============================================================================
+
+/// Command to the scheduler service.
+enum SchedulerCommand {
+    /// Add a new schedule.
+    Add(Box<Schedule>),
+    /// Cancel a schedule.
+    Cancel(ScheduleId),
+    /// Shutdown the service.
+    Shutdown,
+}
+
 /// Clone-friendly config reference for spawned tasks.
 #[derive(Clone)]
 struct SchedulerConfigRef {
@@ -334,14 +349,15 @@ struct SchedulerConfigRef {
     session_registry: SessionRegistry,
     gateways: GatewayManager,
     sandbox: Arc<dyn Sandbox>,
+    policy_store: Arc<dyn PolicyStore>,
     chat_session_cache: ChatSessionCache,
 }
 
 /// Execute a schedule.
 fn execute_schedule(
     schedule_id: ScheduleId,
-    store: ScheduleStore,
-    run_log: RunLog,
+    cache: ScheduleCache,
+    run_log: RunLogStoreRef,
     config: SchedulerConfigRef,
     timers: Arc<RwLock<HashMap<ScheduleId, oneshot::Sender<()>>>>,
     semaphore: Arc<Semaphore>,
@@ -366,7 +382,7 @@ fn execute_schedule(
         debug!(schedule_id = %schedule_id, "Executing schedule");
 
         // Load schedule
-        let schedule = match store.get(&schedule_id).await {
+        let schedule = match cache.get(&schedule_id).await {
             Some(s) if s.status == ScheduleStatus::Active => s,
             Some(_) => {
                 debug!(schedule_id = %schedule_id, "Schedule no longer active");
@@ -379,7 +395,7 @@ fn execute_schedule(
         };
 
         // Mark as running (atomic to prevent race conditions)
-        store
+        cache
             .update_state_atomically(&schedule_id, |state| {
                 state.running_since = Some(start);
             })
@@ -411,7 +427,7 @@ fn execute_schedule(
                 tokio::time::sleep(delay).await;
 
                 // Check if schedule was cancelled during wait
-                if store
+                if cache
                     .get(&schedule_id)
                     .await
                     .is_none_or(|s| s.status != ScheduleStatus::Active)
@@ -478,7 +494,7 @@ fn execute_schedule(
             last_error: error.clone(),
             last_duration_ms: Some(duration_ms),
         };
-        store.update_state(&schedule_id, final_state).await;
+        cache.update_state(&schedule_id, final_state).await;
 
         // Log the run
         let entry = RunLogEntry {
@@ -493,7 +509,7 @@ fn execute_schedule(
         // Handle completion or rescheduling
         if schedule.is_one_shot() {
             // Mark as completed
-            if let Err(e) = store
+            if let Err(e) = cache
                 .update_status(&schedule_id, ScheduleStatus::Completed)
                 .await
             {
@@ -529,7 +545,7 @@ fn execute_schedule(
                 let deadline = Instant::now() + delay;
                 tokio::select! {
                     _ = tokio::time::sleep_until(deadline) => {
-                        execute_schedule(schedule_id, store, run_log, config, timers, semaphore_for_reschedule).await;
+                        execute_schedule(schedule_id, cache, run_log, config, timers, semaphore_for_reschedule).await;
                     }
                     _ = cancel_rx => {
                         debug!(schedule_id = %schedule_id, "Recurring timer cancelled");
@@ -626,11 +642,13 @@ async fn execute_task_payload(
     }
 
     // Create tool executor (without execution context - schedules don't create nested schedules)
+    // Load policy dynamically so AllowAlways approvals take effect immediately
+    let policy = config.policy_store.load(&schedule.agent).await;
     let executor = ToolExecutor::new(
         agent.tools.clone(),
         config.sandbox.clone(),
         agent.agent_dir.clone(),
-        agent.policy.clone(),
+        policy,
         schedule.agent.clone(),
     )
     .with_session_id(handle.id().to_string());

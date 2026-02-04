@@ -6,12 +6,10 @@
 //! - Recovering sessions from disk on startup
 //! - Graceful shutdown of all actors
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
-use tokio::fs;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -19,10 +17,10 @@ use ulid::Ulid;
 
 use crate::agent::OnDisconnect;
 use crate::api::{SESSION_ID_PREFIX, SessionStatus};
+use crate::store::SessionStore;
 
 use super::actor::{ActorConfig, ActorError, RecoverConfig, SessionActor, SessionMetadata};
 use super::handle::SessionHandle;
-use super::resume::resume_session;
 
 // ============================================================================
 // Configuration Constants
@@ -60,8 +58,8 @@ pub struct SessionRegistry {
     handles: Arc<DashMap<String, SessionHandle>>,
     /// Actor task handles for graceful shutdown.
     task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
-    /// Path to sessions directory.
-    sessions_path: PathBuf,
+    /// Session store for persistence.
+    store: Arc<dyn SessionStore>,
     /// Shutdown signal sender.
     shutdown_tx: Arc<watch::Sender<bool>>,
     /// Shutdown signal receiver (cloned for each actor).
@@ -70,13 +68,13 @@ pub struct SessionRegistry {
 
 impl SessionRegistry {
     /// Create a new session registry.
-    pub fn new(sessions_path: PathBuf) -> Self {
+    pub fn new(store: Arc<dyn SessionStore>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         Self {
             handles: Arc::new(DashMap::new()),
             task_handles: Arc::new(Mutex::new(Vec::new())),
-            sessions_path,
+            store,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -99,7 +97,7 @@ impl SessionRegistry {
         let config = ActorConfig {
             id: id.clone(),
             agent: agent.to_string(),
-            sessions_path: self.sessions_path.clone(),
+            store: self.store.clone(),
             on_disconnect,
             gateway,
             gateway_chat_id,
@@ -179,35 +177,20 @@ impl SessionRegistry {
     pub async fn recover(&self) -> Result<RecoveryResult, ActorError> {
         let mut result = RecoveryResult::default();
 
-        // Check if sessions directory exists
-        if fs::metadata(&self.sessions_path).await.is_err() {
-            debug!(
-                sessions_dir = %self.sessions_path.display(),
-                "Sessions directory does not exist, nothing to recover"
-            );
+        // List all session IDs from the store
+        let session_ids = self
+            .store
+            .list()
+            .await
+            .map_err(|e| ActorError::Persistence(format!("Failed to list sessions: {}", e)))?;
+
+        if session_ids.is_empty() {
+            debug!("No sessions to recover");
             return Ok(result);
         }
 
-        // Read the sessions directory
-        let mut entries = fs::read_dir(&self.sessions_path).await.map_err(|e| {
-            ActorError::Persistence(format!("Failed to read sessions directory: {}", e))
-        })?;
-
-        // Process each entry
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-
-            // Skip non-directories
-            if !path.is_dir() {
-                continue;
-            }
-
-            // Get the session ID from the directory name
-            let session_id = match path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name.to_string(),
-                None => continue,
-            };
-
+        // Process each session
+        for session_id in session_ids {
             // Try to recover this session
             match self.recover_single_session(&session_id).await {
                 Ok(true) => {
@@ -241,9 +224,9 @@ impl SessionRegistry {
 
     /// Recover a single session from disk.
     async fn recover_single_session(&self, session_id: &str) -> Result<bool, ActorError> {
-        // Load and replay events to get current state
-        let resumed = match resume_session(&self.sessions_path, session_id).await {
-            Ok(Some(r)) => r,
+        // Load snapshot
+        let snapshot = match self.store.load_snapshot(session_id).await {
+            Ok(Some(s)) => s,
             Ok(None) => {
                 debug!(
                     session_id = %session_id,
@@ -253,19 +236,60 @@ impl SessionRegistry {
             }
             Err(e) => {
                 return Err(ActorError::Persistence(format!(
-                    "Failed to resume session: {}",
+                    "Failed to load snapshot: {}",
                     e
                 )));
             }
         };
 
+        // Load events after snapshot for replay
+        let events = self
+            .store
+            .load_events(session_id, snapshot.last_event_seq)
+            .await
+            .map_err(|e| ActorError::Persistence(format!("Failed to load events: {}", e)))?;
+
+        // Replay events to rebuild state
+        let mut conversation = snapshot.conversation.clone();
+        let mut last_seq = snapshot.last_event_seq;
+        let mut status = snapshot.status;
+
+        for event in events {
+            last_seq = event.seq;
+
+            match &event.payload {
+                super::events::SessionEventPayload::UserMessage { content } => {
+                    conversation.push(crate::llm::Message::text(crate::llm::Role::User, content));
+                }
+                super::events::SessionEventPayload::AssistantMessage { content, .. } => {
+                    conversation.push(crate::llm::Message::text(
+                        crate::llm::Role::Assistant,
+                        content,
+                    ));
+                }
+                super::events::SessionEventPayload::StatusChange { to, .. } => {
+                    status = *to;
+                }
+                super::events::SessionEventPayload::SessionEnd { reason } => {
+                    status = match reason {
+                        super::events::SessionEndReason::Completed
+                        | super::events::SessionEndReason::Terminated
+                        | super::events::SessionEndReason::Timeout
+                        | super::events::SessionEndReason::Error => SessionStatus::Completed,
+                    };
+                }
+                // Other events don't affect conversation or status
+                _ => {}
+            }
+        }
+
         // Determine the status to recover with
-        let status = match resumed.status {
+        let final_status = match status {
             SessionStatus::Active => SessionStatus::Active,
             SessionStatus::Paused => SessionStatus::Paused,
             SessionStatus::Running => {
                 // Running sessions were interrupted
-                match resumed.config.on_disconnect {
+                match snapshot.config.on_disconnect {
                     OnDisconnect::Continue => {
                         debug!(
                             session_id = %session_id,
@@ -292,32 +316,32 @@ impl SessionRegistry {
         };
 
         // Build snapshot for actor recovery
-        let snapshot = super::snapshot::SessionSnapshot::new(
-            resumed.session_id.clone(),
-            resumed.agent.clone(),
-            status,
-            resumed.created_at,
-            resumed.last_event_seq,
-            resumed.conversation,
-            resumed.config,
+        let recovered_snapshot = super::snapshot::SessionSnapshot::new(
+            snapshot.session_id.clone(),
+            snapshot.agent.clone(),
+            final_status,
+            snapshot.created_at,
+            last_seq,
+            conversation,
+            snapshot.config,
         );
 
         let config = RecoverConfig {
-            snapshot,
-            sessions_path: self.sessions_path.clone(),
+            snapshot: recovered_snapshot,
+            store: self.store.clone(),
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
-        let handle = SessionHandle::new(tx, resumed.session_id.clone(), resumed.agent.clone());
+        let handle = SessionHandle::new(tx, snapshot.session_id.clone(), snapshot.agent.clone());
 
         // Store the task handle for graceful shutdown
         self.task_handles.lock().await.push(task_handle);
 
-        self.handles.insert(resumed.session_id.clone(), handle);
+        self.handles.insert(snapshot.session_id.clone(), handle);
 
         info!(
-            session_id = %resumed.session_id,
-            status = %status,
+            session_id = %snapshot.session_id,
+            status = %final_status,
             "Recovered session"
         );
 
@@ -362,16 +386,19 @@ impl SessionRegistry {
 mod tests {
     use super::*;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SessionSnapshot, write_snapshot};
+    use crate::session::{SessionConfig, SessionSnapshot};
+    use crate::store::file::FileSessionStore;
     use chrono::Utc;
     use tempfile::TempDir;
 
-    fn create_test_registry(temp_dir: &TempDir) -> SessionRegistry {
-        SessionRegistry::new(temp_dir.path().to_path_buf())
+    fn create_test_registry(temp_dir: &TempDir) -> (SessionRegistry, Arc<FileSessionStore>) {
+        let store = Arc::new(FileSessionStore::new(temp_dir.path()));
+        let registry = SessionRegistry::new(store.clone());
+        (registry, store)
     }
 
     async fn write_test_snapshot(
-        temp_dir: &TempDir,
+        store: &Arc<FileSessionStore>,
         session_id: &str,
         status: SessionStatus,
         on_disconnect: OnDisconnect,
@@ -391,15 +418,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        write_snapshot(temp_dir.path(), session_id, &snapshot)
-            .await
-            .unwrap();
+        store.save_snapshot(session_id, &snapshot).await.unwrap();
     }
 
     #[tokio::test]
     async fn create_session_returns_handle() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
             .create("test-agent", OnDisconnect::Pause, None, None)
@@ -418,7 +443,7 @@ mod tests {
     #[tokio::test]
     async fn get_returns_none_for_unknown_session() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         assert!(registry.get("session_unknown").is_none());
 
@@ -428,7 +453,7 @@ mod tests {
     #[tokio::test]
     async fn list_returns_all_sessions() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         registry
             .create("agent1", OnDisconnect::Pause, None, None)
@@ -448,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn recover_empty_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         let result = registry.recover().await.unwrap();
 
@@ -462,16 +487,16 @@ mod tests {
     #[tokio::test]
     async fn recover_active_session() {
         let temp_dir = TempDir::new().unwrap();
+        let (registry, store) = create_test_registry(&temp_dir);
 
         write_test_snapshot(
-            &temp_dir,
+            &store,
             "session_active",
             SessionStatus::Active,
             OnDisconnect::Pause,
         )
         .await;
 
-        let registry = create_test_registry(&temp_dir);
         let result = registry.recover().await.unwrap();
 
         assert_eq!(result.recovered, 1);
@@ -493,16 +518,16 @@ mod tests {
     #[tokio::test]
     async fn recover_skips_completed_session() {
         let temp_dir = TempDir::new().unwrap();
+        let (registry, store) = create_test_registry(&temp_dir);
 
         write_test_snapshot(
-            &temp_dir,
+            &store,
             "session_completed",
             SessionStatus::Completed,
             OnDisconnect::Pause,
         )
         .await;
 
-        let registry = create_test_registry(&temp_dir);
         let result = registry.recover().await.unwrap();
 
         assert_eq!(result.recovered, 0);
@@ -517,16 +542,16 @@ mod tests {
     #[tokio::test]
     async fn recover_running_session_continue_mode() {
         let temp_dir = TempDir::new().unwrap();
+        let (registry, store) = create_test_registry(&temp_dir);
 
         write_test_snapshot(
-            &temp_dir,
+            &store,
             "session_running",
             SessionStatus::Running,
             OnDisconnect::Continue,
         )
         .await;
 
-        let registry = create_test_registry(&temp_dir);
         let result = registry.recover().await.unwrap();
 
         assert_eq!(result.recovered, 1);
@@ -541,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_flushes_all_sessions() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
             .create("test-agent", OnDisconnect::Pause, None, None)
@@ -566,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn len_and_is_empty() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
@@ -585,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn contains_session() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = create_test_registry(&temp_dir);
+        let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
             .create("test-agent", OnDisconnect::Pause, None, None)

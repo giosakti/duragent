@@ -15,7 +15,7 @@ use super::types::{
     ChatRequest, ChatResponse, ChatStream, FunctionCall, Message, StreamEvent, ToolCall,
     ToolDefinition, Usage,
 };
-use crate::sse::SseEventStream;
+use crate::sse_parser::SseEventStream;
 
 /// OpenAI-compatible provider (works for OpenAI, OpenRouter, Ollama).
 pub struct OpenAICompatibleProvider {

@@ -13,7 +13,7 @@ use super::types::{
     ChatRequest, ChatResponse, ChatStream, Choice, FunctionCall, Message, Role, StreamEvent,
     ToolCall, ToolDefinition, Usage,
 };
-use crate::sse::SseEventStream;
+use crate::sse_parser::SseEventStream;
 
 /// Anthropic provider with native API format.
 pub struct AnthropicProvider {

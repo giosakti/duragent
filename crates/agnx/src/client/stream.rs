@@ -1,7 +1,7 @@
 //! SSE stream consumer for client.
 //!
 //! Parses Server-Sent Events from the `/stream` endpoint into typed events.
-//! Reuses the shared SSE parser from `crate::sse`.
+//! Reuses the shared SSE parser from `crate::sse_parser`.
 
 use futures::StreamExt;
 use reqwest::Response;
@@ -11,7 +11,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::sse as sse_events;
 use crate::llm::Usage;
-use crate::sse::SseEventStream;
+use crate::sse_parser::SseEventStream;
 
 use super::error::{ClientError, Result};
 

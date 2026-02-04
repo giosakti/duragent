@@ -1,44 +1,46 @@
-//! Schedule persistence to YAML files.
+//! In-memory cache for schedules with persistence.
 //!
-//! Stores schedules in `.agnx/schedules/{id}.yaml` with an in-memory cache.
+//! Wraps a `ScheduleStore` trait implementation with in-memory caching
+//! and runtime state management.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::error::{Result, SchedulerError};
 use super::schedule::{Schedule, ScheduleId, ScheduleState, ScheduleStatus};
+use crate::store::ScheduleStore as ScheduleStoreTrait;
 
-/// Store for schedule persistence.
+/// In-memory cache for schedules with persistence.
 ///
-/// Maintains an in-memory cache backed by YAML files on disk.
+/// Wraps a `ScheduleStore` trait implementation and adds:
+/// - In-memory cache for fast lookups
+/// - Runtime state management (not persisted)
 #[derive(Clone)]
-pub struct ScheduleStore {
-    inner: Arc<RwLock<ScheduleStoreInner>>,
-    /// Base path for schedule storage (e.g., `.agnx/schedules`).
-    schedules_path: PathBuf,
+pub struct ScheduleCache {
+    inner: Arc<RwLock<ScheduleCacheInner>>,
+    /// Underlying persistence store.
+    persistence: Arc<dyn ScheduleStoreTrait>,
 }
 
-struct ScheduleStoreInner {
+struct ScheduleCacheInner {
     /// Cached schedules by ID.
     schedules: HashMap<ScheduleId, Schedule>,
     /// Runtime state by schedule ID.
     states: HashMap<ScheduleId, ScheduleState>,
 }
 
-impl ScheduleStore {
-    /// Create a new store at the given path.
-    pub fn new(schedules_path: PathBuf) -> Self {
+impl ScheduleCache {
+    /// Create a new cache with the given persistence backend.
+    pub fn new(persistence: Arc<dyn ScheduleStoreTrait>) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(ScheduleStoreInner {
+            inner: Arc::new(RwLock::new(ScheduleCacheInner {
                 schedules: HashMap::new(),
                 states: HashMap::new(),
             })),
-            schedules_path,
+            persistence,
         }
     }
 
@@ -46,62 +48,28 @@ impl ScheduleStore {
     ///
     /// Call this on startup to restore persisted schedules.
     pub async fn load(&self) -> Result<LoadResult> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.schedules_path)
-            .await
-            .map_err(|e| SchedulerError::Storage(e.to_string()))?;
-
         let mut loaded = 0;
-        let mut errors = Vec::new();
+        let errors = Vec::new();
 
-        let mut entries = fs::read_dir(&self.schedules_path)
+        let schedules = self
+            .persistence
+            .list()
             .await
             .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|e| SchedulerError::Storage(e.to_string()))?
-        {
-            let path = entry.path();
-
-            // Skip non-YAML files and the runs directory
-            if path.is_dir() || path.extension().is_none_or(|ext| ext != "yaml") {
-                continue;
-            }
-
-            match self.load_schedule_file(&path).await {
-                Ok(schedule) => {
-                    let id = schedule.id.clone();
-                    let mut inner = self.inner.write().await;
-                    inner.schedules.insert(id.clone(), schedule);
-                    inner.states.insert(id, ScheduleState::default());
-                    loaded += 1;
-                }
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "Failed to load schedule");
-                    errors.push((path.display().to_string(), e.to_string()));
-                }
-            }
+        let mut inner = self.inner.write().await;
+        for schedule in schedules {
+            let id = schedule.id.clone();
+            inner.schedules.insert(id.clone(), schedule);
+            inner.states.insert(id, ScheduleState::default());
+            loaded += 1;
         }
 
         if loaded > 0 {
-            info!(loaded = loaded, errors = errors.len(), "Loaded schedules");
+            info!(loaded, "Loaded schedules");
         }
 
         Ok(LoadResult { loaded, errors })
-    }
-
-    /// Load a single schedule file.
-    async fn load_schedule_file(&self, path: &Path) -> Result<Schedule> {
-        let content = fs::read_to_string(path)
-            .await
-            .map_err(|e| SchedulerError::Storage(format!("read {}: {}", path.display(), e)))?;
-
-        let schedule: Schedule = serde_saphyr::from_str(&content)
-            .map_err(|e| SchedulerError::Storage(format!("parse {}: {}", path.display(), e)))?;
-
-        Ok(schedule)
     }
 
     /// Create and persist a new schedule.
@@ -109,7 +77,10 @@ impl ScheduleStore {
         let id = schedule.id.clone();
 
         // Persist to disk first
-        self.persist(&schedule).await?;
+        self.persistence
+            .save(&schedule)
+            .await
+            .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
         // Then add to cache
         let mut inner = self.inner.write().await;
@@ -191,7 +162,10 @@ impl ScheduleStore {
         // Release lock before I/O
         drop(inner);
 
-        self.persist(&schedule_clone).await?;
+        self.persistence
+            .save(&schedule_clone)
+            .await
+            .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
         debug!(schedule_id = %id, status = ?status, "Updated schedule status");
         Ok(())
@@ -206,55 +180,14 @@ impl ScheduleStore {
             inner.states.remove(id);
         }
 
-        // Remove from disk (ignore NotFound - already deleted)
-        let path = self.schedule_path(id);
-        match fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(SchedulerError::Storage(format!(
-                    "delete {}: {}",
-                    path.display(),
-                    e
-                )));
-            }
-        }
-
-        debug!(schedule_id = %id, "Deleted schedule");
-        Ok(())
-    }
-
-    /// Persist a schedule to disk.
-    async fn persist(&self, schedule: &Schedule) -> Result<()> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.schedules_path)
+        // Remove from disk
+        self.persistence
+            .delete(id)
             .await
             .map_err(|e| SchedulerError::Storage(e.to_string()))?;
 
-        let path = self.schedule_path(&schedule.id);
-        let content = serde_saphyr::to_string(schedule)
-            .map_err(|e| SchedulerError::Storage(format!("serialize: {}", e)))?;
-
-        // Write atomically via temp file
-        let temp_path = path.with_extension("yaml.tmp");
-        fs::write(&temp_path, content).await.map_err(|e| {
-            SchedulerError::Storage(format!("write {}: {}", temp_path.display(), e))
-        })?;
-        fs::rename(&temp_path, &path).await.map_err(|e| {
-            SchedulerError::Storage(format!("rename {}: {}", temp_path.display(), e))
-        })?;
-
+        debug!(schedule_id = %id, "Deleted schedule");
         Ok(())
-    }
-
-    /// Get the file path for a schedule.
-    fn schedule_path(&self, id: &str) -> PathBuf {
-        self.schedules_path.join(format!("{}.yaml", id))
-    }
-
-    /// Get the path to the schedules directory.
-    pub fn path(&self) -> &Path {
-        &self.schedules_path
     }
 }
 
@@ -271,6 +204,7 @@ pub struct LoadResult {
 mod tests {
     use super::*;
     use crate::scheduler::schedule::{ScheduleDestination, SchedulePayload, ScheduleTiming};
+    use crate::store::file::FileScheduleStore;
     use chrono::Utc;
     use tempfile::TempDir;
 
@@ -295,10 +229,15 @@ mod tests {
         }
     }
 
+    fn create_cache(temp_dir: &TempDir) -> ScheduleCache {
+        let persistence = Arc::new(FileScheduleStore::new(temp_dir.path().join("schedules")));
+        ScheduleCache::new(persistence)
+    }
+
     #[tokio::test]
     async fn create_and_get_schedule() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         let schedule = test_schedule("sched_1", "my-agent");
         store.create(schedule.clone()).await.unwrap();
@@ -311,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn get_returns_none_for_missing() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         let result = store.get("nonexistent").await;
         assert!(result.is_none());
@@ -320,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn list_by_agent_filters_correctly() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         store
             .create(test_schedule("sched_1", "agent-a"))
@@ -345,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn update_status_persists() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         store
             .create(test_schedule("sched_1", "my-agent"))
@@ -356,8 +295,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Reload from disk
-        let new_store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        // Reload from disk with new store instance
+        let new_store = create_cache(&temp_dir);
         new_store.load().await.unwrap();
 
         let retrieved = new_store.get("sched_1").await.unwrap();
@@ -367,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_from_disk_and_cache() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         store
             .create(test_schedule("sched_1", "my-agent"))
@@ -389,7 +328,7 @@ mod tests {
 
         // Create schedules with first store
         {
-            let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+            let store = create_cache(&temp_dir);
             store
                 .create(test_schedule("sched_1", "agent"))
                 .await
@@ -401,7 +340,7 @@ mod tests {
         }
 
         // Load with new store
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
         let result = store.load().await.unwrap();
 
         assert_eq!(result.loaded, 2);
@@ -412,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn list_active_excludes_completed() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         store
             .create(test_schedule("sched_1", "agent"))
@@ -435,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn state_management() {
         let temp_dir = TempDir::new().unwrap();
-        let store = ScheduleStore::new(temp_dir.path().join("schedules"));
+        let store = create_cache(&temp_dir);
 
         store
             .create(test_schedule("sched_1", "agent"))

@@ -6,13 +6,12 @@
 //! - Sessions to be an implementation detail, not user-facing
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use super::load_snapshot;
+use crate::store::SessionStore;
 use crate::sync::KeyedLocks;
 
 /// Cache mapping (gateway, chat_id, agent) to session_id.
@@ -117,14 +116,18 @@ impl ChatSessionCache {
 
     /// Rebuild the cache from recovered sessions.
     ///
-    /// Scans all session snapshots in the sessions directory and rebuilds
-    /// the cache from their stored gateway info.
-    pub async fn rebuild_from_sessions(&self, sessions_path: &Path, session_ids: &[String]) {
+    /// Loads snapshots via the session store and rebuilds the cache from
+    /// their stored gateway info.
+    pub async fn rebuild_from_sessions(
+        &self,
+        store: &Arc<dyn SessionStore>,
+        session_ids: &[String],
+    ) {
         let mut rebuilt = 0;
 
         for session_id in session_ids {
             // Load snapshot to get gateway info and agent
-            let snapshot = match load_snapshot(sessions_path, session_id).await {
+            let snapshot = match store.load_snapshot(session_id).await {
                 Ok(Some(s)) => s,
                 Ok(None) => continue,
                 Err(e) => {

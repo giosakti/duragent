@@ -9,7 +9,7 @@
 //! reducing per-event fsync overhead.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -21,11 +21,10 @@ use tracing::{debug, warn};
 use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
 use crate::llm::{Message, Role, Usage};
+use crate::store::SessionStore;
 
-use super::event_writer::EventWriter;
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
 use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
-use super::snapshot_writer::write_snapshot;
 
 // ============================================================================
 // Configuration Constants
@@ -64,12 +63,6 @@ pub enum ActorError {
     /// IO error during persistence.
     #[error("persistence error: {0}")]
     Persistence(String),
-}
-
-impl From<super::error::SessionError> for ActorError {
-    fn from(e: super::error::SessionError) -> Self {
-        ActorError::Persistence(e.to_string())
-    }
 }
 
 // ============================================================================
@@ -196,7 +189,7 @@ pub struct SessionActor {
     gateway_chat_id: Option<String>,
 
     // Persistence
-    sessions_path: PathBuf,
+    store: Arc<dyn SessionStore>,
     pending_events: VecDeque<SessionEvent>,
 
     // Communication
@@ -208,7 +201,7 @@ pub struct SessionActor {
 pub struct ActorConfig {
     pub id: String,
     pub agent: String,
-    pub sessions_path: PathBuf,
+    pub store: Arc<dyn SessionStore>,
     pub on_disconnect: OnDisconnect,
     pub gateway: Option<String>,
     pub gateway_chat_id: Option<String>,
@@ -217,7 +210,7 @@ pub struct ActorConfig {
 /// Configuration for recovering an actor from a snapshot.
 pub struct RecoverConfig {
     pub snapshot: SessionSnapshot,
-    pub sessions_path: PathBuf,
+    pub store: Arc<dyn SessionStore>,
 }
 
 impl SessionActor {
@@ -247,7 +240,7 @@ impl SessionActor {
             on_disconnect: config.on_disconnect,
             gateway: config.gateway,
             gateway_chat_id: config.gateway_chat_id,
-            sessions_path: config.sessions_path,
+            store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
             shutdown_rx,
@@ -281,7 +274,7 @@ impl SessionActor {
             on_disconnect: snapshot.config.on_disconnect,
             gateway: snapshot.config.gateway,
             gateway_chat_id: snapshot.config.gateway_chat_id,
-            sessions_path: config.sessions_path,
+            store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
             shutdown_rx,
@@ -713,25 +706,13 @@ impl SessionActor {
             .map(|e| e.seq)
             .unwrap_or(self.last_flushed_seq);
 
-        let mut writer = match EventWriter::new(&self.sessions_path, &self.id).await {
-            Ok(w) => w,
-            Err(e) => {
-                warn!(session_id = %self.id, error = %e, "Failed to open event writer");
-                // Re-queue events on failure
-                for event in events.into_iter().rev() {
-                    self.pending_events.push_front(event);
-                }
-                return Err(e.into());
-            }
-        };
-
-        if let Err(e) = writer.append_batch(&events).await {
+        if let Err(e) = self.store.append_events(&self.id, &events).await {
             warn!(session_id = %self.id, error = %e, "Failed to flush events");
             // Re-queue events on failure
             for event in events.into_iter().rev() {
                 self.pending_events.push_front(event);
             }
-            return Err(e.into());
+            return Err(ActorError::Persistence(e.to_string()));
         }
 
         self.last_flushed_seq = last_seq;
@@ -761,7 +742,8 @@ impl SessionActor {
             },
         );
 
-        write_snapshot(&self.sessions_path, &self.id, &snapshot)
+        self.store
+            .save_snapshot(&self.id, &snapshot)
             .await
             .map_err(|e| {
                 warn!(session_id = %self.id, error = %e, "Failed to write snapshot");
@@ -782,6 +764,7 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::file::FileSessionStore;
     use tempfile::TempDir;
 
     fn setup_test_actor(
@@ -792,10 +775,11 @@ mod tests {
         tokio::task::JoinHandle<()>,
     ) {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let store = Arc::new(FileSessionStore::new(temp_dir.path()));
         let config = ActorConfig {
             id: "session_test123".to_string(),
             agent: "test-agent".to_string(),
-            sessions_path: temp_dir.path().to_path_buf(),
+            store,
             on_disconnect: OnDisconnect::Pause,
             gateway: None,
             gateway_chat_id: None,

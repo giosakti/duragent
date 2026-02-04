@@ -23,6 +23,7 @@ use agnx::llm::{ProviderRegistry, Role, StreamEvent, Usage};
 use agnx::sandbox::TrustSandbox;
 use agnx::server::{self, AppState};
 use agnx::session::SessionRegistry;
+use agnx::store::file::{FilePolicyStore, FileSessionStore};
 
 mod common;
 use common::test_app;
@@ -370,11 +371,15 @@ async fn app_state_with_custom_timeouts() {
     let sessions_path = tmp.path().join("sessions");
     std::fs::create_dir(&sessions_path).unwrap();
 
+    let session_store = Arc::new(FileSessionStore::new(&sessions_path));
+    let agents_dir = tmp.path().join("agents");
+    let policy_store: Arc<dyn agnx::store::PolicyStore> =
+        Arc::new(FilePolicyStore::new(&agents_dir));
     let (shutdown_tx, _shutdown_rx) = server::shutdown_channel();
     let state = AppState {
         agents: common::empty_agent_store().await,
         providers: ProviderRegistry::new(),
-        session_registry: SessionRegistry::new(sessions_path),
+        session_registry: SessionRegistry::new(session_store),
         idle_timeout_seconds: 120,
         keep_alive_interval_seconds: 30,
         background_tasks: BackgroundTasks::new(),
@@ -382,6 +387,7 @@ async fn app_state_with_custom_timeouts() {
         admin_token: None,
         gateways: GatewayManager::default(),
         sandbox: Arc::new(TrustSandbox::new()),
+        policy_store,
         policy_locks: agnx::sync::KeyedLocks::new(),
         scheduler: None,
     };

@@ -67,6 +67,7 @@ pub struct GatewayHandlerConfig {
     pub routing_config: RoutingConfig,
     pub sandbox: Arc<dyn Sandbox>,
     pub gateway_manager: GatewayManager,
+    pub policy_store: Arc<dyn crate::store::PolicyStore>,
     pub policy_locks: PolicyLocks,
     pub scheduler: Option<SchedulerHandle>,
     pub chat_session_cache: ChatSessionCache,
@@ -87,6 +88,8 @@ pub struct GatewayMessageHandler {
     sandbox: Arc<dyn Sandbox>,
     /// Gateway manager for sending messages with keyboards.
     gateway_manager: GatewayManager,
+    /// Policy store for loading agent policies.
+    policy_store: Arc<dyn crate::store::PolicyStore>,
     /// Per-agent locks for policy file writes.
     policy_locks: PolicyLocks,
     /// Scheduler handle for schedule tools.
@@ -105,6 +108,7 @@ impl GatewayMessageHandler {
             routing_config: config.routing_config,
             sandbox: config.sandbox,
             gateway_manager: config.gateway_manager,
+            policy_store: config.policy_store,
             policy_locks: config.policy_locks,
             scheduler: config.scheduler,
         }
@@ -336,12 +340,15 @@ impl GatewayMessageHandler {
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())?;
 
+        // Load policy from store (picks up runtime changes from AllowAlways)
+        let policy = self.policy_store.load(handle.agent()).await;
+
         // Create tool executor with execution context for schedule tools
         let mut executor = ToolExecutor::new(
             agent.tools.clone(),
             self.sandbox.clone(),
             agent.agent_dir.clone(),
-            agent.policy.clone(),
+            policy,
             handle.agent().to_string(),
         )
         .with_session_id(handle.id().to_string());
@@ -568,11 +575,10 @@ impl MessageHandler for GatewayMessageHandler {
             }
         };
 
-        // If allow_always, save pattern to policy.local.yaml
+        // If allow_always, save pattern to policy
         if decision_type == ApprovalDecisionType::AllowAlways
             && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
-                &agent.policy,
-                &agent.agent_dir,
+                self.policy_store.as_ref(),
                 handle.agent(),
                 crate::agent::ToolType::Bash,
                 &pending.command,
@@ -583,9 +589,13 @@ impl MessageHandler for GatewayMessageHandler {
             debug!(
                 error = %e,
                 command = %pending.command,
-                "Failed to save allow pattern to policy.local.yaml"
+                "Failed to save allow pattern to policy"
             );
         }
+
+        // Load policy from store (picks up runtime changes from AllowAlways)
+        // This is loaded AFTER add_pattern_and_save so it includes any newly saved pattern
+        let policy = self.policy_store.load(handle.agent()).await;
 
         // Determine tool result based on decision
         let tool_result = if decision_type == ApprovalDecisionType::Deny {
@@ -602,7 +612,7 @@ impl MessageHandler for GatewayMessageHandler {
                 agent.tools.clone(),
                 self.sandbox.clone(),
                 agent.agent_dir.clone(),
-                agent.policy.clone(),
+                policy.clone(),
                 handle.agent().to_string(),
             )
             .with_session_id(handle.id().to_string());
@@ -655,12 +665,12 @@ impl MessageHandler for GatewayMessageHandler {
             }
         };
 
-        // Create executor for resume
+        // Create executor for resume (uses same policy loaded above)
         let mut executor = ToolExecutor::new(
             agent.tools.clone(),
             self.sandbox.clone(),
             agent.agent_dir.clone(),
-            agent.policy.clone(),
+            policy,
             handle.agent().to_string(),
         )
         .with_session_id(handle.id().to_string());

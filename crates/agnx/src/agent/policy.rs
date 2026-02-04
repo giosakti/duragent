@@ -19,12 +19,9 @@
 //!
 //! If no tool type prefix is provided, patterns match against all tool types.
 
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
-use tokio::fs;
-use tracing::{debug, warn};
 
+use crate::store::PolicyStore;
 use crate::sync::KeyedLocks;
 
 // ============================================================================
@@ -184,33 +181,6 @@ impl ToolType {
 // ============================================================================
 
 impl ToolPolicy {
-    /// Load policy from agent directory.
-    ///
-    /// Loads `policy.yaml` (base) and merges with `policy.local.yaml` (overrides).
-    pub async fn load(agent_dir: &Path) -> Self {
-        let base = Self::load_file(&agent_dir.join("policy.yaml")).await;
-        let local = Self::load_file(&agent_dir.join("policy.local.yaml")).await;
-
-        match (base, local) {
-            (Some(base), Some(local)) => base.merge(local),
-            (Some(base), None) => base,
-            (None, Some(local)) => local,
-            (None, None) => Self::default(),
-        }
-    }
-
-    /// Load a single policy file.
-    async fn load_file(path: &Path) -> Option<Self> {
-        let content = fs::read_to_string(path).await.ok()?;
-        match serde_saphyr::from_str(&content) {
-            Ok(policy) => Some(policy),
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "Failed to parse policy file");
-                None
-            }
-        }
-    }
-
     /// Merge another policy into this one (other overrides self).
     ///
     /// Merge rules:
@@ -243,68 +213,31 @@ impl ToolPolicy {
         self
     }
 
-    /// Save policy to local override file atomically.
-    ///
-    /// Writes to a temp file and renames to prevent corruption on crash.
-    ///
-    /// **Note:** For concurrent-safe modifications, use `add_pattern_and_save()`
-    /// which handles locking and reload automatically.
-    pub async fn save_local(&self, agent_dir: &Path) -> std::io::Result<()> {
-        let path = agent_dir.join("policy.local.yaml");
-        let tmp_path = agent_dir.join("policy.local.yaml.tmp");
-        let content = serde_saphyr::to_string(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        fs::write(&tmp_path, &content).await?;
-        fs::rename(&tmp_path, &path).await?;
-        debug!(path = %path.display(), "Saved local policy");
-        Ok(())
-    }
-
     /// Atomically add a pattern to the allow list and save.
     ///
-    /// This is the recommended way to modify policy files as it:
+    /// This is the recommended way to modify policies as it:
     /// 1. Acquires a per-agent lock to prevent concurrent writes
-    /// 2. Reloads the latest policy from disk
+    /// 2. Reloads the latest policy from storage
     /// 3. Adds the new pattern
     /// 4. Saves atomically
     ///
     /// This prevents race conditions where concurrent calls would overwrite
     /// each other's changes.
     pub async fn add_pattern_and_save(
-        base_policy: &ToolPolicy,
-        agent_dir: &Path,
+        policy_store: &dyn PolicyStore,
         agent_name: &str,
         tool_type: ToolType,
         pattern: &str,
         policy_locks: &PolicyLocks,
-    ) -> std::io::Result<()> {
+    ) -> Result<(), crate::store::StorageError> {
         // Hold lock while reading, modifying, and writing
         let lock = policy_locks.get(agent_name);
         let _guard = lock.lock().await;
 
-        let mut policy = base_policy.clone();
-        policy.reload_local(agent_dir).await;
+        // Load current policy (includes any concurrent changes)
+        let mut policy = policy_store.load(agent_name).await;
         policy.add_allow_pattern(tool_type, pattern);
-        policy.save_local(agent_dir).await
-    }
-
-    /// Reload the local policy file and merge with current state.
-    ///
-    /// Use this before modifying and saving to avoid overwriting concurrent changes.
-    pub async fn reload_local(&mut self, agent_dir: &Path) {
-        if let Some(local) = Self::load_file(&agent_dir.join("policy.local.yaml")).await {
-            // Merge local patterns into self (union of allow/deny lists)
-            for pattern in local.allow {
-                if !self.allow.contains(&pattern) {
-                    self.allow.push(pattern);
-                }
-            }
-            for pattern in local.deny {
-                if !self.deny.contains(&pattern) {
-                    self.deny.push(pattern);
-                }
-            }
-        }
+        policy_store.save(agent_name, &policy).await
     }
 
     /// Add a pattern to the allow list.
@@ -432,7 +365,6 @@ fn matches_pattern(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn default_policy_has_correct_api_version() {
@@ -809,88 +741,9 @@ mod tests {
         assert!(policy.allow.contains(&"mcp:github:*".to_string()));
     }
 
-    #[tokio::test]
-    async fn load_returns_default_when_no_files() {
-        let tmp = TempDir::new().unwrap();
-        let policy = ToolPolicy::load(tmp.path()).await;
-
-        assert_eq!(policy.mode, PolicyMode::Dangerous);
-        assert!(policy.allow.is_empty());
-        assert!(policy.deny.is_empty());
-    }
-
-    #[tokio::test]
-    async fn load_base_policy() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("policy.yaml"),
-            r#"
-apiVersion: agnx/v1alpha1
-kind: Policy
-mode: restrict
-deny:
-  - "bash:rm*"
-  - "*:*sudo*"
-"#,
-        )
-        .unwrap();
-
-        let policy = ToolPolicy::load(tmp.path()).await;
-
-        assert_eq!(policy.api_version, "agnx/v1alpha1");
-        assert_eq!(policy.kind, "Policy");
-        assert_eq!(policy.mode, PolicyMode::Restrict);
-        assert_eq!(policy.deny.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn load_and_merge_local_policy() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("policy.yaml"),
-            r#"
-apiVersion: agnx/v1alpha1
-kind: Policy
-mode: restrict
-deny:
-  - "bash:rm*"
-"#,
-        )
-        .unwrap();
-        std::fs::write(
-            tmp.path().join("policy.local.yaml"),
-            r#"
-apiVersion: agnx/v1alpha1
-kind: Policy
-mode: ask
-allow:
-  - "bash:echo*"
-"#,
-        )
-        .unwrap();
-
-        let policy = ToolPolicy::load(tmp.path()).await;
-
-        assert_eq!(policy.mode, PolicyMode::Ask);
-        assert_eq!(policy.deny, vec!["bash:rm*"]);
-        assert_eq!(policy.allow, vec!["bash:echo*"]);
-    }
-
-    #[tokio::test]
-    async fn save_local_creates_file() {
-        let tmp = TempDir::new().unwrap();
-        let policy = ToolPolicy {
-            mode: PolicyMode::Ask,
-            allow: vec!["bash:echo*".to_string()],
-            ..Default::default()
-        };
-
-        policy.save_local(tmp.path()).await.unwrap();
-
-        let content = std::fs::read_to_string(tmp.path().join("policy.local.yaml")).unwrap();
-        assert!(content.contains("ask"));
-        assert!(content.contains("echo*"));
-    }
+    // NOTE: Tests for PolicyStore::load() and PolicyStore::save() are in
+    // store/file/policy.rs. The ToolPolicy type is now a pure data structure
+    // and doesn't contain file I/O methods.
 
     #[test]
     fn policy_mode_serialization() {

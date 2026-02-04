@@ -393,6 +393,8 @@ mod tests {
     use super::*;
     use crate::agent::OnDisconnect;
     use crate::session::actor::{ActorConfig, SessionActor};
+    use crate::store::file::FileSessionStore;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::watch;
 
@@ -404,10 +406,11 @@ mod tests {
         tokio::task::JoinHandle<()>,
     ) {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let store = Arc::new(FileSessionStore::new(temp_dir.path()));
         let config = ActorConfig {
             id: "session_test".to_string(),
             agent: "test-agent".to_string(),
-            sessions_path: temp_dir.path().to_path_buf(),
+            store,
             on_disconnect: OnDisconnect::Pause,
             gateway: None,
             gateway_chat_id: None,

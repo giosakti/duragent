@@ -6,11 +6,6 @@
 //!
 //! Both modes deliver results via any gateway (Telegram, Discord, etc.).
 //!
-//! # Storage
-//!
-//! Schedules are persisted to `.agnx/schedules/{id}.yaml` and run logs
-//! to `.agnx/schedules/runs/{id}.jsonl`.
-//!
 //! # Usage
 //!
 //! ```ignore
@@ -31,16 +26,14 @@
 //! ```
 
 pub mod error;
-pub mod run_log;
 pub mod schedule;
+pub mod schedule_cache;
 pub mod service;
-pub mod store;
 
 pub use error::{Result, SchedulerError};
-pub use run_log::RunLog;
 pub use schedule::{
     RetryConfig, RunLogEntry, RunStatus, Schedule, ScheduleDestination, ScheduleId,
     SchedulePayload, ScheduleState, ScheduleStatus, ScheduleTiming,
 };
+pub use schedule_cache::{LoadResult, ScheduleCache};
 pub use service::{SchedulerConfig, SchedulerHandle, SchedulerService};
-pub use store::{LoadResult, ScheduleStore};

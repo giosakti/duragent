@@ -15,6 +15,7 @@ use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 use crate::session::SessionRegistry;
+use crate::store::PolicyStore;
 
 // ============================================================================
 // Application State
@@ -40,6 +41,9 @@ pub struct AppState {
     pub gateways: GatewayManager,
     /// Sandbox for tool execution.
     pub sandbox: Arc<dyn Sandbox>,
+    /// Policy store for loading agent policies.
+    /// Policies are loaded per-request to pick up runtime changes.
+    pub policy_store: Arc<dyn PolicyStore>,
     /// Per-agent locks for policy file writes.
     /// Prevents concurrent writes from overwriting each other.
     pub policy_locks: PolicyLocks,

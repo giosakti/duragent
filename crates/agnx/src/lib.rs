@@ -6,6 +6,7 @@
 
 pub mod build_info;
 pub mod config;
+pub mod store;
 pub mod sync;
 
 // ============================================================================
@@ -15,7 +16,7 @@ pub mod sync;
 pub mod api;
 pub mod handlers;
 pub mod server;
-pub mod sse;
+pub mod sse_parser;
 
 // ============================================================================
 // Domain
