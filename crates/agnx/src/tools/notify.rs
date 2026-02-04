@@ -36,6 +36,10 @@ pub async fn send_notification(
     }
 }
 
+// ============================================================================
+// Private Helpers
+// ============================================================================
+
 /// Send a log notification.
 fn send_log(session_id: &str, agent: &str, command: &str, success: bool) {
     if success {
@@ -53,6 +57,16 @@ fn send_log(session_id: &str, agent: &str, command: &str, success: bool) {
             "Command execution failed"
         );
     }
+}
+
+/// Payload for webhook notifications.
+#[derive(Serialize)]
+struct WebhookPayload<'a> {
+    event: &'static str,
+    session_id: &'a str,
+    agent: &'a str,
+    command: &'a str,
+    success: bool,
 }
 
 /// Send a webhook notification (fire and forget).
@@ -82,15 +96,6 @@ async fn send_webhook(url: &str, session_id: &str, agent: &str, command: &str, s
             error!(url = %url, error = %e, "Failed to send webhook notification");
         }
     }
-}
-
-#[derive(Serialize)]
-struct WebhookPayload<'a> {
-    event: &'static str,
-    session_id: &'a str,
-    agent: &'a str,
-    command: &'a str,
-    success: bool,
 }
 
 #[cfg(test)]

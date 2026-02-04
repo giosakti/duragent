@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use async_trait::async_trait;
+
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::scheduler::{
     RetryConfig, Schedule, ScheduleDestination, SchedulePayload, ScheduleStatus, ScheduleTiming,
@@ -13,6 +15,7 @@ use crate::scheduler::{
 
 use super::error::ToolError;
 use super::executor::ToolResult;
+use super::tool::Tool;
 
 /// Context needed for schedule tool execution.
 #[derive(Debug, Clone)]
@@ -25,6 +28,94 @@ pub struct ToolExecutionContext {
     pub agent: String,
     /// Session ID.
     pub session_id: String,
+}
+
+// ============================================================================
+// Tool Structs
+// ============================================================================
+
+/// The schedule_task tool for creating scheduled tasks.
+pub struct ScheduleTaskTool {
+    scheduler: SchedulerHandle,
+    ctx: ToolExecutionContext,
+}
+
+impl ScheduleTaskTool {
+    /// Create a new schedule_task tool.
+    pub fn new(scheduler: SchedulerHandle, ctx: ToolExecutionContext) -> Self {
+        Self { scheduler, ctx }
+    }
+}
+
+#[async_trait]
+impl Tool for ScheduleTaskTool {
+    fn name(&self) -> &str {
+        "schedule_task"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        schedule_task_definition()
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<ToolResult, ToolError> {
+        execute_schedule_task(&self.scheduler, &self.ctx, arguments).await
+    }
+}
+
+/// The list_schedules tool for listing active schedules.
+pub struct ListSchedulesTool {
+    scheduler: SchedulerHandle,
+    ctx: ToolExecutionContext,
+}
+
+impl ListSchedulesTool {
+    /// Create a new list_schedules tool.
+    pub fn new(scheduler: SchedulerHandle, ctx: ToolExecutionContext) -> Self {
+        Self { scheduler, ctx }
+    }
+}
+
+#[async_trait]
+impl Tool for ListSchedulesTool {
+    fn name(&self) -> &str {
+        "list_schedules"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        list_schedules_definition()
+    }
+
+    async fn execute(&self, _arguments: &str) -> Result<ToolResult, ToolError> {
+        execute_list_schedules(&self.scheduler, &self.ctx).await
+    }
+}
+
+/// The cancel_schedule tool for cancelling schedules.
+pub struct CancelScheduleTool {
+    scheduler: SchedulerHandle,
+    ctx: ToolExecutionContext,
+}
+
+impl CancelScheduleTool {
+    /// Create a new cancel_schedule tool.
+    pub fn new(scheduler: SchedulerHandle, ctx: ToolExecutionContext) -> Self {
+        Self { scheduler, ctx }
+    }
+}
+
+#[async_trait]
+impl Tool for CancelScheduleTool {
+    fn name(&self) -> &str {
+        "cancel_schedule"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        cancel_schedule_definition()
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<ToolResult, ToolError> {
+        execute_cancel_schedule(&self.scheduler, &self.ctx, arguments).await
+    }
 }
 
 // ============================================================================

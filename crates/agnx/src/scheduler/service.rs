@@ -26,7 +26,7 @@ use crate::session::{
     AgenticResult, ChatSessionCache, SessionHandle, SessionRegistry, run_agentic_loop,
 };
 use crate::store::{PolicyStore, RunLogStore, ScheduleStore as ScheduleStoreTrait};
-use crate::tools::ToolExecutor;
+use crate::tools::{ToolDependencies, ToolExecutor, create_tools};
 
 use super::error::{Result, SchedulerError};
 use super::schedule::{
@@ -644,14 +644,16 @@ async fn execute_task_payload(
     // Create tool executor (without execution context - schedules don't create nested schedules)
     // Load policy dynamically so AllowAlways approvals take effect immediately
     let policy = config.policy_store.load(&schedule.agent).await;
-    let executor = ToolExecutor::new(
-        agent.tools.clone(),
-        config.sandbox.clone(),
-        agent.agent_dir.clone(),
-        policy,
-        schedule.agent.clone(),
-    )
-    .with_session_id(handle.id().to_string());
+    let deps = ToolDependencies {
+        sandbox: config.sandbox.clone(),
+        agent_dir: agent.agent_dir.clone(),
+        scheduler: None, // Schedules don't create nested schedules
+        execution_context: None,
+    };
+    let tools = create_tools(&agent.tools, &deps);
+    let executor = ToolExecutor::new(policy, schedule.agent.clone())
+        .register_all(tools)
+        .with_session_id(handle.id().to_string());
 
     // Build messages using StructuredContext
     let history = handle.get_messages().await.unwrap_or_default();

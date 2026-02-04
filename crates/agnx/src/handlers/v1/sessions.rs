@@ -28,7 +28,7 @@ use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, SessionHandle, StreamConfig,
     resume_agentic_loop, run_agentic_loop,
 };
-use crate::tools::{ToolExecutor, ToolResult};
+use crate::tools::{ToolDependencies, ToolExecutor, ToolResult, create_tools};
 
 // ============================================================================
 // Query Types
@@ -229,15 +229,17 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
     // Load policy from store (picks up runtime changes from AllowAlways)
     let policy = state.policy_store.load(&agent_name).await;
 
-    // Create tool executor with policy
-    let executor = ToolExecutor::new(
-        ctx.agent_spec.tools.clone(),
-        state.sandbox.clone(),
-        ctx.agent_dir.clone(),
-        policy,
-        agent_name.clone(),
-    )
-    .with_session_id(session_id.clone());
+    // Create tools and executor
+    let deps = ToolDependencies {
+        sandbox: state.sandbox.clone(),
+        agent_dir: ctx.agent_dir.clone(),
+        scheduler: None,
+        execution_context: None,
+    };
+    let tools = create_tools(&ctx.agent_spec.tools, &deps);
+    let executor = ToolExecutor::new(policy, agent_name.clone())
+        .register_all(tools)
+        .with_session_id(session_id.clone());
 
     // Run the agentic loop with SessionHandle
     let result = match run_agentic_loop(
@@ -442,14 +444,16 @@ pub async fn approve_command(
         }
     } else {
         // Approved - execute the tool
-        let executor = ToolExecutor::new(
-            agent_spec.tools.clone(),
-            state.sandbox.clone(),
-            agent_spec.agent_dir.clone(),
-            policy.clone(),
-            agent_name.clone(),
-        )
-        .with_session_id(session_id.clone());
+        let deps = ToolDependencies {
+            sandbox: state.sandbox.clone(),
+            agent_dir: agent_spec.agent_dir.clone(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(&agent_spec.tools, &deps);
+        let executor = ToolExecutor::new(policy.clone(), agent_name.clone())
+            .register_all(tools)
+            .with_session_id(session_id.clone());
 
         // Build tool call from pending approval
         let tool_call = crate::llm::ToolCall {
@@ -489,14 +493,16 @@ pub async fn approve_command(
     };
 
     // Create executor for resume (uses same policy loaded above)
-    let executor = ToolExecutor::new(
-        agent_spec.tools.clone(),
-        state.sandbox.clone(),
-        agent_spec.agent_dir.clone(),
-        policy,
-        agent_name.clone(),
-    )
-    .with_session_id(session_id.clone());
+    let deps = ToolDependencies {
+        sandbox: state.sandbox.clone(),
+        agent_dir: agent_spec.agent_dir.clone(),
+        scheduler: None,
+        execution_context: None,
+    };
+    let tools = create_tools(&agent_spec.tools, &deps);
+    let executor = ToolExecutor::new(policy, agent_name.clone())
+        .register_all(tools)
+        .with_session_id(session_id.clone());
 
     // Set session to Running before resuming (accurate status during execution)
     if let Err(e) = handle.set_status(SessionStatus::Running).await {

@@ -26,7 +26,9 @@ use crate::session::{
     resume_agentic_loop, run_agentic_loop,
 };
 use crate::sync::KeyedLocks;
-use crate::tools::{ToolExecutionContext, ToolExecutor, ToolResult};
+use crate::tools::{
+    ToolDependencies, ToolExecutionContext, ToolExecutor, ToolResult, create_tools,
+};
 
 // ============================================================================
 // Routing Config
@@ -344,26 +346,22 @@ impl GatewayMessageHandler {
         let policy = self.policy_store.load(handle.agent()).await;
 
         // Create tool executor with execution context for schedule tools
-        let mut executor = ToolExecutor::new(
-            agent.tools.clone(),
-            self.sandbox.clone(),
-            agent.agent_dir.clone(),
-            policy,
-            handle.agent().to_string(),
-        )
-        .with_session_id(handle.id().to_string());
-
-        // Add scheduler and execution context if available
-        if let Some(ref scheduler) = self.scheduler {
-            executor = executor
-                .with_scheduler(scheduler.clone())
-                .with_execution_context(ToolExecutionContext {
-                    gateway: Some(gateway.to_string()),
-                    chat_id: Some(chat_id.to_string()),
-                    agent: handle.agent().to_string(),
-                    session_id: handle.id().to_string(),
-                });
-        }
+        let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
+            gateway: Some(gateway.to_string()),
+            chat_id: Some(chat_id.to_string()),
+            agent: handle.agent().to_string(),
+            session_id: handle.id().to_string(),
+        });
+        let deps = ToolDependencies {
+            sandbox: self.sandbox.clone(),
+            agent_dir: agent.agent_dir.clone(),
+            scheduler: self.scheduler.clone(),
+            execution_context,
+        };
+        let tools = create_tools(&agent.tools, &deps);
+        let executor = ToolExecutor::new(policy, handle.agent().to_string())
+            .register_all(tools)
+            .with_session_id(handle.id().to_string());
 
         // Build initial messages from history using StructuredContext
         let history = match handle.get_messages().await {
@@ -608,26 +606,22 @@ impl MessageHandler for GatewayMessageHandler {
             }
         } else {
             // Execute the tool
-            let mut executor = ToolExecutor::new(
-                agent.tools.clone(),
-                self.sandbox.clone(),
-                agent.agent_dir.clone(),
-                policy.clone(),
-                handle.agent().to_string(),
-            )
-            .with_session_id(handle.id().to_string());
-
-            // Add scheduler and execution context if available
-            if let Some(ref scheduler) = self.scheduler {
-                executor = executor
-                    .with_scheduler(scheduler.clone())
-                    .with_execution_context(ToolExecutionContext {
-                        gateway: Some(gateway.to_string()),
-                        chat_id: Some(data.chat_id.to_string()),
-                        agent: handle.agent().to_string(),
-                        session_id: handle.id().to_string(),
-                    });
-            }
+            let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
+                gateway: Some(gateway.to_string()),
+                chat_id: Some(data.chat_id.to_string()),
+                agent: handle.agent().to_string(),
+                session_id: handle.id().to_string(),
+            });
+            let deps = ToolDependencies {
+                sandbox: self.sandbox.clone(),
+                agent_dir: agent.agent_dir.clone(),
+                scheduler: self.scheduler.clone(),
+                execution_context,
+            };
+            let tools = create_tools(&agent.tools, &deps);
+            let executor = ToolExecutor::new(policy.clone(), handle.agent().to_string())
+                .register_all(tools)
+                .with_session_id(handle.id().to_string());
 
             // Build tool call from pending approval
             let tool_call = crate::llm::ToolCall {
@@ -666,26 +660,22 @@ impl MessageHandler for GatewayMessageHandler {
         };
 
         // Create executor for resume (uses same policy loaded above)
-        let mut executor = ToolExecutor::new(
-            agent.tools.clone(),
-            self.sandbox.clone(),
-            agent.agent_dir.clone(),
-            policy,
-            handle.agent().to_string(),
-        )
-        .with_session_id(handle.id().to_string());
-
-        // Add scheduler and execution context if available
-        if let Some(ref scheduler) = self.scheduler {
-            executor = executor
-                .with_scheduler(scheduler.clone())
-                .with_execution_context(ToolExecutionContext {
-                    gateway: Some(gateway.to_string()),
-                    chat_id: Some(data.chat_id.to_string()),
-                    agent: handle.agent().to_string(),
-                    session_id: handle.id().to_string(),
-                });
-        }
+        let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
+            gateway: Some(gateway.to_string()),
+            chat_id: Some(data.chat_id.to_string()),
+            agent: handle.agent().to_string(),
+            session_id: handle.id().to_string(),
+        });
+        let deps = ToolDependencies {
+            sandbox: self.sandbox.clone(),
+            agent_dir: agent.agent_dir.clone(),
+            scheduler: self.scheduler.clone(),
+            execution_context,
+        };
+        let tools = create_tools(&agent.tools, &deps);
+        let executor = ToolExecutor::new(policy, handle.agent().to_string())
+            .register_all(tools)
+            .with_session_id(handle.id().to_string());
 
         // Resume the agentic loop
         let result = match resume_agentic_loop(

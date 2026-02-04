@@ -1,18 +1,43 @@
 //! Bash tool implementation.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use async_trait::async_trait;
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::sandbox::Sandbox;
 
 use super::error::ToolError;
 use super::executor::ToolResult;
+use super::tool::Tool;
 
-/// Arguments for the bash tool.
-#[derive(serde::Deserialize)]
-struct BashArgs {
-    command: String,
+/// The bash tool for executing shell commands.
+pub struct BashTool {
+    sandbox: Arc<dyn Sandbox>,
+    agent_dir: PathBuf,
+}
+
+impl BashTool {
+    /// Create a new bash tool.
+    pub fn new(sandbox: Arc<dyn Sandbox>, agent_dir: PathBuf) -> Self {
+        Self { sandbox, agent_dir }
+    }
+}
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        definition()
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<ToolResult, ToolError> {
+        execute(&self.sandbox, &self.agent_dir, arguments).await
+    }
 }
 
 /// Execute the bash tool.
@@ -57,6 +82,16 @@ pub fn definition() -> ToolDefinition {
             })),
         },
     }
+}
+
+// ============================================================================
+// Private Types
+// ============================================================================
+
+/// Arguments for the bash tool.
+#[derive(serde::Deserialize)]
+struct BashArgs {
+    command: String,
 }
 
 #[cfg(test)]

@@ -7,10 +7,14 @@ mod bash;
 mod cli;
 mod error;
 mod executor;
+mod factory;
 mod notify;
 pub mod schedule;
+mod tool;
 
 pub use error::ToolError;
 pub use executor::{ToolExecutor, ToolResult};
+pub use factory::{ToolDependencies, create_tools};
 pub use notify::send_notification;
 pub use schedule::ToolExecutionContext;
+pub use tool::{SharedTool, Tool};

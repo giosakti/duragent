@@ -1,21 +1,14 @@
 //! Tool executor for running tools in agentic workflows.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::fs;
-use tokio::sync::RwLock;
-
-use super::bash;
-use super::cli;
 use super::error::ToolError;
 use super::notify::send_notification;
-use super::schedule::{self, ToolExecutionContext};
-use crate::agent::{NotifyConfig, PolicyDecision, ToolConfig, ToolPolicy, ToolType};
-use crate::llm::{FunctionDefinition, ToolCall, ToolDefinition};
-use crate::sandbox::{ExecResult, Sandbox};
-use crate::scheduler::SchedulerHandle;
+use super::tool::Tool;
+use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolType};
+use crate::llm::{ToolCall, ToolDefinition};
+use crate::sandbox::ExecResult;
 
 // ============================================================================
 // Types
@@ -61,14 +54,8 @@ impl ToolResult {
 
 /// Executor for running tools.
 pub struct ToolExecutor {
-    /// Tool configurations by name.
-    tools: HashMap<String, ToolConfig>,
-    /// Sandbox for executing commands.
-    sandbox: Arc<dyn Sandbox>,
-    /// Base directory for the agent (for resolving relative paths).
-    agent_dir: PathBuf,
-    /// Cached README content by tool name.
-    readme_cache: RwLock<HashMap<String, String>>,
+    /// Tool implementations by name.
+    tools: HashMap<String, Arc<dyn Tool>>,
     /// Tool policy for command filtering.
     policy: ToolPolicy,
     /// Notification configuration.
@@ -77,63 +64,41 @@ pub struct ToolExecutor {
     session_id: Option<String>,
     /// Agent name for notifications.
     agent_name: String,
-    /// Scheduler handle for schedule tools (optional).
-    scheduler: Option<SchedulerHandle>,
-    /// Execution context for schedule tools (gateway, chat_id, etc.).
-    execution_context: Option<ToolExecutionContext>,
 }
 
 impl ToolExecutor {
-    /// Create a new tool executor.
-    pub fn new(
-        tools: Vec<ToolConfig>,
-        sandbox: Arc<dyn Sandbox>,
-        agent_dir: PathBuf,
-        policy: ToolPolicy,
-        agent_name: String,
-    ) -> Self {
-        let tools_map = tools
-            .into_iter()
-            .map(|tc| {
-                let name = match &tc {
-                    ToolConfig::Builtin { name } => name.clone(),
-                    ToolConfig::Cli { name, .. } => name.clone(),
-                };
-                (name, tc)
-            })
-            .collect();
-
+    /// Create a new tool executor with a policy and agent name.
+    ///
+    /// Use `register()` or `register_all()` to add tools after construction.
+    pub fn new(policy: ToolPolicy, agent_name: String) -> Self {
         let notify_config = policy.notify.clone();
 
         Self {
-            tools: tools_map,
-            sandbox,
-            agent_dir,
-            readme_cache: RwLock::new(HashMap::new()),
+            tools: HashMap::new(),
             policy,
             notify_config,
             session_id: None,
             agent_name,
-            scheduler: None,
-            execution_context: None,
         }
+    }
+
+    /// Register a single tool.
+    pub fn register(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.tools.insert(tool.name().to_string(), tool);
+        self
+    }
+
+    /// Register multiple tools.
+    pub fn register_all(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
+        for tool in tools {
+            self.tools.insert(tool.name().to_string(), tool);
+        }
+        self
     }
 
     /// Set the session ID for notifications.
     pub fn with_session_id(mut self, session_id: String) -> Self {
         self.session_id = Some(session_id);
-        self
-    }
-
-    /// Set the scheduler handle for schedule tools.
-    pub fn with_scheduler(mut self, scheduler: SchedulerHandle) -> Self {
-        self.scheduler = Some(scheduler);
-        self
-    }
-
-    /// Set the execution context for schedule tools.
-    pub fn with_execution_context(mut self, ctx: ToolExecutionContext) -> Self {
-        self.execution_context = Some(ctx);
         self
     }
 
@@ -145,21 +110,13 @@ impl ToolExecutor {
     /// - If allowed, executes and optionally sends notifications
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {
         let tool_name = &tool_call.function.name;
-        let config = self
+        let tool = self
             .tools
             .get(tool_name)
             .ok_or_else(|| ToolError::NotFound(tool_name.clone()))?;
 
         // Determine tool type and invocation string for policy check
-        let (tool_type, invocation) = match config {
-            ToolConfig::Builtin { name } if name == "bash" => {
-                // For bash, extract the command from arguments
-                let command = extract_bash_command(&tool_call.function.arguments);
-                (ToolType::Bash, command)
-            }
-            ToolConfig::Builtin { name } => (ToolType::Builtin, name.clone()),
-            ToolConfig::Cli { name, .. } => (ToolType::Builtin, name.clone()),
-        };
+        let (tool_type, invocation) = self.get_tool_type_and_invocation(tool_name, tool_call);
 
         // Check policy
         match self.policy.check(tool_type, &invocation) {
@@ -177,7 +134,7 @@ impl ToolExecutor {
             }
         }
 
-        self.execute_tool(tool_call, config, tool_type, &invocation)
+        self.execute_tool(tool, tool_call, tool_type, &invocation)
             .await
     }
 
@@ -191,67 +148,43 @@ impl ToolExecutor {
         tool_call: &ToolCall,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = &tool_call.function.name;
-        let config = self
+        let tool = self
             .tools
             .get(tool_name)
             .ok_or_else(|| ToolError::NotFound(tool_name.clone()))?;
 
         // Determine tool type and invocation string (for notifications)
-        let (tool_type, invocation) = match config {
-            ToolConfig::Builtin { name } if name == "bash" => {
-                let command = extract_bash_command(&tool_call.function.arguments);
-                (ToolType::Bash, command)
-            }
-            ToolConfig::Builtin { name } => (ToolType::Builtin, name.clone()),
-            ToolConfig::Cli { name, .. } => (ToolType::Builtin, name.clone()),
-        };
+        let (tool_type, invocation) = self.get_tool_type_and_invocation(tool_name, tool_call);
 
-        self.execute_tool(tool_call, config, tool_type, &invocation)
+        self.execute_tool(tool, tool_call, tool_type, &invocation)
             .await
+    }
+
+    /// Get tool type and invocation string for policy checks.
+    fn get_tool_type_and_invocation(
+        &self,
+        tool_name: &str,
+        tool_call: &ToolCall,
+    ) -> (ToolType, String) {
+        if tool_name == "bash" {
+            // For bash, extract the command from arguments
+            let command = extract_bash_command(&tool_call.function.arguments);
+            (ToolType::Bash, command)
+        } else {
+            (ToolType::Builtin, tool_name.to_string())
+        }
     }
 
     /// Internal: execute tool and send notifications.
     async fn execute_tool(
         &self,
+        tool: &Arc<dyn Tool>,
         tool_call: &ToolCall,
-        config: &ToolConfig,
         tool_type: ToolType,
         invocation: &str,
     ) -> Result<ToolResult, ToolError> {
-        let result = match config {
-            ToolConfig::Builtin { name } if name == "bash" => {
-                bash::execute(
-                    &self.sandbox,
-                    &self.agent_dir,
-                    &tool_call.function.arguments,
-                )
-                .await
-            }
-            ToolConfig::Builtin { name } if name == "schedule_task" => {
-                self.execute_schedule_tool(name, &tool_call.function.arguments)
-                    .await
-            }
-            ToolConfig::Builtin { name } if name == "list_schedules" => {
-                self.execute_schedule_tool(name, &tool_call.function.arguments)
-                    .await
-            }
-            ToolConfig::Builtin { name } if name == "cancel_schedule" => {
-                self.execute_schedule_tool(name, &tool_call.function.arguments)
-                    .await
-            }
-            ToolConfig::Builtin { name } => {
-                Err(ToolError::NotFound(format!("unknown builtin: {}", name)))
-            }
-            ToolConfig::Cli { command, .. } => {
-                cli::execute(
-                    &self.sandbox,
-                    &self.agent_dir,
-                    command,
-                    &tool_call.function.arguments,
-                )
-                .await
-            }
-        };
+        // Execute the tool
+        let result = tool.execute(&tool_call.function.arguments).await;
 
         // Send notification if configured
         if self.policy.should_notify(tool_type, invocation) {
@@ -278,80 +211,8 @@ impl ToolExecutor {
         self.tools
             .iter()
             .filter(|(name, _)| filter.is_none_or(|f| f.contains(*name)))
-            .map(|(_, config)| match config {
-                ToolConfig::Builtin { name } if name == "bash" => bash::definition(),
-                ToolConfig::Builtin { name } if name == "schedule_task" => {
-                    schedule::schedule_task_definition()
-                }
-                ToolConfig::Builtin { name } if name == "list_schedules" => {
-                    schedule::list_schedules_definition()
-                }
-                ToolConfig::Builtin { name } if name == "cancel_schedule" => {
-                    schedule::cancel_schedule_definition()
-                }
-                ToolConfig::Builtin { name } => unknown_builtin_definition(name),
-                ToolConfig::Cli {
-                    name, description, ..
-                } => cli::definition(name, description.as_deref()),
-            })
+            .map(|(_, tool)| tool.definition())
             .collect()
-    }
-
-    /// Execute a schedule-related tool.
-    async fn execute_schedule_tool(
-        &self,
-        name: &str,
-        arguments: &str,
-    ) -> Result<ToolResult, ToolError> {
-        let scheduler = self
-            .scheduler
-            .as_ref()
-            .ok_or_else(|| ToolError::ExecutionFailed("Scheduler not available".to_string()))?;
-
-        let ctx = self.execution_context.as_ref().ok_or_else(|| {
-            ToolError::ExecutionFailed("Execution context not available".to_string())
-        })?;
-
-        match name {
-            "schedule_task" => schedule::execute_schedule_task(scheduler, ctx, arguments).await,
-            "list_schedules" => schedule::execute_list_schedules(scheduler, ctx).await,
-            "cancel_schedule" => schedule::execute_cancel_schedule(scheduler, ctx, arguments).await,
-            _ => Err(ToolError::NotFound(format!(
-                "unknown schedule tool: {}",
-                name
-            ))),
-        }
-    }
-
-    /// Load and cache the README for a tool.
-    pub async fn load_readme(&self, tool_name: &str) -> Option<String> {
-        // Check cache first
-        {
-            let cache = self.readme_cache.read().await;
-            if let Some(content) = cache.get(tool_name) {
-                return Some(content.clone());
-            }
-        }
-
-        // Get the tool config
-        let config = self.tools.get(tool_name)?;
-        let readme_path = match config {
-            ToolConfig::Cli {
-                readme: Some(r), ..
-            } => self.agent_dir.join(r),
-            _ => return None,
-        };
-
-        // Read the README file
-        let content = fs::read_to_string(&readme_path).await.ok()?;
-
-        // Cache it
-        {
-            let mut cache = self.readme_cache.write().await;
-            cache.insert(tool_name.to_string(), content.clone());
-        }
-
-        Some(content)
     }
 
     /// Check if any tools are configured.
@@ -363,18 +224,6 @@ impl ToolExecutor {
 // ============================================================================
 // Private Helpers
 // ============================================================================
-
-/// Generate a fallback definition for an unknown builtin.
-fn unknown_builtin_definition(name: &str) -> ToolDefinition {
-    ToolDefinition {
-        tool_type: "function".to_string(),
-        function: FunctionDefinition {
-            name: name.to_string(),
-            description: format!("Built-in tool: {}", name),
-            parameters: None,
-        },
-    }
-}
 
 /// Extract the command string from bash tool arguments.
 fn extract_bash_command(arguments: &str) -> String {
@@ -391,8 +240,9 @@ fn extract_bash_command(arguments: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::PolicyMode;
+    use crate::agent::{PolicyMode, ToolConfig};
     use crate::sandbox::TrustSandbox;
+    use crate::tools::{ToolDependencies, create_tools};
     use tempfile::TempDir;
 
     // ------------------------------------------------------------------------
@@ -400,36 +250,41 @@ mod tests {
     // ------------------------------------------------------------------------
 
     fn test_executor(tools: Vec<ToolConfig>) -> ToolExecutor {
+        let temp_dir = TempDir::new().unwrap();
         let sandbox = Arc::new(TrustSandbox);
-        ToolExecutor::new(
-            tools,
+        let deps = ToolDependencies {
             sandbox,
-            std::path::PathBuf::from("/tmp"),
-            ToolPolicy::default(),
-            "test-agent".to_string(),
-        )
+            agent_dir: temp_dir.path().to_path_buf(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(&tools, &deps);
+        ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
     }
 
     fn test_executor_with_policy(tools: Vec<ToolConfig>, policy: ToolPolicy) -> ToolExecutor {
+        let temp_dir = TempDir::new().unwrap();
         let sandbox = Arc::new(TrustSandbox);
-        ToolExecutor::new(
-            tools,
+        let deps = ToolDependencies {
             sandbox,
-            std::path::PathBuf::from("/tmp"),
-            policy,
-            "test-agent".to_string(),
-        )
+            agent_dir: temp_dir.path().to_path_buf(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(&tools, &deps);
+        ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools)
     }
 
     fn test_executor_with_dir(tools: Vec<ToolConfig>, dir: &TempDir) -> ToolExecutor {
         let sandbox = Arc::new(TrustSandbox);
-        ToolExecutor::new(
-            tools,
+        let deps = ToolDependencies {
             sandbox,
-            dir.path().to_path_buf(),
-            ToolPolicy::default(),
-            "test-agent".to_string(),
-        )
+            agent_dir: dir.path().to_path_buf(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(&tools, &deps);
+        ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
     }
 
     fn bash_tool_call(command: &str) -> ToolCall {
@@ -528,20 +383,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------------
-    // unknown_builtin_definition - Fallback definitions
-    // ------------------------------------------------------------------------
-
-    #[test]
-    fn unknown_builtin_definition_creates_valid_definition() {
-        let def = unknown_builtin_definition("custom-tool");
-
-        assert_eq!(def.tool_type, "function");
-        assert_eq!(def.function.name, "custom-tool");
-        assert!(def.function.description.contains("custom-tool"));
-        assert!(def.function.parameters.is_none());
-    }
-
-    // ------------------------------------------------------------------------
     // tool_definitions - Definition generation
     // ------------------------------------------------------------------------
 
@@ -592,14 +433,13 @@ mod tests {
 
     #[test]
     fn tool_definitions_for_unknown_builtin() {
+        // Unknown builtins are now skipped by create_tools, so no tools are created
         let executor = test_executor(vec![ToolConfig::Builtin {
             name: "unknown-builtin".to_string(),
         }]);
 
         let defs = executor.tool_definitions(None);
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].function.name, "unknown-builtin");
-        assert!(defs[0].function.description.contains("unknown-builtin"));
+        assert_eq!(defs.len(), 0);
     }
 
     // ------------------------------------------------------------------------
@@ -696,15 +536,19 @@ mod tests {
         };
         let temp_dir = TempDir::new().unwrap();
         let sandbox = Arc::new(TrustSandbox);
-        let executor = ToolExecutor::new(
-            vec![ToolConfig::Builtin {
+        let deps = ToolDependencies {
+            sandbox,
+            agent_dir: temp_dir.path().to_path_buf(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(
+            &[ToolConfig::Builtin {
                 name: "bash".to_string(),
             }],
-            sandbox,
-            temp_dir.path().to_path_buf(),
-            policy,
-            "test-agent".to_string(),
+            &deps,
         );
+        let executor = ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools);
 
         let tool_call = bash_tool_call("echo hello");
         let result = executor.execute(&tool_call).await;
@@ -726,15 +570,19 @@ mod tests {
         };
         let temp_dir = TempDir::new().unwrap();
         let sandbox = Arc::new(TrustSandbox);
-        let executor = ToolExecutor::new(
-            vec![ToolConfig::Builtin {
+        let deps = ToolDependencies {
+            sandbox,
+            agent_dir: temp_dir.path().to_path_buf(),
+            scheduler: None,
+            execution_context: None,
+        };
+        let tools = create_tools(
+            &[ToolConfig::Builtin {
                 name: "bash".to_string(),
             }],
-            sandbox,
-            temp_dir.path().to_path_buf(),
-            policy,
-            "test-agent".to_string(),
+            &deps,
         );
+        let executor = ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools);
 
         let tool_call = bash_tool_call("echo bypassed");
         let result = executor.execute_bypassing_policy(&tool_call).await;
@@ -750,7 +598,8 @@ mod tests {
 
     #[test]
     fn with_session_id_sets_session() {
-        let executor = test_executor(vec![]).with_session_id("session-123".to_string());
+        let executor = ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string())
+            .with_session_id("session-123".to_string());
         assert_eq!(executor.session_id, Some("session-123".to_string()));
     }
 
@@ -760,7 +609,7 @@ mod tests {
 
     #[test]
     fn has_tools_returns_false_when_empty() {
-        let executor = test_executor(vec![]);
+        let executor = ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string());
         assert!(!executor.has_tools());
     }
 
@@ -770,72 +619,5 @@ mod tests {
             name: "bash".to_string(),
         }]);
         assert!(executor.has_tools());
-    }
-
-    // ------------------------------------------------------------------------
-    // load_readme - README caching
-    // ------------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn load_readme_returns_none_for_builtin() {
-        let executor = test_executor(vec![ToolConfig::Builtin {
-            name: "bash".to_string(),
-        }]);
-
-        let readme = executor.load_readme("bash").await;
-        assert!(readme.is_none());
-    }
-
-    #[tokio::test]
-    async fn load_readme_returns_none_for_unknown_tool() {
-        let executor = test_executor(vec![]);
-
-        let readme = executor.load_readme("nonexistent").await;
-        assert!(readme.is_none());
-    }
-
-    #[tokio::test]
-    async fn load_readme_reads_and_caches_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let readme_path = temp_dir.path().join("tools").join("git-helper.md");
-        std::fs::create_dir_all(readme_path.parent().unwrap()).unwrap();
-        std::fs::write(&readme_path, "# Git Helper\n\nUsage instructions.").unwrap();
-
-        let executor = test_executor_with_dir(
-            vec![ToolConfig::Cli {
-                name: "git-helper".to_string(),
-                command: "./tools/git-helper.sh".to_string(),
-                readme: Some("tools/git-helper.md".to_string()),
-                description: None,
-            }],
-            &temp_dir,
-        );
-
-        // First load
-        let readme = executor.load_readme("git-helper").await;
-        assert!(readme.is_some());
-        assert!(readme.as_ref().unwrap().contains("Git Helper"));
-
-        // Second load should use cache
-        let readme2 = executor.load_readme("git-helper").await;
-        assert_eq!(readme, readme2);
-    }
-
-    #[tokio::test]
-    async fn load_readme_returns_none_for_missing_file() {
-        let temp_dir = TempDir::new().unwrap();
-
-        let executor = test_executor_with_dir(
-            vec![ToolConfig::Cli {
-                name: "git-helper".to_string(),
-                command: "./tools/git-helper.sh".to_string(),
-                readme: Some("nonexistent.md".to_string()),
-                description: None,
-            }],
-            &temp_dir,
-        );
-
-        let readme = executor.load_readme("git-helper").await;
-        assert!(readme.is_none());
     }
 }
