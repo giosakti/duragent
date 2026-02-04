@@ -7,6 +7,7 @@
 //!         Refactored persistence into store/ module with trait-based interfaces.
 
 mod actor;
+mod actor_types;
 mod agentic_loop;
 mod chat_session_cache;
 mod events;
@@ -16,7 +17,7 @@ mod snapshot;
 mod sse_stream;
 
 // Types and errors
-pub use actor::{ActorError, SessionMetadata};
+pub use actor_types::{ActorError, SessionMetadata};
 pub use chat_session_cache::ChatSessionCache;
 pub use events::{
     ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,

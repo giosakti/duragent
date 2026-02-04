@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::api::SessionStatus;
 use crate::llm::{Message, Usage};
 
-use super::actor::{ActorError, SessionCommand, SessionMetadata};
+use super::actor_types::{ActorError, SessionCommand, SessionMetadata};
 use super::events::ApprovalDecisionType;
 use super::snapshot::PendingApproval;
 
@@ -392,7 +392,8 @@ impl std::fmt::Debug for SessionHandle {
 mod tests {
     use super::*;
     use crate::agent::OnDisconnect;
-    use crate::session::actor::{ActorConfig, SessionActor};
+    use crate::session::actor::SessionActor;
+    use crate::session::actor_types::ActorConfig;
     use crate::store::file::FileSessionStore;
     use std::sync::Arc;
     use tempfile::TempDir;

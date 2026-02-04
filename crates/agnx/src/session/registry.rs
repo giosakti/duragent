@@ -19,30 +19,9 @@ use crate::agent::OnDisconnect;
 use crate::api::{SESSION_ID_PREFIX, SessionStatus};
 use crate::store::SessionStore;
 
-use super::actor::{ActorConfig, ActorError, RecoverConfig, SessionActor, SessionMetadata};
+use super::actor::SessionActor;
+use super::actor_types::{ActorConfig, ActorError, RecoverConfig, SessionMetadata};
 use super::handle::SessionHandle;
-
-// ============================================================================
-// Configuration Constants
-// ============================================================================
-
-/// Maximum concurrent metadata fetches for `list()`.
-const LIST_CONCURRENCY: usize = 32;
-
-// ============================================================================
-// Recovery Result
-// ============================================================================
-
-/// Result of session recovery on startup.
-#[derive(Debug, Default)]
-pub struct RecoveryResult {
-    /// Number of sessions successfully recovered.
-    pub recovered: usize,
-    /// Number of sessions skipped (completed or invalid).
-    pub skipped: usize,
-    /// Errors encountered during recovery (session_id, error message).
-    pub errors: Vec<(String, String)>,
-}
 
 // ============================================================================
 // Session Registry
@@ -66,7 +45,33 @@ pub struct SessionRegistry {
     shutdown_rx: watch::Receiver<bool>,
 }
 
+/// Result of session recovery on startup.
+#[derive(Debug, Default)]
+pub struct RecoveryResult {
+    /// Number of sessions successfully recovered.
+    pub recovered: usize,
+    /// Number of sessions skipped (completed or invalid).
+    pub skipped: usize,
+    /// Errors encountered during recovery (session_id, error message).
+    pub errors: Vec<(String, String)>,
+}
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Maximum concurrent metadata fetches for `list()`.
+const LIST_CONCURRENCY: usize = 32;
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
 impl SessionRegistry {
+    // ------------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------------
+
     /// Create a new session registry.
     pub fn new(store: Arc<dyn SessionStore>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -79,6 +84,38 @@ impl SessionRegistry {
             shutdown_rx,
         }
     }
+
+    /// Gracefully shutdown all session actors.
+    ///
+    /// Sends shutdown signal and waits for all actors to complete.
+    pub async fn shutdown(&self) {
+        info!("Shutting down session registry");
+
+        // Send shutdown signal to all actors
+        if self.shutdown_tx.send(true).is_err() {
+            warn!("Failed to send shutdown signal");
+            return;
+        }
+
+        // Take all task handles and wait for them to complete
+        let task_handles = {
+            let mut handles = self.task_handles.lock().await;
+            std::mem::take(&mut *handles)
+        };
+
+        // Wait for all actors to finish (they flush and snapshot on shutdown signal)
+        for task_handle in task_handles {
+            if let Err(e) = task_handle.await {
+                warn!(error = ?e, "Actor task panicked during shutdown");
+            }
+        }
+
+        info!("Session registry shutdown complete");
+    }
+
+    // ------------------------------------------------------------------------
+    // Core API
+    // ------------------------------------------------------------------------
 
     /// Create a new session.
     ///
@@ -170,6 +207,10 @@ impl SessionRegistry {
     pub fn is_empty(&self) -> bool {
         self.handles.is_empty()
     }
+
+    // ------------------------------------------------------------------------
+    // Recovery
+    // ------------------------------------------------------------------------
 
     /// Recover sessions from disk on startup.
     ///
@@ -348,37 +389,13 @@ impl SessionRegistry {
         Ok(true)
     }
 
+    // ------------------------------------------------------------------------
+    // Special
+    // ------------------------------------------------------------------------
+
     /// Register an existing handle (for testing or special cases).
     pub fn register(&self, handle: SessionHandle) {
         self.handles.insert(handle.id().to_string(), handle);
-    }
-
-    /// Gracefully shutdown all session actors.
-    ///
-    /// Sends shutdown signal and waits for all actors to complete.
-    pub async fn shutdown(&self) {
-        info!("Shutting down session registry");
-
-        // Send shutdown signal to all actors
-        if self.shutdown_tx.send(true).is_err() {
-            warn!("Failed to send shutdown signal");
-            return;
-        }
-
-        // Take all task handles and wait for them to complete
-        let task_handles = {
-            let mut handles = self.task_handles.lock().await;
-            std::mem::take(&mut *handles)
-        };
-
-        // Wait for all actors to finish (they flush and snapshot on shutdown signal)
-        for task_handle in task_handles {
-            if let Err(e) = task_handle.await {
-                warn!(error = ?e, "Actor task panicked during shutdown");
-            }
-        }
-
-        info!("Session registry shutdown complete");
     }
 }
 
@@ -466,6 +483,41 @@ mod tests {
 
         let sessions = registry.list().await;
         assert_eq!(sessions.len(), 2);
+
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn len_and_is_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let (registry, _store) = create_test_registry(&temp_dir);
+
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+
+        registry
+            .create("agent1", OnDisconnect::Pause, None, None)
+            .await
+            .unwrap();
+
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn contains_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let (registry, _store) = create_test_registry(&temp_dir);
+
+        let handle = registry
+            .create("test-agent", OnDisconnect::Pause, None, None)
+            .await
+            .unwrap();
+
+        assert!(registry.contains(handle.id()));
+        assert!(!registry.contains("session_unknown"));
 
         registry.shutdown().await;
     }
@@ -586,40 +638,5 @@ mod tests {
         // Verify snapshot was written
         let snapshot_file = temp_dir.path().join(&session_id).join("state.yaml");
         assert!(snapshot_file.exists());
-    }
-
-    #[tokio::test]
-    async fn len_and_is_empty() {
-        let temp_dir = TempDir::new().unwrap();
-        let (registry, _store) = create_test_registry(&temp_dir);
-
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
-
-        registry
-            .create("agent1", OnDisconnect::Pause, None, None)
-            .await
-            .unwrap();
-
-        assert!(!registry.is_empty());
-        assert_eq!(registry.len(), 1);
-
-        registry.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn contains_session() {
-        let temp_dir = TempDir::new().unwrap();
-        let (registry, _store) = create_test_registry(&temp_dir);
-
-        let handle = registry
-            .create("test-agent", OnDisconnect::Pause, None, None)
-            .await
-            .unwrap();
-
-        assert!(registry.contains(handle.id()));
-        assert!(!registry.contains("session_unknown"));
-
-        registry.shutdown().await;
     }
 }
