@@ -2,12 +2,14 @@
 //!
 //! Loads agent specifications from YAML files in agent directories.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use tokio::fs;
 
-use crate::agent::AgentSpec;
+use super::policy::FilePolicyStore;
+use crate::agent::{AgentLoadWarning, AgentSpec, LoadedAgentFiles};
+use crate::store::PolicyStore;
 use crate::store::agent::{AgentCatalog, AgentScanResult, ScanWarning};
 use crate::store::error::{StorageError, StorageResult};
 
@@ -42,6 +44,8 @@ impl AgentCatalog for FileAgentCatalog {
             return Ok(AgentScanResult { agents, warnings });
         }
 
+        let policy_store = FilePolicyStore::new(&self.agents_dir);
+
         let mut entries = match fs::read_dir(&self.agents_dir).await {
             Ok(e) => e,
             Err(e) => return Err(StorageError::file_io(&self.agents_dir, e)),
@@ -69,30 +73,37 @@ impl AgentCatalog for FileAgentCatalog {
                 continue;
             }
 
+            // Get agent name for policy loading
+            let agent_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Load policy for this agent
+            let policy = policy_store.load(&agent_name).await;
+
             // Try to load the agent
-            match AgentSpec::load_with_warnings(&path).await {
+            match load_agent_from_dir(&path, &agent_name, policy).await {
                 Ok((agent, agent_warnings)) => {
                     agents.push(agent);
 
                     // Convert agent warnings to scan warnings
                     for w in agent_warnings {
                         match w {
-                            crate::agent::AgentLoadWarning::MissingFile { agent, path, .. } => {
+                            AgentLoadWarning::MissingFile {
+                                agent, location, ..
+                            } => {
                                 warnings.push(ScanWarning::MissingResource {
                                     agent,
-                                    resource: path.display().to_string(),
+                                    resource: location,
                                 });
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "unknown".to_string());
                     warnings.push(ScanWarning::InvalidAgent {
-                        name,
+                        name: agent_name,
                         error: e.to_string(),
                     });
                 }
@@ -110,11 +121,95 @@ impl AgentCatalog for FileAgentCatalog {
             return Err(StorageError::not_found("agent", name));
         }
 
-        let (agent, _warnings) = AgentSpec::load_with_warnings(&agent_dir)
+        // Load policy for this agent
+        let policy_store = FilePolicyStore::new(&self.agents_dir);
+        let policy = policy_store.load(name).await;
+
+        let (agent, _warnings) = load_agent_from_dir(&agent_dir, name, policy)
             .await
             .map_err(|e| StorageError::file_deserialization(&agent_dir, e.to_string()))?;
 
         Ok(agent)
+    }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Load an agent from a directory, reading all referenced files.
+///
+/// Returns the loaded agent and any warnings about missing optional files.
+async fn load_agent_from_dir(
+    agent_dir: &Path,
+    agent_name: &str,
+    policy: crate::agent::ToolPolicy,
+) -> Result<(AgentSpec, Vec<AgentLoadWarning>), crate::agent::AgentLoadError> {
+    let yaml_path = agent_dir.join("agent.yaml");
+
+    // Read agent.yaml
+    let yaml_content = fs::read_to_string(&yaml_path).await?;
+
+    // Parse file references from YAML
+    let refs = AgentSpec::parse_file_refs(&yaml_content)?;
+
+    // Load optional files, collecting warnings for missing ones
+    let mut warnings = Vec::new();
+
+    let soul = load_optional_file(agent_dir, &refs.soul, agent_name, "soul", &mut warnings).await;
+    let system_prompt = load_optional_file(
+        agent_dir,
+        &refs.system_prompt,
+        agent_name,
+        "system_prompt",
+        &mut warnings,
+    )
+    .await;
+    let instructions = load_optional_file(
+        agent_dir,
+        &refs.instructions,
+        agent_name,
+        "instructions",
+        &mut warnings,
+    )
+    .await;
+
+    let files = LoadedAgentFiles {
+        soul,
+        system_prompt,
+        instructions,
+    };
+
+    let agent = AgentSpec::from_yaml(&yaml_content, files, policy, agent_dir.to_path_buf())?;
+
+    Ok((agent, warnings))
+}
+
+/// Load an optional file referenced in agent.yaml.
+///
+/// If the file path is None or the file doesn't exist, returns None.
+/// Adds a warning to the list if the file is referenced but missing.
+async fn load_optional_file(
+    agent_dir: &Path,
+    file_ref: &Option<String>,
+    agent_name: &str,
+    field: &'static str,
+    warnings: &mut Vec<AgentLoadWarning>,
+) -> Option<String> {
+    let path_str = file_ref.as_ref()?;
+    let path = agent_dir.join(path_str);
+
+    match fs::read_to_string(&path).await {
+        Ok(content) => Some(content),
+        Err(e) => {
+            warnings.push(AgentLoadWarning::MissingFile {
+                agent: agent_name.to_string(),
+                field,
+                location: path_str.clone(),
+                error: e.to_string(),
+            });
+            None
+        }
     }
 }
 

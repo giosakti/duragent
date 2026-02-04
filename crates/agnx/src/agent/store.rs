@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use tokio::fs;
 
 use super::error::{AgentLoadError, AgentLoadWarning};
 use super::spec::AgentSpec;
+use crate::store::{AgentCatalog, ScanWarning};
 
 // ============================================================================
 // Public Types
@@ -24,24 +22,16 @@ pub struct AgentScanReport {
     pub warnings: Vec<AgentScanWarning>,
 }
 
-/// Non-fatal issues encountered while scanning the agents directory.
+/// Non-fatal issues encountered while loading agents.
 #[derive(Debug)]
 pub enum AgentScanWarning {
-    AgentsDirMissing {
-        path: PathBuf,
-    },
-    AgentsDirReadError {
-        path: PathBuf,
-        error: String,
-    },
-    EntryReadError {
-        path: PathBuf,
-        error: String,
-    },
-    InvalidAgent {
-        path: PathBuf,
-        error: AgentLoadError,
-    },
+    /// The agents location doesn't exist.
+    AgentsDirMissing { location: String },
+    /// Catalog-level error (e.g., failed to load agents).
+    CatalogError { error: String },
+    /// An agent failed to load.
+    InvalidAgent { name: String, error: AgentLoadError },
+    /// Warning from loading an agent (e.g., missing resource).
     AgentWarning(AgentLoadWarning),
 }
 
@@ -70,86 +60,54 @@ impl AgentStore {
         self.agents.iter()
     }
 
-    /// Scan a directory for agent subdirectories and load all valid agents.
-    pub async fn scan(agents_dir: &Path) -> AgentScanReport {
-        let mut agents = HashMap::new();
-        let mut warnings = Vec::new();
-
-        // Check if directory exists using async metadata
-        let dir_exists = fs::metadata(agents_dir).await.is_ok();
-        if !dir_exists {
-            warnings.push(AgentScanWarning::AgentsDirMissing {
-                path: agents_dir.to_path_buf(),
-            });
-            return AgentScanReport {
-                store: AgentStore {
-                    agents: Arc::new(agents),
-                },
-                warnings,
-            };
-        }
-
-        let mut read_dir = match fs::read_dir(agents_dir).await {
-            Ok(rd) => rd,
+    /// Load agents from a catalog.
+    ///
+    /// Accepts any `AgentCatalog` implementation (file-based, in-memory, etc.).
+    pub async fn from_catalog(catalog: &dyn AgentCatalog) -> AgentScanReport {
+        let result = match catalog.load_all().await {
+            Ok(r) => r,
             Err(e) => {
-                warnings.push(AgentScanWarning::AgentsDirReadError {
-                    path: agents_dir.to_path_buf(),
-                    error: e.to_string(),
-                });
+                // Storage error during scan (e.g., read_dir failed)
                 return AgentScanReport {
                     store: AgentStore {
-                        agents: Arc::new(agents),
+                        agents: Arc::new(HashMap::new()),
                     },
-                    warnings,
+                    warnings: vec![AgentScanWarning::CatalogError {
+                        error: e.to_string(),
+                    }],
                 };
             }
         };
 
-        loop {
-            let entry = match read_dir.next_entry().await {
-                Ok(Some(e)) => e,
-                Ok(None) => break,
-                Err(e) => {
-                    warnings.push(AgentScanWarning::EntryReadError {
-                        path: agents_dir.to_path_buf(),
-                        error: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-            let path = entry.path();
+        // Convert loaded agents to HashMap by name
+        let agents: HashMap<String, AgentSpec> = result
+            .agents
+            .into_iter()
+            .map(|a| (a.metadata.name.clone(), a))
+            .collect();
 
-            // Check if it's a directory using async metadata
-            let is_dir = match fs::metadata(&path).await {
-                Ok(m) => m.is_dir(),
-                Err(_) => false,
-            };
-            if !is_dir {
-                continue;
-            }
-
-            let yaml_path = path.join("agent.yaml");
-            let yaml_exists = fs::metadata(&yaml_path).await.is_ok();
-            if !yaml_exists {
-                continue;
-            }
-
-            match AgentSpec::load_with_warnings(&path).await {
-                Ok((agent, agent_warnings)) => {
-                    let name = agent.metadata.name.clone();
-                    agents.insert(name, agent);
-                    for w in agent_warnings {
-                        warnings.push(AgentScanWarning::AgentWarning(w));
-                    }
+        // Convert ScanWarning to AgentScanWarning
+        let warnings = result
+            .warnings
+            .into_iter()
+            .map(|w| match w {
+                ScanWarning::AgentsDirMissing { path } => {
+                    AgentScanWarning::AgentsDirMissing { location: path }
                 }
-                Err(e) => {
-                    warnings.push(AgentScanWarning::InvalidAgent {
-                        path: path.to_path_buf(),
-                        error: e,
-                    });
+                ScanWarning::InvalidAgent { name, error } => AgentScanWarning::InvalidAgent {
+                    name,
+                    error: AgentLoadError::Validation(error),
+                },
+                ScanWarning::MissingResource { agent, resource } => {
+                    AgentScanWarning::AgentWarning(AgentLoadWarning::MissingFile {
+                        agent,
+                        field: "unknown",
+                        location: resource,
+                        error: "file not found".to_string(),
+                    })
                 }
-            }
-        }
+            })
+            .collect();
 
         AgentScanReport {
             store: AgentStore {
@@ -164,41 +122,31 @@ impl AgentStore {
 // Utility Functions
 // ============================================================================
 
-/// Resolve `agents_dir` to an absolute (or at least fully joined) path.
-///
-/// If `agents_dir` is relative, it is resolved relative to the config file directory.
-pub fn resolve_agents_dir(config_path: &Path, agents_dir: &Path) -> PathBuf {
-    crate::config::resolve_path(config_path, agents_dir)
-}
-
-/// Log non-fatal warnings produced by agent scanning.
+/// Log non-fatal warnings produced by agent loading.
 pub fn log_scan_warnings(warnings: &[AgentScanWarning]) {
     use tracing::warn;
 
     for w in warnings {
         match w {
-            AgentScanWarning::AgentsDirMissing { path } => {
-                warn!(path = %path.display(), "Agents directory does not exist");
+            AgentScanWarning::AgentsDirMissing { location } => {
+                warn!(location = %location, "Agents location does not exist");
             }
-            AgentScanWarning::AgentsDirReadError { path, error } => {
-                warn!(path = %path.display(), error = %error, "Failed to read agents directory");
+            AgentScanWarning::CatalogError { error } => {
+                warn!(error = %error, "Failed to load agents from catalog");
             }
-            AgentScanWarning::EntryReadError { path, error } => {
-                warn!(path = %path.display(), error = %error, "Failed to read directory entry");
-            }
-            AgentScanWarning::InvalidAgent { path, error } => {
-                warn!(path = %path.display(), error = %error, "Skipping invalid agent");
+            AgentScanWarning::InvalidAgent { name, error } => {
+                warn!(agent = %name, error = %error, "Skipping invalid agent");
             }
             AgentScanWarning::AgentWarning(AgentLoadWarning::MissingFile {
                 agent,
                 field,
-                path,
+                location,
                 error,
             }) => {
                 warn!(
                     agent = %agent,
                     field = %field,
-                    path = %path.display(),
+                    location = %location,
                     error = %error,
                     "Missing referenced agent file"
                 );
@@ -209,8 +157,11 @@ pub fn log_scan_warnings(warnings: &[AgentScanWarning]) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::agent::{API_VERSION_V1ALPHA1, KIND_AGENT};
+    use crate::store::file::FileAgentCatalog;
     use tempfile::TempDir;
 
     fn create_minimal_agent(dir: &Path, name: &str) {
@@ -228,6 +179,11 @@ spec:
         std::fs::write(dir.join("agent.yaml"), yaml).unwrap();
     }
 
+    async fn scan_agents(agents_dir: &Path) -> AgentScanReport {
+        let catalog = FileAgentCatalog::new(agents_dir);
+        AgentStore::from_catalog(&catalog).await
+    }
+
     // ==========================================================================
     // AgentStore methods - Happy path
     // ==========================================================================
@@ -242,7 +198,7 @@ spec:
         std::fs::create_dir(&agent_dir).unwrap();
         create_minimal_agent(&agent_dir, "test-agent");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         let agent = report.store.get("test-agent");
         assert!(agent.is_some());
         assert_eq!(agent.unwrap().metadata.name, "test-agent");
@@ -254,7 +210,7 @@ spec:
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir(&agents_dir).unwrap();
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert!(report.store.get("nonexistent").is_none());
     }
 
@@ -264,7 +220,7 @@ spec:
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir(&agents_dir).unwrap();
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert!(report.store.is_empty());
         assert_eq!(report.store.len(), 0);
     }
@@ -279,7 +235,7 @@ spec:
         std::fs::create_dir(&agent_dir).unwrap();
         create_minimal_agent(&agent_dir, "test-agent");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert!(!report.store.is_empty());
     }
 
@@ -295,7 +251,7 @@ spec:
             create_minimal_agent(&agent_dir, name);
         }
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         let names: Vec<_> = report.store.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names.len(), 3);
         assert!(names.contains(&"alpha"));
@@ -313,7 +269,7 @@ spec:
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir(&agents_dir).unwrap();
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 0);
         assert!(report.warnings.is_empty());
     }
@@ -323,7 +279,7 @@ spec:
         let tmp = TempDir::new().unwrap();
         let agents_dir = tmp.path().join("nonexistent");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 0);
         assert!(matches!(
             report.warnings.first(),
@@ -345,7 +301,7 @@ spec:
         std::fs::create_dir(&agent2_dir).unwrap();
         create_minimal_agent(&agent2_dir, "agent-two");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 2);
         assert!(report.store.get("agent-one").is_some());
         assert!(report.store.get("agent-two").is_some());
@@ -365,7 +321,7 @@ spec:
         std::fs::create_dir(&agent_dir).unwrap();
         create_minimal_agent(&agent_dir, "valid-agent");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 1);
         assert!(report.warnings.is_empty());
     }
@@ -386,7 +342,7 @@ spec:
         std::fs::create_dir(&agent_dir).unwrap();
         create_minimal_agent(&agent_dir, "valid-agent");
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 1);
         assert!(report.store.get("valid-agent").is_some());
     }
@@ -419,7 +375,7 @@ spec:
         )
         .unwrap();
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 1);
         assert!(report.store.get("valid-agent").is_some());
         assert!(report.store.get("invalid-agent").is_none());
@@ -445,7 +401,7 @@ spec:
         )
         .unwrap();
 
-        let report = AgentStore::scan(&agents_dir).await;
+        let report = scan_agents(&agents_dir).await;
         assert_eq!(report.store.len(), 0);
         assert!(
             report
@@ -456,22 +412,6 @@ spec:
     }
 
     // ==========================================================================
-    // resolve_agents_dir()
-    // ==========================================================================
-
-    #[test]
-    fn resolve_agents_dir_absolute_path_unchanged() {
-        let result = resolve_agents_dir(Path::new("/etc/config.yaml"), Path::new("/opt/agents"));
-        assert_eq!(result, PathBuf::from("/opt/agents"));
-    }
-
-    #[test]
-    fn resolve_agents_dir_relative_path_resolved() {
-        let result = resolve_agents_dir(Path::new("/etc/agnx/config.yaml"), Path::new("./agents"));
-        assert_eq!(result, PathBuf::from("/etc/agnx/agents"));
-    }
-
-    // ==========================================================================
     // AgentScanWarning - Debug/Display coverage
     // ==========================================================================
 
@@ -479,15 +419,14 @@ spec:
     fn scan_warning_debug_formats() {
         let warnings = vec![
             AgentScanWarning::AgentsDirMissing {
-                path: PathBuf::from("/missing"),
+                location: "/missing".to_string(),
             },
-            AgentScanWarning::AgentsDirReadError {
-                path: PathBuf::from("/unreadable"),
+            AgentScanWarning::CatalogError {
                 error: "permission denied".to_string(),
             },
-            AgentScanWarning::EntryReadError {
-                path: PathBuf::from("/dir"),
-                error: "io error".to_string(),
+            AgentScanWarning::InvalidAgent {
+                name: "bad-agent".to_string(),
+                error: AgentLoadError::Validation("invalid spec".to_string()),
             },
         ];
 

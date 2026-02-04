@@ -18,10 +18,11 @@ pub enum AgentLoadError {
 /// Non-fatal issues encountered while loading an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentLoadWarning {
+    /// A referenced file could not be loaded.
     MissingFile {
         agent: String,
         field: &'static str,
-        path: std::path::PathBuf,
+        location: String,
         error: String,
     },
 }
