@@ -22,6 +22,10 @@ use crate::session::handle::SessionHandle;
 use crate::session::snapshot::PendingApproval;
 use crate::tools::{ToolError, ToolExecutor, ToolResult};
 
+// ============================================================================
+// Types
+// ============================================================================
+
 /// Result of running the agentic loop.
 #[derive(Debug)]
 pub enum AgenticResult {
@@ -63,6 +67,22 @@ pub enum AgenticError {
     #[error("max iterations ({0}) exceeded")]
     MaxIterationsExceeded(u32),
 }
+
+/// Outcome of executing a single tool call.
+///
+/// This represents the control flow decision after attempting to execute a tool:
+/// - `Executed`: Tool ran (successfully or with error), continue the loop
+/// - `AwaitingApproval`: Tool requires user approval, pause the loop
+enum ToolCallOutcome {
+    /// Tool executed, add this message to conversation and continue.
+    Executed(Message),
+    /// Tool requires approval, pause the loop with this pending state.
+    AwaitingApproval(PendingApproval),
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 /// Run the agentic loop with tool execution.
 ///
@@ -137,16 +157,7 @@ pub async fn run_agentic_loop(
         }
 
         // Accumulate usage
-        if let Some(u) = usage {
-            total_usage = Some(match total_usage {
-                Some(existing) => Usage {
-                    prompt_tokens: existing.prompt_tokens + u.prompt_tokens,
-                    completion_tokens: existing.completion_tokens + u.completion_tokens,
-                    total_tokens: existing.total_tokens + u.total_tokens,
-                },
-                None => u,
-            });
-        }
+        total_usage = accumulate_usage(total_usage, usage);
 
         // If no tool calls, we're done
         if tool_calls.is_empty() {
@@ -162,16 +173,7 @@ pub async fn run_agentic_loop(
         debug!(tool_calls_count = tool_calls.len(), "Processing tool calls");
 
         // Add assistant message with tool calls
-        let assistant_msg = if content.is_empty() {
-            Message::assistant_tool_calls(tool_calls.clone())
-        } else {
-            Message {
-                role: Role::Assistant,
-                content: Some(content.clone()),
-                tool_calls: Some(tool_calls.clone()),
-                tool_call_id: None,
-            }
-        };
+        let assistant_msg = build_assistant_message(&content, &tool_calls);
         messages.push(assistant_msg);
 
         // Execute tools sequentially to catch approval requirements
@@ -179,53 +181,13 @@ pub async fn run_agentic_loop(
         for tool_call in &tool_calls {
             tool_calls_made += 1;
 
-            // Record tool call event
-            let arguments: serde_json::Value =
-                serde_json::from_str(&tool_call.function.arguments).unwrap_or_default();
-            if let Err(e) = handle
-                .enqueue_tool_call(
-                    tool_call.id.clone(),
-                    tool_call.function.name.clone(),
-                    arguments.clone(),
-                )
-                .await
-            {
-                warn!(error = %e, "Failed to enqueue tool call event");
-            }
+            let outcome = execute_tool_call(executor, handle, tool_call, &messages, &content).await;
 
-            // Execute the tool
-            let exec_result = executor.execute(tool_call).await;
-
-            // Convert Result to ToolResult (handle errors gracefully)
-            let result = match exec_result {
-                Ok(r) => r,
-                Err(ToolError::ApprovalRequired { call_id, command }) => {
-                    // Record partial assistant content if any (before tool call)
-                    if !content.is_empty()
-                        && let Err(e) = handle
-                            .enqueue_assistant_message(content.clone(), None)
-                            .await
-                    {
-                        warn!(error = %e, "Failed to enqueue partial assistant message");
-                    }
-
-                    // Record approval required event
-                    if let Err(e) = handle
-                        .enqueue_approval_required(call_id.clone(), command.clone())
-                        .await
-                    {
-                        warn!(error = %e, "Failed to enqueue approval required event");
-                    }
-
-                    // Create pending approval and return AwaitingApproval
-                    let pending = PendingApproval::new(
-                        call_id,
-                        tool_call.function.name.clone(),
-                        arguments,
-                        command,
-                        messages.clone(),
-                    );
-
+            match outcome {
+                ToolCallOutcome::Executed(tool_result_msg) => {
+                    messages.push(tool_result_msg);
+                }
+                ToolCallOutcome::AwaitingApproval(pending) => {
                     return Ok(AgenticResult::AwaitingApproval {
                         pending,
                         partial_content: content,
@@ -234,36 +196,7 @@ pub async fn run_agentic_loop(
                         tool_calls_made,
                     });
                 }
-                Err(ToolError::PolicyDenied(command)) => {
-                    // Policy denial - inform LLM
-                    ToolResult {
-                        success: false,
-                        content: format!(
-                            "Command '{}' was denied by policy. This command is not allowed.",
-                            command
-                        ),
-                    }
-                }
-                Err(e) => {
-                    // Other errors - feed back to LLM
-                    ToolResult {
-                        success: false,
-                        content: format!("Tool execution failed: {}", e),
-                    }
-                }
-            };
-
-            // Record tool result event
-            if let Err(e) = handle
-                .enqueue_tool_result(tool_call.id.clone(), result.success, result.content.clone())
-                .await
-            {
-                warn!(error = %e, "Failed to enqueue tool result event");
             }
-
-            // Add tool result message
-            let tool_result_msg = Message::tool_result(&tool_call.id, result.content);
-            messages.push(tool_result_msg);
         }
 
         // Continue loop with updated messages
@@ -315,6 +248,152 @@ pub async fn resume_agentic_loop(
     .await
 }
 
+// ============================================================================
+// Private Helpers
+// ============================================================================
+
+/// Execute a single tool call and return the outcome.
+///
+/// This handles:
+/// - Recording the tool call event
+/// - Executing the tool
+/// - Handling approval requirements (pausing the loop)
+/// - Handling errors (converting to tool result messages)
+/// - Recording the tool result event
+async fn execute_tool_call(
+    executor: &ToolExecutor,
+    handle: &SessionHandle,
+    tool_call: &ToolCall,
+    messages: &[Message],
+    content: &str,
+) -> ToolCallOutcome {
+    // Parse arguments
+    let arguments: serde_json::Value =
+        serde_json::from_str(&tool_call.function.arguments).unwrap_or_default();
+
+    // Record tool call event
+    if let Err(e) = handle
+        .enqueue_tool_call(
+            tool_call.id.clone(),
+            tool_call.function.name.clone(),
+            arguments.clone(),
+        )
+        .await
+    {
+        warn!(error = %e, "Failed to enqueue tool call event");
+    }
+
+    // Execute the tool
+    let exec_result = executor.execute(tool_call).await;
+
+    // Handle the execution result
+    let result = match exec_result {
+        Ok(r) => r,
+        Err(ToolError::ApprovalRequired { call_id, command }) => {
+            return handle_approval_required(
+                handle, tool_call, &arguments, call_id, command, messages, content,
+            )
+            .await;
+        }
+        Err(ToolError::PolicyDenied(command)) => ToolResult {
+            success: false,
+            content: format!(
+                "Command '{}' was denied by policy. This command is not allowed.",
+                command
+            ),
+        },
+        Err(e) => ToolResult {
+            success: false,
+            content: format!("Tool execution failed: {}", e),
+        },
+    };
+
+    // Record tool result event
+    if let Err(e) = handle
+        .enqueue_tool_result(tool_call.id.clone(), result.success, result.content.clone())
+        .await
+    {
+        warn!(error = %e, "Failed to enqueue tool result event");
+    }
+
+    // Return the tool result message
+    let tool_result_msg = Message::tool_result(&tool_call.id, result.content);
+    ToolCallOutcome::Executed(tool_result_msg)
+}
+
+/// Handle a tool that requires approval.
+///
+/// Records events and creates the pending approval state.
+async fn handle_approval_required(
+    handle: &SessionHandle,
+    tool_call: &ToolCall,
+    arguments: &serde_json::Value,
+    call_id: String,
+    command: String,
+    messages: &[Message],
+    content: &str,
+) -> ToolCallOutcome {
+    // Record partial assistant content if any (before tool call)
+    if !content.is_empty()
+        && let Err(e) = handle
+            .enqueue_assistant_message(content.to_string(), None)
+            .await
+    {
+        warn!(error = %e, "Failed to enqueue partial assistant message");
+    }
+
+    // Record approval required event
+    if let Err(e) = handle
+        .enqueue_approval_required(call_id.clone(), command.clone())
+        .await
+    {
+        warn!(error = %e, "Failed to enqueue approval required event");
+    }
+
+    // Create pending approval
+    let pending = PendingApproval::new(
+        call_id,
+        tool_call.function.name.clone(),
+        arguments.clone(),
+        command,
+        messages.to_vec(),
+    );
+
+    ToolCallOutcome::AwaitingApproval(pending)
+}
+
+/// Build the assistant message for a response with tool calls.
+fn build_assistant_message(content: &str, tool_calls: &[ToolCall]) -> Message {
+    if content.is_empty() {
+        Message::assistant_tool_calls(tool_calls.to_vec())
+    } else {
+        Message {
+            role: Role::Assistant,
+            content: Some(content.to_string()),
+            tool_calls: Some(tool_calls.to_vec()),
+            tool_call_id: None,
+        }
+    }
+}
+
+/// Accumulate token usage across iterations.
+fn accumulate_usage(existing: Option<Usage>, new: Option<Usage>) -> Option<Usage> {
+    match (existing, new) {
+        (Some(e), Some(n)) => Some(Usage {
+            prompt_tokens: e.prompt_tokens + n.prompt_tokens,
+            completion_tokens: e.completion_tokens + n.completion_tokens,
+            total_tokens: e.total_tokens + n.total_tokens,
+        }),
+        (Some(e), None) => Some(e),
+        (None, Some(n)) => Some(n),
+        (None, None) => None,
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +428,67 @@ mod tests {
         };
         assert!(format!("{:?}", result).contains("AwaitingApproval"));
         assert!(format!("{:?}", result).contains("call_123"));
+    }
+
+    #[test]
+    fn accumulate_usage_both_some() {
+        let a = Some(Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        });
+        let b = Some(Usage {
+            prompt_tokens: 20,
+            completion_tokens: 10,
+            total_tokens: 30,
+        });
+        let result = accumulate_usage(a, b).unwrap();
+        assert_eq!(result.prompt_tokens, 30);
+        assert_eq!(result.completion_tokens, 15);
+        assert_eq!(result.total_tokens, 45);
+    }
+
+    #[test]
+    fn accumulate_usage_one_none() {
+        let a = Some(Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        });
+        assert!(accumulate_usage(a.clone(), None).is_some());
+        assert!(accumulate_usage(None, a).is_some());
+        assert!(accumulate_usage(None, None).is_none());
+    }
+
+    #[test]
+    fn build_assistant_message_with_content() {
+        let tool_calls = vec![ToolCall {
+            id: "call_1".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: "test".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }];
+        let msg = build_assistant_message("Some content", &tool_calls);
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.content, Some("Some content".to_string()));
+        assert!(msg.tool_calls.is_some());
+    }
+
+    #[test]
+    fn build_assistant_message_empty_content() {
+        let tool_calls = vec![ToolCall {
+            id: "call_1".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: "test".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }];
+        let msg = build_assistant_message("", &tool_calls);
+        assert_eq!(msg.role, Role::Assistant);
+        assert!(msg.content.is_none());
+        assert!(msg.tool_calls.is_some());
     }
 }
