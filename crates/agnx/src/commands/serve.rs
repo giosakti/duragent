@@ -19,6 +19,9 @@ use agnx::sandbox::{Sandbox, TrustSandbox};
 use agnx::scheduler::{SchedulerConfig, SchedulerService};
 use agnx::server;
 use agnx::session::{ChatSessionCache, SessionRegistry};
+use agnx::store::file::{
+    FileAgentCatalog, FilePolicyStore, FileRunLogStore, FileScheduleStore, FileSessionStore,
+};
 
 pub async fn run(
     config_path: &str,
@@ -43,12 +46,14 @@ pub async fn run(
     let config_path_ref = Path::new(config_path);
     let sessions_path = config::resolve_path(config_path_ref, &config.services.session.path);
 
-    // Load agents and providers
-    let (store, providers) = load_agents(config_path, &config).await;
+    // Load agents, providers, and policy store
+    let (store, providers, policy_store) = load_agents(config_path, &config).await;
     info!(agents = store.len(), "Loaded agents");
 
-    // Initialize session registry and recover persisted sessions
-    let session_registry = SessionRegistry::new(sessions_path.clone());
+    // Initialize session store and registry, then recover persisted sessions
+    let session_store: Arc<dyn agnx::store::SessionStore> =
+        Arc::new(FileSessionStore::new(&sessions_path));
+    let session_registry = SessionRegistry::new(session_store.clone());
     let recovery = session_registry.recover().await?;
     if recovery.recovered > 0 {
         info!(
@@ -88,7 +93,7 @@ pub async fn run(
         .map(|m| m.id)
         .collect();
     chat_session_cache
-        .rebuild_from_sessions(&sessions_path, &recovered_session_ids)
+        .rebuild_from_sessions(&session_store, &recovered_session_ids)
         .await;
 
     // Initialize scheduler service (before gateway handler so it can be passed in)
@@ -96,13 +101,17 @@ pub async fn run(
         .parent()
         .unwrap_or(&sessions_path)
         .join("schedules");
+    let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));
+    let run_log_store = Arc::new(FileRunLogStore::new(schedules_path.join("runs")));
     let scheduler_config = SchedulerConfig {
-        schedules_path,
+        schedule_store,
+        run_log_store,
         agents: store.clone(),
         providers: providers.clone(),
         session_registry: session_registry.clone(),
         gateways: gateways.clone(),
         sandbox: sandbox.clone(),
+        policy_store: policy_store.clone(),
         chat_session_cache: chat_session_cache.clone(),
     };
     let scheduler_service = SchedulerService::new(scheduler_config);
@@ -119,6 +128,7 @@ pub async fn run(
             routing_config,
             sandbox: sandbox.clone(),
             gateway_manager: gateways.clone(),
+            policy_store: policy_store.clone(),
             policy_locks: policy_locks.clone(),
             scheduler: Some(scheduler_handle.clone()),
             chat_session_cache,
@@ -162,6 +172,7 @@ pub async fn run(
         admin_token: config.server.admin_token.clone(),
         gateways: gateways.clone(),
         sandbox,
+        policy_store,
         policy_locks,
         scheduler: Some(scheduler_handle.clone()),
     };
@@ -216,14 +227,26 @@ pub async fn stop(config_path: &str, port_override: Option<u16>) -> Result<()> {
 }
 
 /// Load agents from the configured directory and initialize providers.
-async fn load_agents(config_path: &str, config: &Config) -> (AgentStore, ProviderRegistry) {
-    let agents_dir = agent::resolve_agents_dir(Path::new(config_path), &config.agents_dir);
-    let scan = agent::AgentStore::scan(&agents_dir).await;
+///
+/// Returns the agent store, provider registry, and policy store.
+async fn load_agents(
+    config_path: &str,
+    config: &Config,
+) -> (
+    AgentStore,
+    ProviderRegistry,
+    Arc<dyn agnx::store::PolicyStore>,
+) {
+    let agents_dir = config::resolve_path(Path::new(config_path), &config.agents_dir);
+    let catalog = FileAgentCatalog::new(&agents_dir);
+    let scan = agent::AgentStore::from_catalog(&catalog).await;
     agent::log_scan_warnings(&scan.warnings);
 
     let providers = ProviderRegistry::from_env();
+    let policy_store: Arc<dyn agnx::store::PolicyStore> =
+        Arc::new(FilePolicyStore::new(&agents_dir));
 
-    (scan.store, providers)
+    (scan.store, providers, policy_store)
 }
 
 async fn shutdown_signal(http_shutdown: tokio::sync::oneshot::Receiver<()>) {

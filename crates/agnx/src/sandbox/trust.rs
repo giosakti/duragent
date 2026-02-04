@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_default() {
-        let sandbox = TrustSandbox::default();
+        let sandbox: TrustSandbox = Default::default();
         assert_eq!(sandbox.mode(), "trust");
     }
 }

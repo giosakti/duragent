@@ -226,12 +226,15 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
     let session_id = ctx.handle.id().to_string();
     let agent_name = ctx.handle.agent().to_string();
 
+    // Load policy from store (picks up runtime changes from AllowAlways)
+    let policy = state.policy_store.load(&agent_name).await;
+
     // Create tool executor with policy
     let executor = ToolExecutor::new(
         ctx.agent_spec.tools.clone(),
         state.sandbox.clone(),
         ctx.agent_dir.clone(),
-        ctx.agent_spec.policy.clone(),
+        policy,
         agent_name.clone(),
     )
     .with_session_id(session_id.clone());
@@ -405,11 +408,10 @@ pub async fn approve_command(
             .into_response();
     };
 
-    // If allow_always, save pattern to policy.local.yaml
+    // If allow_always, save pattern to policy
     if req.decision == ApprovalDecision::AllowAlways
         && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
-            &agent_spec.policy,
-            &agent_spec.agent_dir,
+            state.policy_store.as_ref(),
             &agent_name,
             crate::agent::ToolType::Bash,
             &req.command,
@@ -420,9 +422,13 @@ pub async fn approve_command(
         debug!(
             error = %e,
             command = %req.command,
-            "Failed to save allow pattern to policy.local.yaml"
+            "Failed to save allow pattern to policy"
         );
     }
+
+    // Load policy from store (picks up runtime changes from AllowAlways)
+    // This is loaded AFTER add_pattern_and_save so it includes any newly saved pattern
+    let policy = state.policy_store.load(&agent_name).await;
 
     // Determine tool result based on decision
     let tool_result = if req.decision == ApprovalDecision::Deny {
@@ -440,7 +446,7 @@ pub async fn approve_command(
             agent_spec.tools.clone(),
             state.sandbox.clone(),
             agent_spec.agent_dir.clone(),
-            agent_spec.policy.clone(),
+            policy.clone(),
             agent_name.clone(),
         )
         .with_session_id(session_id.clone());
@@ -482,12 +488,12 @@ pub async fn approve_command(
         .into_response();
     };
 
-    // Create executor for resume
+    // Create executor for resume (uses same policy loaded above)
     let executor = ToolExecutor::new(
         agent_spec.tools.clone(),
         state.sandbox.clone(),
         agent_spec.agent_dir.clone(),
-        agent_spec.policy.clone(),
+        policy,
         agent_name.clone(),
     )
     .with_session_id(session_id.clone());
