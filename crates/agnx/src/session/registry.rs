@@ -283,15 +283,18 @@ impl SessionRegistry {
             }
         };
 
-        // Load events after snapshot for replay
+        // Load events after checkpoint for replay.
+        // For v1 snapshots, replay_from_seq() returns last_event_seq (no replay needed).
+        // For v2 snapshots, it returns checkpoint_seq (replay messages after checkpoint).
+        let replay_from = snapshot.replay_from_seq();
         let events = self
             .store
-            .load_events(session_id, snapshot.last_event_seq)
+            .load_events(session_id, replay_from)
             .await
             .map_err(|e| ActorError::Persistence(format!("Failed to load events: {}", e)))?;
 
-        // Replay events to rebuild state
-        let mut conversation = snapshot.conversation.clone();
+        // Replay events to rebuild pending messages and status
+        let mut pending_messages = Vec::new();
         let mut last_seq = snapshot.last_event_seq;
         let mut status = snapshot.status;
 
@@ -300,10 +303,11 @@ impl SessionRegistry {
 
             match &event.payload {
                 super::events::SessionEventPayload::UserMessage { content } => {
-                    conversation.push(crate::llm::Message::text(crate::llm::Role::User, content));
+                    pending_messages
+                        .push(crate::llm::Message::text(crate::llm::Role::User, content));
                 }
                 super::events::SessionEventPayload::AssistantMessage { content, .. } => {
-                    conversation.push(crate::llm::Message::text(
+                    pending_messages.push(crate::llm::Message::text(
                         crate::llm::Role::Assistant,
                         content,
                     ));
@@ -356,20 +360,23 @@ impl SessionRegistry {
             }
         };
 
-        // Build snapshot for actor recovery
+        // Build snapshot for actor recovery.
+        // Keep the original checkpoint_seq; pending_messages are passed separately.
         let recovered_snapshot = super::snapshot::SessionSnapshot::new(
             snapshot.session_id.clone(),
             snapshot.agent.clone(),
             final_status,
             snapshot.created_at,
             last_seq,
-            conversation,
+            snapshot.checkpoint_seq,
+            snapshot.conversation,
             snapshot.config,
         );
 
         let config = RecoverConfig {
             snapshot: recovered_snapshot,
             store: self.store.clone(),
+            pending_messages,
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
@@ -426,6 +433,7 @@ mod tests {
             status,
             Utc::now(),
             1,
+            1, // checkpoint_seq matches last_event_seq
             vec![
                 Message::text(Role::User, "Hello"),
                 Message::text(Role::Assistant, "Hi there!"),

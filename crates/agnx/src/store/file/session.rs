@@ -272,6 +272,7 @@ mod tests {
             SessionStatus::Active,
             Utc::now(),
             last_seq,
+            last_seq, // checkpoint_seq matches last_event_seq
             vec![Message::text(Role::User, "Hello")],
             SessionConfig::default(),
         )

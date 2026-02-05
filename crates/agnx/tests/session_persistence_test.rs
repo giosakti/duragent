@@ -334,6 +334,7 @@ async fn snapshot_write_load_roundtrip() {
         SessionStatus::Active,
         created_at,
         42,
+        42, // checkpoint_seq
         conversation.clone(),
         config,
     );
@@ -382,6 +383,7 @@ async fn snapshot_preserves_all_statuses() {
             *status,
             Utc::now(),
             0,
+            0, // checkpoint_seq
             vec![],
             SessionConfig::default(),
         );
@@ -425,6 +427,7 @@ async fn read_events_from_snapshot_seq() {
         SessionStatus::Active,
         Utc::now(),
         5,
+        5, // checkpoint_seq
         vec![],
         SessionConfig::default(),
     );
@@ -493,6 +496,7 @@ async fn events_and_snapshot_coordinate_recovery() {
         SessionStatus::Active,
         Utc::now(),
         3,
+        3, // checkpoint_seq
         vec![
             Message::text(Role::User, "Hello"),
             Message::text(Role::Assistant, "Hi there!"),
@@ -621,6 +625,7 @@ async fn recovery_replays_events_after_snapshot() {
         SessionStatus::Active,
         Utc::now(),
         50, // last_event_seq at snapshot time
+        50, // checkpoint_seq
         snapshot_conversation,
         SessionConfig::default(),
     );
@@ -630,6 +635,7 @@ async fn recovery_replays_events_after_snapshot() {
     // 3. Simulate recovery: load snapshot and replay events
     let loaded_snapshot = store.load_snapshot(session_id).await.unwrap().unwrap();
     assert_eq!(loaded_snapshot.last_event_seq, 50);
+    assert_eq!(loaded_snapshot.checkpoint_seq, 50);
     assert_eq!(loaded_snapshot.conversation.len(), 49); // messages 2-50
 
     // Load events after snapshot
@@ -702,6 +708,7 @@ async fn recovery_uses_latest_snapshot() {
         SessionStatus::Active,
         Utc::now(),
         75, // last_event_seq at snapshot time
+        75, // checkpoint_seq
         snapshot_conversation,
         SessionConfig::default(),
     );
@@ -711,6 +718,7 @@ async fn recovery_uses_latest_snapshot() {
     // Simulate recovery
     let loaded = store.load_snapshot(session_id).await.unwrap().unwrap();
     assert_eq!(loaded.last_event_seq, 75);
+    assert_eq!(loaded.checkpoint_seq, 75);
 
     let replay_events = store
         .load_events(session_id, loaded.last_event_seq)
@@ -767,6 +775,7 @@ async fn recovery_with_no_events_after_snapshot() {
         SessionStatus::Active,
         Utc::now(),
         10,
+        10, // checkpoint_seq
         snapshot_conversation,
         SessionConfig::default(),
     );
@@ -776,7 +785,7 @@ async fn recovery_with_no_events_after_snapshot() {
     // Simulate recovery
     let loaded = store.load_snapshot(session_id).await.unwrap().unwrap();
     let replay_events = store
-        .load_events(session_id, loaded.last_event_seq)
+        .load_events(session_id, loaded.replay_from_seq())
         .await
         .unwrap();
 
@@ -934,6 +943,7 @@ async fn load_snapshot_returns_error_for_incompatible_schema() {
         SessionStatus::Active,
         Utc::now(),
         0,
+        0, // checkpoint_seq
         vec![],
         SessionConfig::default(),
     );
@@ -969,6 +979,7 @@ async fn snapshot_write_is_atomic() {
         SessionStatus::Active,
         Utc::now(),
         42,
+        42, // checkpoint_seq
         vec![],
         SessionConfig::default(),
     );
@@ -1005,6 +1016,7 @@ async fn snapshot_overwrite_is_atomic() {
         SessionStatus::Active,
         Utc::now(),
         10,
+        10, // checkpoint_seq
         vec![],
         SessionConfig::default(),
     );
@@ -1018,6 +1030,7 @@ async fn snapshot_overwrite_is_atomic() {
         SessionStatus::Completed,
         Utc::now(),
         50,
+        50, // checkpoint_seq
         vec![],
         SessionConfig::default(),
     );

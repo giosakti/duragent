@@ -154,6 +154,8 @@ pub struct ActorConfig {
 pub struct RecoverConfig {
     pub snapshot: super::snapshot::SessionSnapshot,
     pub store: Arc<dyn SessionStore>,
+    /// Messages reconstructed from events after checkpoint_seq.
+    pub pending_messages: Vec<Message>,
 }
 
 // ============================================================================
@@ -168,6 +170,12 @@ pub const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of events between snapshots.
 pub const SNAPSHOT_INTERVAL: u64 = 50;
+
+/// Number of pending messages before rolling checkpoint.
+///
+/// When pending_messages exceeds this threshold, messages are moved
+/// to checkpointed_messages and the checkpoint is advanced.
+pub const CHECKPOINT_THRESHOLD: usize = 50;
 
 /// Channel capacity for commands.
 ///

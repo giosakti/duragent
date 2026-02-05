@@ -22,8 +22,8 @@ use crate::llm::{Message, Role, Usage};
 use crate::store::SessionStore;
 
 use super::actor_types::{
-    ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, FLUSH_INTERVAL, RecoverConfig,
-    SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata,
+    ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, CHECKPOINT_THRESHOLD, FLUSH_INTERVAL,
+    RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata,
 };
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
 use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
@@ -42,7 +42,14 @@ pub struct SessionActor {
     status: SessionStatus,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    messages: Vec<Message>,
+
+    // Message storage (checkpoint-based)
+    /// Messages up to checkpoint_seq (stable, written to snapshots).
+    checkpointed_messages: Vec<Message>,
+    /// Messages after checkpoint_seq (ephemeral, reconstructed from events on recovery).
+    pending_messages: Vec<Message>,
+    /// Sequence number of last checkpointed message.
+    checkpoint_seq: u64,
 
     // Event sequencing
     last_event_seq: u64,
@@ -85,7 +92,9 @@ impl SessionActor {
             status: SessionStatus::Active,
             created_at: now,
             updated_at: now,
-            messages: Vec::new(),
+            checkpointed_messages: Vec::new(),
+            pending_messages: Vec::new(),
+            checkpoint_seq: 0,
             last_event_seq: 0,
             last_flushed_seq: 0,
             last_snapshot_seq: 0,
@@ -106,6 +115,10 @@ impl SessionActor {
     /// Spawn an actor recovered from a snapshot.
     ///
     /// Returns the command sender and a JoinHandle for the actor task.
+    ///
+    /// The snapshot contains:
+    /// - `conversation`: messages up to `checkpoint_seq` (checkpointed)
+    /// - `pending_messages`: messages after `checkpoint_seq` (passed via RecoverConfig)
     pub fn spawn_recovered(
         config: RecoverConfig,
         shutdown_rx: watch::Receiver<bool>,
@@ -119,7 +132,9 @@ impl SessionActor {
             status: snapshot.status,
             created_at: snapshot.created_at,
             updated_at: snapshot.snapshot_at,
-            messages: snapshot.conversation,
+            checkpointed_messages: snapshot.conversation,
+            pending_messages: config.pending_messages,
+            checkpoint_seq: snapshot.checkpoint_seq,
             last_event_seq: snapshot.last_event_seq,
             last_flushed_seq: snapshot.last_event_seq,
             last_snapshot_seq: snapshot.last_event_seq,
@@ -313,7 +328,7 @@ impl SessionActor {
                 let _ = reply.send(result);
             }
             SessionCommand::GetMessages { reply } => {
-                let _ = reply.send(Ok(self.messages.clone()));
+                let _ = reply.send(Ok(self.all_messages()));
             }
             SessionCommand::GetMetadata { reply } => {
                 let metadata = SessionMetadata {
@@ -359,14 +374,18 @@ impl SessionActor {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
 
-        // Add to memory
-        self.messages.push(Message::text(Role::User, &content));
+        // Add to pending messages (not checkpointed yet)
+        self.pending_messages
+            .push(Message::text(Role::User, &content));
 
         // Queue event
         self.pending_events.push_back(SessionEvent::new(
             seq,
             SessionEventPayload::UserMessage { content },
         ));
+
+        // Roll checkpoint if pending is too large
+        self.maybe_roll_checkpoint();
 
         Ok(seq)
     }
@@ -379,8 +398,9 @@ impl SessionActor {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
 
-        // Add to memory
-        self.messages.push(Message::text(Role::Assistant, &content));
+        // Add to pending messages (not checkpointed yet)
+        self.pending_messages
+            .push(Message::text(Role::Assistant, &content));
 
         // Queue event
         self.pending_events.push_back(SessionEvent::new(
@@ -391,6 +411,9 @@ impl SessionActor {
                 usage,
             },
         ));
+
+        // Roll checkpoint if pending is too large
+        self.maybe_roll_checkpoint();
 
         Ok(seq)
     }
@@ -537,6 +560,28 @@ impl SessionActor {
     }
 
     // ------------------------------------------------------------------------
+    // Message Helpers
+    // ------------------------------------------------------------------------
+
+    /// Get all messages (checkpointed + pending).
+    fn all_messages(&self) -> Vec<Message> {
+        let mut all = self.checkpointed_messages.clone();
+        all.extend(self.pending_messages.clone());
+        all
+    }
+
+    /// Roll checkpoint forward if pending messages exceed threshold.
+    ///
+    /// Moves pending messages to checkpointed and advances checkpoint_seq.
+    fn maybe_roll_checkpoint(&mut self) {
+        if self.pending_messages.len() >= CHECKPOINT_THRESHOLD {
+            self.checkpointed_messages
+                .extend(self.pending_messages.drain(..));
+            self.checkpoint_seq = self.last_event_seq;
+        }
+    }
+
+    // ------------------------------------------------------------------------
     // Persistence
     // ------------------------------------------------------------------------
 
@@ -579,6 +624,9 @@ impl SessionActor {
     }
 
     /// Write a snapshot of current state.
+    ///
+    /// Only checkpointed messages are written to the snapshot.
+    /// Pending messages are reconstructed from events on recovery.
     async fn write_snapshot(&mut self) -> Result<(), ActorError> {
         let snapshot = SessionSnapshot::new(
             self.id.clone(),
@@ -586,7 +634,8 @@ impl SessionActor {
             self.status,
             self.created_at,
             self.last_flushed_seq,
-            self.messages.clone(),
+            self.checkpoint_seq,
+            self.checkpointed_messages.clone(),
             SessionConfig {
                 on_disconnect: self.on_disconnect,
                 gateway: self.gateway.clone(),
