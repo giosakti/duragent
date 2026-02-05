@@ -32,55 +32,14 @@ pub struct AgentSpec {
     pub instructions: Option<String>,
     /// Session behavior configuration.
     pub session: AgentSessionConfig,
+    /// Memory configuration.
+    pub memory: Option<AgentMemoryConfig>,
     /// Tool configurations for agentic capabilities.
     pub tools: Vec<ToolConfig>,
     /// Tool execution policy.
     pub policy: ToolPolicy,
     /// Directory containing the agent's configuration files.
     pub agent_dir: PathBuf,
-}
-
-/// Tool configuration from the AAF spec.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolConfig {
-    /// Built-in tool (e.g., bash).
-    Builtin { name: String },
-    /// CLI tool executed via script.
-    Cli {
-        name: String,
-        command: String,
-        #[serde(default)]
-        readme: Option<String>,
-        #[serde(default)]
-        description: Option<String>,
-    },
-}
-
-/// Session behavior configuration for an agent.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct AgentSessionConfig {
-    /// Behavior when client disconnects from a session.
-    #[serde(default)]
-    pub on_disconnect: OnDisconnect,
-    /// Maximum number of tool iterations before stopping.
-    #[serde(default = "default_max_tool_iterations")]
-    pub max_tool_iterations: u32,
-}
-
-fn default_max_tool_iterations() -> u32 {
-    DEFAULT_MAX_TOOL_ITERATIONS
-}
-
-/// Behavior when client disconnects from a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnDisconnect {
-    /// Pause the session and wait for reconnect (default).
-    #[default]
-    Pause,
-    /// Continue executing in the background.
-    Continue,
 }
 
 /// Agent metadata from the AAF spec.
@@ -111,6 +70,62 @@ pub struct ModelConfig {
     #[serde(default, alias = "max_tokens")]
     pub max_output_tokens: Option<u32>,
     pub base_url: Option<String>,
+}
+
+/// Session behavior configuration for an agent.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AgentSessionConfig {
+    /// Behavior when client disconnects from a session.
+    #[serde(default)]
+    pub on_disconnect: OnDisconnect,
+    /// Maximum number of tool iterations before stopping.
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: u32,
+}
+
+fn default_max_tool_iterations() -> u32 {
+    DEFAULT_MAX_TOOL_ITERATIONS
+}
+
+/// Memory configuration for an agent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentMemoryConfig {
+    /// Memory backend implementation.
+    /// Currently only "filesystem" is supported.
+    #[serde(default = "default_memory_backend")]
+    pub backend: String,
+}
+
+fn default_memory_backend() -> String {
+    "filesystem".to_string()
+}
+
+/// Tool configuration from the AAF spec.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolConfig {
+    /// Built-in tool (e.g., bash).
+    Builtin { name: String },
+    /// CLI tool executed via script.
+    Cli {
+        name: String,
+        command: String,
+        #[serde(default)]
+        readme: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+/// Behavior when client disconnects from a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDisconnect {
+    /// Pause the session and wait for reconnect (default).
+    #[default]
+    Pause,
+    /// Continue executing in the background.
+    Continue,
 }
 
 /// Loaded file contents for optional agent files.
@@ -177,6 +192,7 @@ impl AgentSpec {
             system_prompt: files.system_prompt,
             instructions: files.instructions,
             session: raw.spec.session,
+            memory: raw.spec.memory,
             tools: raw.spec.tools,
             policy,
             agent_dir,
@@ -221,6 +237,8 @@ struct RawAgentSpecBody {
     instructions: Option<String>,
     #[serde(default)]
     session: AgentSessionConfig,
+    #[serde(default)]
+    memory: Option<AgentMemoryConfig>,
     #[serde(default)]
     tools: Vec<ToolConfig>,
 }

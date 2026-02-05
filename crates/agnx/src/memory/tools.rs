@@ -4,7 +4,7 @@
 //! - `recall` — Read memory context
 //! - `remember` — Append to daily log
 //! - `reflect` — Rewrite MEMORY.md
-//! - `learn_fact` — Append to world knowledge
+//! - `update_world` — Update shared world knowledge
 
 use std::sync::Arc;
 
@@ -23,12 +23,11 @@ use crate::tools::{Tool, ToolError, ToolResult};
 /// Tool to load memory context (world knowledge, agent memory, recent experiences).
 pub struct RecallTool {
     memory: Arc<Memory>,
-    agent_id: String,
 }
 
 impl RecallTool {
-    pub fn new(memory: Arc<Memory>, agent_id: String) -> Self {
-        Self { memory, agent_id }
+    pub fn new(memory: Arc<Memory>) -> Self {
+        Self { memory }
     }
 }
 
@@ -74,7 +73,7 @@ impl Tool for RecallTool {
 
         let content = self
             .memory
-            .recall(&self.agent_id, args.days)
+            .recall(args.days)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         if content.is_empty() {
@@ -98,12 +97,11 @@ impl Tool for RecallTool {
 /// Tool to record an experience to today's daily log.
 pub struct RememberTool {
     memory: Arc<Memory>,
-    agent_id: String,
 }
 
 impl RememberTool {
-    pub fn new(memory: Arc<Memory>, agent_id: String) -> Self {
-        Self { memory, agent_id }
+    pub fn new(memory: Arc<Memory>) -> Self {
+        Self { memory }
     }
 }
 
@@ -144,7 +142,7 @@ impl Tool for RememberTool {
 
         let path = self
             .memory
-            .append_daily(&self.agent_id, &args.content)
+            .append_daily(&args.content)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         Ok(ToolResult {
@@ -161,12 +159,11 @@ impl Tool for RememberTool {
 /// Tool to update long-term memory with curated learnings.
 pub struct ReflectTool {
     memory: Arc<Memory>,
-    agent_id: String,
 }
 
 impl ReflectTool {
-    pub fn new(memory: Arc<Memory>, agent_id: String) -> Self {
-        Self { memory, agent_id }
+    pub fn new(memory: Arc<Memory>) -> Self {
+        Self { memory }
     }
 }
 
@@ -207,7 +204,7 @@ impl Tool for ReflectTool {
 
         let path = self
             .memory
-            .write_memory(&self.agent_id, &args.content)
+            .write_memory(&args.content)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         Ok(ToolResult {
@@ -218,37 +215,37 @@ impl Tool for ReflectTool {
 }
 
 // ============================================================================
-// LearnFactTool
+// UpdateWorldTool
 // ============================================================================
 
 /// Tool to write shared world knowledge.
-pub struct LearnFactTool {
+pub struct UpdateWorldTool {
     memory: Arc<Memory>,
 }
 
-impl LearnFactTool {
+impl UpdateWorldTool {
     pub fn new(memory: Arc<Memory>) -> Self {
         Self { memory }
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct LearnFactArgs {
+struct UpdateWorldArgs {
     topic: String,
     content: String,
 }
 
 #[async_trait]
-impl Tool for LearnFactTool {
+impl Tool for UpdateWorldTool {
     fn name(&self) -> &str {
-        "learn_fact"
+        "update_world"
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
-                name: "learn_fact".to_string(),
+                name: "update_world".to_string(),
                 description: "Write shared world knowledge for a topic (visible to all agents). Replaces existing content for the topic.".to_string(),
                 parameters: Some(json!({
                     "type": "object",
@@ -269,7 +266,7 @@ impl Tool for LearnFactTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<ToolResult, ToolError> {
-        let args: LearnFactArgs = serde_json::from_str(arguments)
+        let args: UpdateWorldArgs = serde_json::from_str(arguments)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         let path = self
@@ -279,7 +276,7 @@ impl Tool for LearnFactTool {
 
         Ok(ToolResult {
             success: true,
-            content: format!("Learned. Written to {}", path.display()),
+            content: format!("Updated world knowledge at {}", path.display()),
         })
     }
 }
@@ -295,14 +292,16 @@ mod tests {
 
     fn setup() -> (TempDir, Arc<Memory>) {
         let temp = TempDir::new().unwrap();
-        let memory = Arc::new(Memory::new(temp.path().to_path_buf()));
+        let world_dir = temp.path().join("world");
+        let agent_memory_dir = temp.path().join("agent-memory");
+        let memory = Arc::new(Memory::new(world_dir, agent_memory_dir));
         (temp, memory)
     }
 
     #[tokio::test]
     async fn recall_tool_empty_memory() {
         let (_temp, memory) = setup();
-        let tool = RecallTool::new(memory, "agent-1".to_string());
+        let tool = RecallTool::new(memory);
 
         let result = tool.execute("{}").await.unwrap();
 
@@ -313,10 +312,10 @@ mod tests {
     #[tokio::test]
     async fn recall_tool_with_days_param() {
         let (_temp, memory) = setup();
-        let tool = RecallTool::new(memory.clone(), "agent-1".to_string());
+        let tool = RecallTool::new(memory.clone());
 
         // Add some memory first
-        memory.append_daily("agent-1", "Test content").unwrap();
+        memory.append_daily("Test content").unwrap();
 
         let result = tool.execute(r#"{"days": 1}"#).await.unwrap();
 
@@ -327,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn remember_tool_requires_content() {
         let (_temp, memory) = setup();
-        let tool = RememberTool::new(memory, "agent-1".to_string());
+        let tool = RememberTool::new(memory);
 
         let result = tool.execute("{}").await;
 
@@ -337,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn remember_tool_appends() {
         let (_temp, memory) = setup();
-        let tool = RememberTool::new(memory, "agent-1".to_string());
+        let tool = RememberTool::new(memory);
 
         let result = tool
             .execute(r#"{"content": "Learned something"}"#)
@@ -351,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn reflect_tool_requires_content() {
         let (_temp, memory) = setup();
-        let tool = ReflectTool::new(memory, "agent-1".to_string());
+        let tool = ReflectTool::new(memory);
 
         let result = tool.execute("{}").await;
 
@@ -361,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn reflect_tool_writes_memory() {
         let (temp, memory) = setup();
-        let tool = ReflectTool::new(memory, "agent-1".to_string());
+        let tool = ReflectTool::new(memory);
 
         let result = tool
             .execute(r#"{"content": "My curated memory notes"}"#)
@@ -371,14 +370,14 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("Reflected"));
 
-        let path = temp.path().join("agents/agent-1/MEMORY.md");
+        let path = temp.path().join("agent-memory/MEMORY.md");
         assert!(path.exists());
     }
 
     #[tokio::test]
-    async fn learn_fact_tool_requires_topic_and_content() {
+    async fn update_world_tool_requires_topic_and_content() {
         let (_temp, memory) = setup();
-        let tool = LearnFactTool::new(memory);
+        let tool = UpdateWorldTool::new(memory);
 
         assert!(tool.execute("{}").await.is_err());
         assert!(tool.execute(r#"{"topic": "test"}"#).await.is_err());
@@ -386,9 +385,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn learn_fact_tool_writes() {
+    async fn update_world_tool_writes() {
         let (temp, memory) = setup();
-        let tool = LearnFactTool::new(memory);
+        let tool = UpdateWorldTool::new(memory);
 
         let result = tool
             .execute(r#"{"topic": "people", "content": "Alice - Role: Engineer"}"#)
@@ -396,7 +395,7 @@ mod tests {
             .unwrap();
 
         assert!(result.success);
-        assert!(result.content.contains("Learned"));
+        assert!(result.content.contains("Updated world"));
 
         let path = temp.path().join("world/people.md");
         assert!(path.exists());

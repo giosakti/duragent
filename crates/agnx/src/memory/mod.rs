@@ -1,13 +1,13 @@
 //! Simple, human-readable agent memory system.
 //!
 //! Memory is stored as plain markdown files:
-//! - `world/*.md` — Shared facts (all agents see)
-//! - `agents/{id}/MEMORY.md` — Agent's curated long-term memory
-//! - `agents/{id}/daily/*.md` — Agent's daily experiences (append-only)
+//! - `{world_dir}/*.md` — Shared facts (all agents see)
+//! - `{agent_memory_dir}/MEMORY.md` — Agent's curated long-term memory
+//! - `{agent_memory_dir}/daily/*.md` — Agent's daily experiences (append-only)
 
 mod tools;
 
-pub use tools::{LearnFactTool, RecallTool, ReflectTool, RememberTool};
+pub use tools::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
 
 use std::path::PathBuf;
 
@@ -17,27 +17,31 @@ use chrono::Local;
 /// Memory system for reading and writing agent memories.
 #[derive(Debug, Clone)]
 pub struct Memory {
-    workspace: PathBuf,
+    /// Shared world knowledge directory (contains `*.md` files directly).
+    world_dir: PathBuf,
+    /// Agent's memory directory, e.g. `agents/{name}/memory` (contains `MEMORY.md` and `daily/`).
+    agent_memory_dir: PathBuf,
 }
 
 impl Memory {
-    /// Create a new memory instance with the given workspace directory.
-    pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
-    }
-
-    /// Get the workspace path.
-    pub fn workspace(&self) -> &PathBuf {
-        &self.workspace
+    /// Create a new memory instance.
+    ///
+    /// - `world_dir`: shared world knowledge directory (e.g. `.agnx/memory/world`)
+    /// - `agent_memory_dir`: agent's memory directory (e.g. `agents/{name}/memory`)
+    pub fn new(world_dir: PathBuf, agent_memory_dir: PathBuf) -> Self {
+        Self {
+            world_dir,
+            agent_memory_dir,
+        }
     }
 
     /// Read memory context (called by recall tool).
     ///
     /// Returns concatenated content from:
-    /// 1. World knowledge (`world/*.md`)
-    /// 2. Agent's curated memory (`agents/{id}/MEMORY.md`)
-    /// 3. Recent daily experiences (`agents/{id}/daily/*.md`)
-    pub fn recall(&self, agent_id: &str, days: usize) -> Result<String> {
+    /// 1. World knowledge (`world_dir/*.md`)
+    /// 2. Agent's curated memory (`agent_memory_dir/MEMORY.md`)
+    /// 3. Recent daily experiences (`agent_memory_dir/daily/*.md`)
+    pub fn recall(&self, days: usize) -> Result<String> {
         let mut sections = vec![];
 
         // World knowledge
@@ -47,11 +51,7 @@ impl Memory {
         }
 
         // Agent's curated memory
-        let memory_path = self
-            .workspace
-            .join("agents")
-            .join(agent_id)
-            .join("MEMORY.md");
+        let memory_path = self.agent_memory_dir.join("MEMORY.md");
         if let Ok(memory) = std::fs::read_to_string(&memory_path) {
             if !memory.is_empty() {
                 sections.push(format!("# Your Memory\n\n{}", memory));
@@ -59,7 +59,7 @@ impl Memory {
         }
 
         // Recent daily experiences
-        let recent = self.read_recent_daily(agent_id, days)?;
+        let recent = self.read_recent_daily(days)?;
         if !recent.is_empty() {
             sections.push(format!("# Recent Experiences\n\n{}", recent));
         }
@@ -69,12 +69,11 @@ impl Memory {
 
     /// Read all world/*.md files.
     fn read_world_facts(&self) -> Result<String> {
-        let world_dir = self.workspace.join("world");
-        if !world_dir.exists() {
+        if !self.world_dir.exists() {
             return Ok(String::new());
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(&world_dir)?
+        let mut entries: Vec<_> = std::fs::read_dir(&self.world_dir)?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
             .collect();
@@ -97,8 +96,8 @@ impl Memory {
     }
 
     /// Read last N days of daily logs.
-    fn read_recent_daily(&self, agent_id: &str, days: usize) -> Result<String> {
-        let daily_dir = self.workspace.join("agents").join(agent_id).join("daily");
+    fn read_recent_daily(&self, days: usize) -> Result<String> {
+        let daily_dir = self.agent_memory_dir.join("daily");
 
         if !daily_dir.exists() {
             return Ok(String::new());
@@ -122,8 +121,8 @@ impl Memory {
     }
 
     /// Append to today's daily log.
-    pub fn append_daily(&self, agent_id: &str, content: &str) -> Result<PathBuf> {
-        let daily_dir = self.workspace.join("agents").join(agent_id).join("daily");
+    pub fn append_daily(&self, content: &str) -> Result<PathBuf> {
+        let daily_dir = self.agent_memory_dir.join("daily");
         std::fs::create_dir_all(&daily_dir)?;
 
         let today = Local::now();
@@ -148,12 +147,11 @@ impl Memory {
     }
 
     /// Rewrite agent's MEMORY.md.
-    pub fn write_memory(&self, agent_id: &str, content: &str) -> Result<PathBuf> {
-        let agent_dir = self.workspace.join("agents").join(agent_id);
-        std::fs::create_dir_all(&agent_dir)?;
+    pub fn write_memory(&self, content: &str) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.agent_memory_dir)?;
 
-        let path = agent_dir.join("MEMORY.md");
-        let temp = agent_dir.join("MEMORY.md.tmp");
+        let path = self.agent_memory_dir.join("MEMORY.md");
+        let temp = self.agent_memory_dir.join("MEMORY.md.tmp");
 
         // Atomic write
         std::fs::write(&temp, content)?;
@@ -164,8 +162,7 @@ impl Memory {
 
     /// Write world knowledge for a topic (replaces existing content).
     pub fn write_world(&self, topic: &str, content: &str) -> Result<PathBuf> {
-        let world_dir = self.workspace.join("world");
-        std::fs::create_dir_all(&world_dir)?;
+        std::fs::create_dir_all(&self.world_dir)?;
 
         // Sanitize topic name (only alphanumeric, dash, underscore)
         let safe_topic: String = topic
@@ -180,10 +177,10 @@ impl Memory {
             .collect();
 
         let filename = format!("{}.md", safe_topic);
-        let path = world_dir.join(&filename);
+        let path = self.world_dir.join(&filename);
 
         // Atomic write
-        let temp = world_dir.join(format!("{}.md.tmp", safe_topic));
+        let temp = self.world_dir.join(format!("{}.md.tmp", safe_topic));
         std::fs::write(&temp, content)?;
         std::fs::rename(&temp, &path)?;
 
@@ -198,14 +195,16 @@ mod tests {
 
     fn setup() -> (TempDir, Memory) {
         let temp = TempDir::new().unwrap();
-        let memory = Memory::new(temp.path().to_path_buf());
+        let world_dir = temp.path().join("world");
+        let agent_memory_dir = temp.path().join("agent-memory");
+        let memory = Memory::new(world_dir, agent_memory_dir);
         (temp, memory)
     }
 
     #[test]
     fn recall_empty_workspace() {
         let (_temp, memory) = setup();
-        let result = memory.recall("agent-1", 3).unwrap();
+        let result = memory.recall(3).unwrap();
         assert!(result.is_empty());
     }
 
@@ -220,15 +219,13 @@ mod tests {
 
         // Add agent memory
         memory
-            .write_memory("agent-1", "User prefers concise responses")
+            .write_memory("User prefers concise responses")
             .unwrap();
 
         // Add daily experience
-        memory
-            .append_daily("agent-1", "Helped debug issue")
-            .unwrap();
+        memory.append_daily("Helped debug issue").unwrap();
 
-        let result = memory.recall("agent-1", 3).unwrap();
+        let result = memory.recall(3).unwrap();
 
         assert!(result.contains("# World Knowledge"));
         assert!(result.contains("## systems"));
@@ -243,10 +240,10 @@ mod tests {
 
     #[test]
     fn recall_respects_days_limit() {
-        let (temp, memory) = setup();
+        let (_temp, memory) = setup();
 
         // Create a daily file for "yesterday" manually
-        let daily_dir = temp.path().join("agents/agent-1/daily");
+        let daily_dir = memory.agent_memory_dir.join("daily");
         std::fs::create_dir_all(&daily_dir).unwrap();
 
         let yesterday = (Local::now() - chrono::Duration::days(1)).format("%Y-%m-%d");
@@ -254,15 +251,15 @@ mod tests {
         std::fs::write(&yesterday_file, "# Yesterday\n\nOld stuff").unwrap();
 
         // Create today's file
-        memory.append_daily("agent-1", "Today's stuff").unwrap();
+        memory.append_daily("Today's stuff").unwrap();
 
         // Recall with 1 day should only get today
-        let result = memory.recall("agent-1", 1).unwrap();
+        let result = memory.recall(1).unwrap();
         assert!(result.contains("Today's stuff"));
         assert!(!result.contains("Old stuff"));
 
         // Recall with 2 days should get both
-        let result = memory.recall("agent-1", 2).unwrap();
+        let result = memory.recall(2).unwrap();
         assert!(result.contains("Today's stuff"));
         assert!(result.contains("Old stuff"));
     }
@@ -270,9 +267,7 @@ mod tests {
     #[test]
     fn append_daily_creates_file() {
         let (_temp, memory) = setup();
-        let path = memory
-            .append_daily("agent-1", "Learned something new")
-            .unwrap();
+        let path = memory.append_daily("Learned something new").unwrap();
 
         assert!(path.exists());
         let content = std::fs::read_to_string(&path).unwrap();
@@ -283,10 +278,10 @@ mod tests {
     fn append_daily_appends_to_existing() {
         let (_temp, memory) = setup();
 
-        memory.append_daily("agent-1", "First entry").unwrap();
-        memory.append_daily("agent-1", "Second entry").unwrap();
+        memory.append_daily("First entry").unwrap();
+        memory.append_daily("Second entry").unwrap();
 
-        let daily_dir = memory.workspace.join("agents/agent-1/daily");
+        let daily_dir = memory.agent_memory_dir.join("daily");
         let today = Local::now().format("%Y-%m-%d");
         let path = daily_dir.join(format!("{}.md", today));
 
@@ -299,7 +294,7 @@ mod tests {
     fn write_memory_creates_file() {
         let (_temp, memory) = setup();
         let path = memory
-            .write_memory("agent-1", "# My Memory\n\nImportant stuff")
+            .write_memory("# My Memory\n\nImportant stuff")
             .unwrap();
 
         assert!(path.exists());
@@ -311,10 +306,10 @@ mod tests {
     fn write_memory_overwrites_existing() {
         let (_temp, memory) = setup();
 
-        memory.write_memory("agent-1", "Old content").unwrap();
-        memory.write_memory("agent-1", "New content").unwrap();
+        memory.write_memory("Old content").unwrap();
+        memory.write_memory("New content").unwrap();
 
-        let path = memory.workspace.join("agents/agent-1/MEMORY.md");
+        let path = memory.agent_memory_dir.join("MEMORY.md");
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "New content");
     }
@@ -339,7 +334,7 @@ mod tests {
         memory.write_world("people", "Old content").unwrap();
         memory.write_world("people", "New content").unwrap();
 
-        let path = memory.workspace.join("world/people.md");
+        let path = memory.world_dir.join("people.md");
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "New content");
     }
