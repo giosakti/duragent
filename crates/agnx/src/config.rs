@@ -314,6 +314,10 @@ pub struct WorldMemoryConfig {
 /// Configuration for all gateways.
 #[derive(Debug, Default, Deserialize)]
 pub struct GatewaysConfig {
+    /// Discord gateway configuration.
+    #[serde(default)]
+    pub discord: Option<DiscordGatewayConfig>,
+
     /// Telegram gateway configuration.
     #[serde(default)]
     pub telegram: Option<TelegramGatewayConfig>,
@@ -321,6 +325,17 @@ pub struct GatewaysConfig {
     /// External gateway configurations.
     #[serde(default)]
     pub external: Vec<ExternalGatewayConfig>,
+}
+
+/// Configuration for the Discord gateway.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscordGatewayConfig {
+    /// Whether the gateway is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Discord bot token.
+    pub bot_token: String,
 }
 
 /// Configuration for the Telegram gateway.

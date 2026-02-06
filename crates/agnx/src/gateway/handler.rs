@@ -453,6 +453,13 @@ impl MessageHandler for GatewayMessageHandler {
         let lock = self.message_locks.get(handle.id());
         let _guard = lock.lock().await;
 
+        // Show typing indicator while processing
+        let _ = self
+            .services
+            .gateways
+            .send_typing(gateway, &routing.chat_id)
+            .await;
+
         // Process based on content type
         match content {
             MessageContent::Text { text } => {

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/agnx",
     "crates/agnx-gateway-protocol",
+    "crates/agnx-gateway-discord",
     "crates/agnx-gateway-telegram",
 ]
 
@@ -15,6 +16,7 @@ repository = "https://github.com/AgnxAI/agnx"
 [workspace.dependencies]
 # Workspace crates
 agnx-gateway-protocol = { path = "crates/agnx-gateway-protocol" }
+agnx-gateway-discord = { path = "crates/agnx-gateway-discord" }
 agnx-gateway-telegram = { path = "crates/agnx-gateway-telegram" }
 
 # Async runtime
@@ -52,6 +54,9 @@ rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "1"
+
+# Gateway: Discord
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
 
 # Gateway: Telegram
 teloxide = { version = "0.17", features = ["macros"] }

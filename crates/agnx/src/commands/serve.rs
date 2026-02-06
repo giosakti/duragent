@@ -174,6 +174,14 @@ pub async fn run(
         .set_handler(std::sync::Arc::new(gateway_handler))
         .await;
 
+    // Start Discord gateway if configured
+    #[cfg(feature = "gateway-discord")]
+    if let Some(ref discord_config) = config.gateways.discord
+        && discord_config.enabled
+    {
+        start_discord_gateway(&gateways, discord_config.clone()).await;
+    }
+
     // Start Telegram gateway if configured
     #[cfg(feature = "gateway-telegram")]
     if let Some(ref telegram_config) = config.gateways.telegram
@@ -305,6 +313,26 @@ async fn shutdown_signal(http_shutdown: tokio::sync::oneshot::Receiver<()>) {
         _ = terminate => info!("Received SIGTERM, shutting down..."),
         _ = http_shutdown => info!("Received shutdown request via HTTP, shutting down..."),
     }
+}
+
+/// Start the Discord gateway in a background task.
+#[cfg(feature = "gateway-discord")]
+async fn start_discord_gateway(
+    gateways: &GatewayManager,
+    config: agnx::config::DiscordGatewayConfig,
+) {
+    use agnx::gateway::{DiscordConfig, DiscordGateway};
+
+    let (cmd_rx, evt_tx) = gateways.register("discord", vec![]).await;
+
+    let gateway_config = DiscordConfig::new(&config.bot_token);
+    let gateway = DiscordGateway::new(gateway_config);
+
+    tokio::spawn(async move {
+        gateway.start(evt_tx, cmd_rx).await;
+    });
+
+    info!("Discord gateway started");
 }
 
 /// Start the Telegram gateway in a background task.

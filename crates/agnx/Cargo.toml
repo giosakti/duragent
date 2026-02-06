@@ -8,11 +8,13 @@ repository.workspace = true
 
 [features]
 default = ["gateway-telegram"]
+gateway-discord = ["dep:agnx-gateway-discord"]
 gateway-telegram = ["dep:agnx-gateway-telegram"]
 
 [dependencies]
 # Workspace crates
 agnx-gateway-protocol = { workspace = true }
+agnx-gateway-discord = { workspace = true, optional = true }
 agnx-gateway-telegram = { workspace = true, optional = true }
 
 # Async runtime

@@ -56,6 +56,10 @@ pub use manager::{
 };
 pub use subprocess::SubprocessGateway;
 
+// Re-export Discord gateway from the discord crate
+#[cfg(feature = "gateway-discord")]
+pub use agnx_gateway_discord::{DiscordConfig, DiscordGateway};
+
 // Re-export Telegram gateway from the telegram crate
 #[cfg(feature = "gateway-telegram")]
 pub use agnx_gateway_telegram::{TelegramConfig, TelegramGateway};
