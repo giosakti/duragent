@@ -3,16 +3,17 @@
 //! This module provides the `create_tools` function that instantiates
 //! Tool implementations from ToolConfig entries.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::agent::ToolConfig;
+use crate::agent::{AgentSpec, ToolConfig, ToolPolicy};
 use crate::memory::Memory;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 
 use super::bash::BashTool;
 use super::cli::CliTool;
+use super::executor::ToolExecutor;
 use super::memory::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
 use super::schedule::{
     CancelScheduleTool, ListSchedulesTool, ScheduleTaskTool, ToolExecutionContext,
@@ -110,13 +111,42 @@ fn get_schedule_deps(deps: &ToolDependencies) -> Option<(SchedulerHandle, ToolEx
 /// - `remember` — Append to daily log
 /// - `reflect` — Rewrite MEMORY.md
 /// - `update_world` — Append to world knowledge
-pub fn create_memory_tools(memory: Arc<Memory>) -> Vec<SharedTool> {
+fn create_memory_tools(memory: Arc<Memory>) -> Vec<SharedTool> {
     vec![
         Arc::new(RecallTool::new(memory.clone())) as SharedTool,
         Arc::new(RememberTool::new(memory.clone())) as SharedTool,
         Arc::new(ReflectTool::new(memory.clone())) as SharedTool,
         Arc::new(UpdateWorldTool::new(memory)) as SharedTool,
     ]
+}
+
+/// Build a fully configured tool executor for an agent.
+///
+/// Creates tools from agent config, registers memory tools if configured,
+/// and sets the session ID. The caller provides `ToolDependencies` for the
+/// parts that vary across call sites (scheduler, execution_context).
+pub fn build_executor(
+    agent: &AgentSpec,
+    agent_name: &str,
+    session_id: &str,
+    policy: ToolPolicy,
+    deps: ToolDependencies,
+    world_memory_path: &Path,
+) -> ToolExecutor {
+    let tools = create_tools(&agent.tools, &deps);
+    let mut executor = ToolExecutor::new(policy, agent_name.to_string())
+        .register_all(tools)
+        .with_session_id(session_id.to_string());
+
+    if agent.memory.is_some() {
+        let memory = Arc::new(Memory::new(
+            world_memory_path.to_path_buf(),
+            agent.agent_dir.join("memory"),
+        ));
+        executor = executor.register_all(create_memory_tools(memory));
+    }
+
+    executor
 }
 
 #[cfg(test)]

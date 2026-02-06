@@ -10,7 +10,7 @@ use agnx::background::BackgroundTasks;
 use agnx::gateway::GatewayManager;
 use agnx::llm::ProviderRegistry;
 use agnx::sandbox::TrustSandbox;
-use agnx::server::{self, AppState};
+use agnx::server::{self, AppState, RuntimeServices};
 use agnx::session::SessionRegistry;
 use agnx::store::file::{FileAgentCatalog, FilePolicyStore, FileSessionStore};
 
@@ -32,19 +32,23 @@ pub async fn test_app() -> Router {
         Arc::new(FilePolicyStore::new(&agents_dir));
     let (shutdown_tx, _shutdown_rx) = server::shutdown_channel();
     let state = AppState {
-        agents: empty_agent_store().await,
-        providers: ProviderRegistry::new(),
-        session_registry: SessionRegistry::new(session_store),
+        services: RuntimeServices {
+            agents: empty_agent_store().await,
+            providers: ProviderRegistry::new(),
+            session_registry: SessionRegistry::new(session_store),
+            gateways: GatewayManager::default(),
+            sandbox: Arc::new(TrustSandbox::new()),
+            policy_store,
+            world_memory_path: tmp.path().join("memory/world"),
+            workspace_directives_path: tmp.path().join("directives"),
+        },
+        scheduler: None,
+        policy_locks: agnx::sync::KeyedLocks::new(),
+        admin_token: None,
         idle_timeout_seconds: 60,
         keep_alive_interval_seconds: 15,
         background_tasks: BackgroundTasks::new(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
-        admin_token: None,
-        gateways: GatewayManager::default(),
-        sandbox: Arc::new(TrustSandbox::new()),
-        policy_store,
-        policy_locks: agnx::sync::KeyedLocks::new(),
-        scheduler: None,
     };
 
     server::build_app(state, 300)

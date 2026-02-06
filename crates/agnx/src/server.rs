@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,37 +19,37 @@ use crate::session::SessionRegistry;
 use crate::store::PolicyStore;
 
 // ============================================================================
+// Runtime Services
+// ============================================================================
+
+/// Shared runtime services used across AppState, gateway handler, and scheduler.
+#[derive(Clone)]
+pub struct RuntimeServices {
+    pub agents: AgentStore,
+    pub providers: ProviderRegistry,
+    pub session_registry: SessionRegistry,
+    pub gateways: GatewayManager,
+    pub sandbox: Arc<dyn Sandbox>,
+    pub policy_store: Arc<dyn PolicyStore>,
+    pub world_memory_path: PathBuf,
+    pub workspace_directives_path: PathBuf,
+}
+
+// ============================================================================
 // Application State
 // ============================================================================
 
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
-    pub agents: AgentStore,
-    pub providers: ProviderRegistry,
-    /// Session registry for managing session actors.
-    pub session_registry: SessionRegistry,
+    pub services: RuntimeServices,
+    pub scheduler: Option<SchedulerHandle>,
+    pub policy_locks: PolicyLocks,
+    pub admin_token: Option<String>,
     pub idle_timeout_seconds: u64,
     pub keep_alive_interval_seconds: u64,
-    /// Registry for background tasks that should be awaited on shutdown.
     pub background_tasks: BackgroundTasks,
-    /// Shutdown signal sender (taken when shutdown is triggered).
     pub shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    /// Optional admin API token. If set, admin endpoints require this token.
-    /// If not set, admin endpoints only accept requests from localhost.
-    pub admin_token: Option<String>,
-    /// Gateway manager for platform integrations.
-    pub gateways: GatewayManager,
-    /// Sandbox for tool execution.
-    pub sandbox: Arc<dyn Sandbox>,
-    /// Policy store for loading agent policies.
-    /// Policies are loaded per-request to pick up runtime changes.
-    pub policy_store: Arc<dyn PolicyStore>,
-    /// Per-agent locks for policy file writes.
-    /// Prevents concurrent writes from overwriting each other.
-    pub policy_locks: PolicyLocks,
-    /// Scheduler handle for schedule tools.
-    pub scheduler: Option<SchedulerHandle>,
 }
 
 // ============================================================================

@@ -20,7 +20,7 @@ use crate::api::{
     PendingApprovalResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
     SessionSummary,
 };
-use crate::context::ContextBuilder;
+use crate::context::{ContextBuilder, load_all_directives};
 use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider};
 use crate::server::AppState;
@@ -28,7 +28,7 @@ use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, SessionHandle, StreamConfig,
     resume_agentic_loop, run_agentic_loop,
 };
-use crate::tools::{ToolDependencies, ToolExecutor, ToolResult, create_tools};
+use crate::tools::{ToolDependencies, ToolResult, build_executor};
 
 // ============================================================================
 // Query Types
@@ -46,6 +46,7 @@ pub struct GetMessagesQuery {
 /// GET /api/v1/sessions
 pub async fn list_sessions(State(state): State<AppState>) -> Json<ListSessionsResponse> {
     let sessions: Vec<SessionSummary> = state
+        .services
         .session_registry
         .list()
         .await
@@ -66,13 +67,14 @@ pub async fn create_session(
     State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let Some(agent_spec) = state.agents.get(&req.agent) else {
+    let Some(agent_spec) = state.services.agents.get(&req.agent) else {
         return problem_details::not_found(format!("agent '{}' not found", req.agent))
             .into_response();
     };
 
     // Create session via registry - actor records SessionStart event automatically
     let handle = match state
+        .services
         .session_registry
         .create(&req.agent, agent_spec.session.on_disconnect, None, None)
         .await
@@ -111,7 +113,7 @@ pub async fn get_session(
     State(state): State<AppState>,
     PathExtract(session_id): PathExtract<String>,
 ) -> impl IntoResponse {
-    let Some(handle) = state.session_registry.get(&session_id) else {
+    let Some(handle) = state.services.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
     };
 
@@ -143,7 +145,7 @@ pub async fn get_messages(
     PathExtract(session_id): PathExtract<String>,
     Query(query): Query<GetMessagesQuery>,
 ) -> impl IntoResponse {
-    let Some(handle) = state.session_registry.get(&session_id) else {
+    let Some(handle) = state.services.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
     };
 
@@ -227,19 +229,23 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
     let agent_name = ctx.handle.agent().to_string();
 
     // Load policy from store (picks up runtime changes from AllowAlways)
-    let policy = state.policy_store.load(&agent_name).await;
+    let policy = state.services.policy_store.load(&agent_name).await;
 
     // Create tools and executor
     let deps = ToolDependencies {
-        sandbox: state.sandbox.clone(),
+        sandbox: state.services.sandbox.clone(),
         agent_dir: ctx.agent_dir.clone(),
         scheduler: None,
         execution_context: None,
     };
-    let tools = create_tools(&ctx.agent_spec.tools, &deps);
-    let executor = ToolExecutor::new(policy, agent_name.clone())
-        .register_all(tools)
-        .with_session_id(session_id.clone());
+    let executor = build_executor(
+        &ctx.agent_spec,
+        &agent_name,
+        &session_id,
+        policy,
+        deps,
+        &state.services.world_memory_path,
+    );
 
     // Run the agentic loop with SessionHandle
     let result = match run_agentic_loop(
@@ -354,7 +360,7 @@ pub async fn approve_command(
     Json(req): Json<ApproveCommandRequest>,
 ) -> impl IntoResponse {
     // Verify session exists and get handle
-    let Some(handle) = state.session_registry.get(&session_id) else {
+    let Some(handle) = state.services.session_registry.get(&session_id) else {
         return problem_details::not_found("session not found").into_response();
     };
 
@@ -405,7 +411,7 @@ pub async fn approve_command(
     }
 
     // Get agent spec for tool execution
-    let Some(agent_spec) = state.agents.get(&agent_name) else {
+    let Some(agent_spec) = state.services.agents.get(&agent_name) else {
         return problem_details::internal_error("session references non-existent agent")
             .into_response();
     };
@@ -413,7 +419,7 @@ pub async fn approve_command(
     // If allow_always, save pattern to policy
     if req.decision == ApprovalDecision::AllowAlways
         && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
-            state.policy_store.as_ref(),
+            state.services.policy_store.as_ref(),
             &agent_name,
             crate::agent::ToolType::Bash,
             &req.command,
@@ -430,7 +436,7 @@ pub async fn approve_command(
 
     // Load policy from store (picks up runtime changes from AllowAlways)
     // This is loaded AFTER add_pattern_and_save so it includes any newly saved pattern
-    let policy = state.policy_store.load(&agent_name).await;
+    let policy = state.services.policy_store.load(&agent_name).await;
 
     // Determine tool result based on decision
     let tool_result = if req.decision == ApprovalDecision::Deny {
@@ -445,15 +451,19 @@ pub async fn approve_command(
     } else {
         // Approved - execute the tool
         let deps = ToolDependencies {
-            sandbox: state.sandbox.clone(),
+            sandbox: state.services.sandbox.clone(),
             agent_dir: agent_spec.agent_dir.clone(),
             scheduler: None,
             execution_context: None,
         };
-        let tools = create_tools(&agent_spec.tools, &deps);
-        let executor = ToolExecutor::new(policy.clone(), agent_name.clone())
-            .register_all(tools)
-            .with_session_id(session_id.clone());
+        let executor = build_executor(
+            &agent_spec,
+            &agent_name,
+            &session_id,
+            policy.clone(),
+            deps,
+            &state.services.world_memory_path,
+        );
 
         // Build tool call from pending approval
         let tool_call = crate::llm::ToolCall {
@@ -481,7 +491,7 @@ pub async fn approve_command(
     }
 
     // Get provider for resuming the loop
-    let Some(provider) = state.providers.get(
+    let Some(provider) = state.services.providers.get(
         &agent_spec.model.provider,
         agent_spec.model.base_url.as_deref(),
     ) else {
@@ -494,15 +504,19 @@ pub async fn approve_command(
 
     // Create executor for resume (uses same policy loaded above)
     let deps = ToolDependencies {
-        sandbox: state.sandbox.clone(),
+        sandbox: state.services.sandbox.clone(),
         agent_dir: agent_spec.agent_dir.clone(),
         scheduler: None,
         execution_context: None,
     };
-    let tools = create_tools(&agent_spec.tools, &deps);
-    let executor = ToolExecutor::new(policy, agent_name.clone())
-        .register_all(tools)
-        .with_session_id(session_id.clone());
+    let executor = build_executor(
+        &agent_spec,
+        &agent_name,
+        &session_id,
+        policy,
+        deps,
+        &state.services.world_memory_path,
+    );
 
     // Set session to Running before resuming (accurate status during execution)
     if let Err(e) = handle.set_status(SessionStatus::Running).await {
@@ -583,12 +597,12 @@ async fn prepare_chat_context(
     session_id: &str,
     user_content: String,
 ) -> Result<ChatContext, SendMessageError> {
-    let Some(handle) = state.session_registry.get(session_id) else {
+    let Some(handle) = state.services.session_registry.get(session_id) else {
         return Err(SendMessageError::SessionNotFound);
     };
 
     let agent_name = handle.agent().to_string();
-    let Some(agent) = state.agents.get(&agent_name) else {
+    let Some(agent) = state.services.agents.get(&agent_name) else {
         return Err(SendMessageError::AgentNotFound);
     };
 
@@ -611,6 +625,7 @@ async fn prepare_chat_context(
     };
 
     let Some(provider) = state
+        .services
         .providers
         .get(&agent.model.provider, agent.model.base_url.as_deref())
     else {
@@ -620,9 +635,12 @@ async fn prepare_chat_context(
     };
 
     // Build structured context from agent spec and history
+    let directives =
+        load_all_directives(&state.services.workspace_directives_path, &agent.agent_dir);
     let structured_context = ContextBuilder::new()
         .from_agent_spec(agent)
         .with_messages(history)
+        .with_directives(directives)
         .build();
 
     // Render to ChatRequest (tools handled separately by agentic loop via executor)

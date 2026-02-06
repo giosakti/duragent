@@ -17,7 +17,7 @@ use agnx::gateway::{GatewayManager, SubprocessGateway};
 use agnx::llm::ProviderRegistry;
 use agnx::sandbox::{Sandbox, TrustSandbox};
 use agnx::scheduler::{SchedulerConfig, SchedulerService};
-use agnx::server;
+use agnx::server::{self, RuntimeServices};
 use agnx::session::{ChatSessionCache, SessionRegistry};
 use agnx::store::file::{
     FileAgentCatalog, FilePolicyStore, FileRunLogStore, FileScheduleStore, FileSessionStore,
@@ -39,16 +39,48 @@ pub async fn run(
         config.server.port = port;
     }
     if let Some(dir) = agents_dir_override {
-        config.agents_dir = dir.to_path_buf();
+        config.agents_dir = Some(dir.to_path_buf());
     }
 
-    // Resolve paths relative to config file
+    // Resolve workspace root, then derive paths from it when not explicitly set
     let config_path_ref = Path::new(config_path);
-    let sessions_path = config::resolve_path(config_path_ref, &config.services.session.path);
+    let workspace_raw = config
+        .workspace
+        .as_deref()
+        .unwrap_or(Path::new(config::DEFAULT_WORKSPACE));
+    let workspace = config::resolve_path(config_path_ref, workspace_raw);
+    let agents_dir = config
+        .agents_dir
+        .as_ref()
+        .map(|p| config::resolve_path(config_path_ref, p))
+        .unwrap_or_else(|| workspace.join(config::DEFAULT_AGENTS_DIR));
+    let sessions_path = config
+        .services
+        .session
+        .path
+        .as_ref()
+        .map(|p| config::resolve_path(config_path_ref, p))
+        .unwrap_or_else(|| workspace.join(config::DEFAULT_SESSIONS_DIR));
+    let world_memory_path = config
+        .world_memory
+        .path
+        .as_ref()
+        .map(|p| config::resolve_path(config_path_ref, p))
+        .unwrap_or_else(|| workspace.join(config::DEFAULT_WORLD_MEMORY_DIR));
+    let workspace_directives_path = workspace.join(config::DEFAULT_DIRECTIVES_DIR);
 
     // Load agents, providers, and policy store
-    let (store, providers, policy_store) = load_agents(config_path, &config).await;
+    let (store, providers, policy_store) = load_agents(&agents_dir).await;
     info!(agents = store.len(), "Loaded agents");
+
+    // Auto-create default memory directive if any agent has memory enabled
+    let any_memory_enabled = store.iter().any(|(_, a)| a.memory.is_some());
+    if any_memory_enabled {
+        agnx::context::ensure_memory_directive(
+            &workspace_directives_path,
+            agnx::memory::DEFAULT_MEMORY_DIRECTIVE,
+        );
+    }
 
     // Initialize session store and registry, then recover persisted sessions
     let session_store: Arc<dyn agnx::store::SessionStore> =
@@ -101,17 +133,24 @@ pub async fn run(
         .parent()
         .unwrap_or(&sessions_path)
         .join("schedules");
-    let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));
-    let run_log_store = Arc::new(FileRunLogStore::new(schedules_path.join("runs")));
-    let scheduler_config = SchedulerConfig {
-        schedule_store,
-        run_log_store,
+    // Build shared RuntimeServices once
+    let services = RuntimeServices {
         agents: store.clone(),
         providers: providers.clone(),
         session_registry: session_registry.clone(),
         gateways: gateways.clone(),
         sandbox: sandbox.clone(),
         policy_store: policy_store.clone(),
+        world_memory_path: world_memory_path.clone(),
+        workspace_directives_path: workspace_directives_path.clone(),
+    };
+
+    let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));
+    let run_log_store = Arc::new(FileRunLogStore::new(schedules_path.join("runs")));
+    let scheduler_config = SchedulerConfig {
+        services: services.clone(),
+        schedule_store,
+        run_log_store,
         chat_session_cache: chat_session_cache.clone(),
     };
     let scheduler_service = SchedulerService::new(scheduler_config);
@@ -122,13 +161,8 @@ pub async fn run(
     let routing_config = build_routing_config(&config, &store);
     let gateway_handler =
         agnx::gateway::GatewayMessageHandler::new(agnx::gateway::GatewayHandlerConfig {
-            agents: store.clone(),
-            providers: providers.clone(),
-            session_registry: session_registry.clone(),
+            services: services.clone(),
             routing_config,
-            sandbox: sandbox.clone(),
-            gateway_manager: gateways.clone(),
-            policy_store: policy_store.clone(),
             policy_locks: policy_locks.clone(),
             scheduler: Some(scheduler_handle.clone()),
             chat_session_cache,
@@ -162,19 +196,14 @@ pub async fn run(
     // Build app state
     let background_tasks = BackgroundTasks::new();
     let state = server::AppState {
-        agents: store,
-        providers,
-        session_registry: session_registry.clone(),
+        services,
+        scheduler: Some(scheduler_handle.clone()),
+        policy_locks,
+        admin_token: config.server.admin_token.clone(),
         idle_timeout_seconds: config.server.idle_timeout_seconds,
         keep_alive_interval_seconds: config.server.keep_alive_interval_seconds,
         background_tasks: background_tasks.clone(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
-        admin_token: config.server.admin_token.clone(),
-        gateways: gateways.clone(),
-        sandbox,
-        policy_store,
-        policy_locks,
-        scheduler: Some(scheduler_handle.clone()),
     };
 
     let app = server::build_app(state, config.server.request_timeout_seconds);
@@ -226,25 +255,23 @@ pub async fn stop(config_path: &str, port_override: Option<u16>) -> Result<()> {
     Ok(())
 }
 
-/// Load agents from the configured directory and initialize providers.
+/// Load agents from the resolved directory and initialize providers.
 ///
 /// Returns the agent store, provider registry, and policy store.
 async fn load_agents(
-    config_path: &str,
-    config: &Config,
+    agents_dir: &Path,
 ) -> (
     AgentStore,
     ProviderRegistry,
     Arc<dyn agnx::store::PolicyStore>,
 ) {
-    let agents_dir = config::resolve_path(Path::new(config_path), &config.agents_dir);
-    let catalog = FileAgentCatalog::new(&agents_dir);
+    let catalog = FileAgentCatalog::new(agents_dir.to_path_buf());
     let scan = agent::AgentStore::from_catalog(&catalog).await;
     agent::log_scan_warnings(&scan.warnings);
 
     let providers = ProviderRegistry::from_env();
     let policy_store: Arc<dyn agnx::store::PolicyStore> =
-        Arc::new(FilePolicyStore::new(&agents_dir));
+        Arc::new(FilePolicyStore::new(agents_dir.to_path_buf()));
 
     (scan.store, providers, policy_store)
 }

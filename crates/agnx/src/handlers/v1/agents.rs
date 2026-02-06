@@ -14,6 +14,7 @@ use crate::server::AppState;
 
 pub async fn list_agents(State(state): State<AppState>) -> Json<ListAgentsResponse> {
     let agents: Vec<AgentSummary> = state
+        .services
         .agents
         .iter()
         .map(|(_, spec)| AgentSummary {
@@ -30,7 +31,7 @@ pub async fn get_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(agent) = state.agents.get(&name) else {
+    let Some(agent) = state.services.agents.get(&name) else {
         return problem_details::not_found(format!("agent '{name}' not found")).into_response();
     };
 

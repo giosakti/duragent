@@ -6,29 +6,24 @@
 //! For agents with tools configured, messages are processed through the
 //! agentic loop which supports tool execution and the approval flow.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use tracing::{debug, error, warn};
 
 use agnx_gateway_protocol::{CallbackQueryData, MessageContent, RoutingContext};
 
-use super::{GatewayManager, MessageHandler, build_approval_keyboard};
-use crate::agent::{AgentStore, PolicyLocks};
+use super::{MessageHandler, build_approval_keyboard};
+use crate::agent::PolicyLocks;
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
-use crate::context::ContextBuilder;
-use crate::llm::ProviderRegistry;
-use crate::sandbox::Sandbox;
+use crate::context::{ContextBuilder, load_all_directives};
 use crate::scheduler::SchedulerHandle;
+use crate::server::RuntimeServices;
 use crate::session::{
-    AgenticResult, ApprovalDecisionType, ChatSessionCache, SessionHandle, SessionRegistry,
-    resume_agentic_loop, run_agentic_loop,
+    AgenticResult, ApprovalDecisionType, ChatSessionCache, SessionHandle, resume_agentic_loop,
+    run_agentic_loop,
 };
 use crate::sync::KeyedLocks;
-use crate::tools::{
-    ToolDependencies, ToolExecutionContext, ToolExecutor, ToolResult, create_tools,
-};
+use crate::tools::{ToolDependencies, ToolExecutionContext, ToolResult, build_executor};
 
 // ============================================================================
 // Routing Config
@@ -63,13 +58,8 @@ impl RoutingConfig {
 
 /// Configuration for creating a gateway message handler.
 pub struct GatewayHandlerConfig {
-    pub agents: AgentStore,
-    pub providers: ProviderRegistry,
-    pub session_registry: SessionRegistry,
+    pub services: RuntimeServices,
     pub routing_config: RoutingConfig,
-    pub sandbox: Arc<dyn Sandbox>,
-    pub gateway_manager: GatewayManager,
-    pub policy_store: Arc<dyn crate::store::PolicyStore>,
     pub policy_locks: PolicyLocks,
     pub scheduler: Option<SchedulerHandle>,
     pub chat_session_cache: ChatSessionCache,
@@ -77,21 +67,13 @@ pub struct GatewayHandlerConfig {
 
 /// Handler that routes gateway messages to sessions.
 pub struct GatewayMessageHandler {
-    agents: AgentStore,
-    providers: ProviderRegistry,
-    session_registry: SessionRegistry,
+    services: RuntimeServices,
     /// Shared cache mapping (gateway, chat_id, agent) to session_id.
     chat_session_cache: ChatSessionCache,
     /// Per-session locks to serialize message and callback processing.
     message_locks: KeyedLocks,
     /// Routing configuration for agent selection.
     routing_config: RoutingConfig,
-    /// Sandbox for tool execution.
-    sandbox: Arc<dyn Sandbox>,
-    /// Gateway manager for sending messages with keyboards.
-    gateway_manager: GatewayManager,
-    /// Policy store for loading agent policies.
-    policy_store: Arc<dyn crate::store::PolicyStore>,
     /// Per-agent locks for policy file writes.
     policy_locks: PolicyLocks,
     /// Scheduler handle for schedule tools.
@@ -102,15 +84,10 @@ impl GatewayMessageHandler {
     /// Create a new gateway message handler.
     pub fn new(config: GatewayHandlerConfig) -> Self {
         Self {
-            agents: config.agents,
-            providers: config.providers,
-            session_registry: config.session_registry,
+            services: config.services,
             chat_session_cache: config.chat_session_cache,
             message_locks: KeyedLocks::with_cleanup("gateway_message_locks"),
             routing_config: config.routing_config,
-            sandbox: config.sandbox,
-            gateway_manager: config.gateway_manager,
-            policy_store: config.policy_store,
             policy_locks: config.policy_locks,
             scheduler: config.scheduler,
         }
@@ -133,10 +110,10 @@ impl GatewayMessageHandler {
         let agent_name = self.resolve_agent(gateway, routing)?;
 
         // Get the agent spec for session creation (needed if we create a new session)
-        let agent = self.agents.get(&agent_name)?;
+        let agent = self.services.agents.get(&agent_name)?;
 
         // Clone values needed in closures
-        let registry = self.session_registry.clone();
+        let registry = self.services.session_registry.clone();
         let agent_name_clone = agent_name.clone();
         let gateway_clone = gateway.to_string();
         let chat_id_clone = routing.chat_id.clone();
@@ -199,7 +176,7 @@ impl GatewayMessageHandler {
         };
 
         // Get handle from registry
-        self.session_registry.get(&session_id)
+        self.services.session_registry.get(&session_id)
     }
 
     /// Resolve the agent to use for new sessions based on routing rules.
@@ -210,7 +187,7 @@ impl GatewayMessageHandler {
         // Check routing rules in order (first match wins)
         for rule in &self.routing_config.rules {
             if matches_rule(&rule.match_conditions, gateway, routing) {
-                if self.agents.get(&rule.agent).is_some() {
+                if self.services.agents.get(&rule.agent).is_some() {
                     return Some(rule.agent.clone());
                 }
                 warn!(agent = %rule.agent, "Routing rule agent not found");
@@ -248,7 +225,7 @@ impl GatewayMessageHandler {
                 .await
             {
                 // Verify session still exists and return handle
-                if let Some(handle) = self.session_registry.get(&session_id) {
+                if let Some(handle) = self.services.session_registry.get(&session_id) {
                     return Some(handle);
                 }
             }
@@ -264,7 +241,7 @@ impl GatewayMessageHandler {
         handle: &SessionHandle,
         text: &str,
     ) -> Option<String> {
-        let agent = self.agents.get(handle.agent())?;
+        let agent = self.services.agents.get(handle.agent())?;
 
         // Persist user message via actor
         if let Err(e) = handle.add_user_message(text.to_string()).await {
@@ -281,6 +258,7 @@ impl GatewayMessageHandler {
 
         // Simple single-turn for agents without tools
         let provider = self
+            .services
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())?;
 
@@ -336,14 +314,15 @@ impl GatewayMessageHandler {
         handle: &SessionHandle,
         _text: &str,
     ) -> Option<String> {
-        let agent = self.agents.get(handle.agent())?;
+        let agent = self.services.agents.get(handle.agent())?;
 
         let provider = self
+            .services
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())?;
 
         // Load policy from store (picks up runtime changes from AllowAlways)
-        let policy = self.policy_store.load(handle.agent()).await;
+        let policy = self.services.policy_store.load(handle.agent()).await;
 
         // Create tool executor with execution context for schedule tools
         let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
@@ -353,15 +332,19 @@ impl GatewayMessageHandler {
             session_id: handle.id().to_string(),
         });
         let deps = ToolDependencies {
-            sandbox: self.sandbox.clone(),
+            sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
             scheduler: self.scheduler.clone(),
             execution_context,
         };
-        let tools = create_tools(&agent.tools, &deps);
-        let executor = ToolExecutor::new(policy, handle.agent().to_string())
-            .register_all(tools)
-            .with_session_id(handle.id().to_string());
+        let executor = build_executor(
+            agent,
+            handle.agent(),
+            handle.id(),
+            policy,
+            deps,
+            &self.services.world_memory_path,
+        );
 
         // Build initial messages from history using StructuredContext
         let history = match handle.get_messages().await {
@@ -371,9 +354,12 @@ impl GatewayMessageHandler {
                 return Some(format!("Error: {}", e));
             }
         };
+        let directives =
+            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
         let messages = ContextBuilder::new()
             .from_agent_spec(agent)
             .with_messages(history)
+            .with_directives(directives)
             .build()
             .render(
                 &agent.model.name,
@@ -430,7 +416,8 @@ impl GatewayMessageHandler {
                     format!("Command requires approval:\n```\n{}\n```", pending.command);
 
                 if let Err(e) = self
-                    .gateway_manager
+                    .services
+                    .gateways
                     .send_message_with_keyboard(
                         gateway,
                         chat_id,
@@ -565,7 +552,7 @@ impl MessageHandler for GatewayMessageHandler {
         }
 
         // Get agent spec for tool execution
-        let agent = match self.agents.get(handle.agent()) {
+        let agent = match self.services.agents.get(handle.agent()) {
             Some(a) => a,
             None => {
                 error!(agent = %handle.agent(), "Agent not found");
@@ -576,7 +563,7 @@ impl MessageHandler for GatewayMessageHandler {
         // If allow_always, save pattern to policy
         if decision_type == ApprovalDecisionType::AllowAlways
             && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
-                self.policy_store.as_ref(),
+                self.services.policy_store.as_ref(),
                 handle.agent(),
                 crate::agent::ToolType::Bash,
                 &pending.command,
@@ -593,7 +580,7 @@ impl MessageHandler for GatewayMessageHandler {
 
         // Load policy from store (picks up runtime changes from AllowAlways)
         // This is loaded AFTER add_pattern_and_save so it includes any newly saved pattern
-        let policy = self.policy_store.load(handle.agent()).await;
+        let policy = self.services.policy_store.load(handle.agent()).await;
 
         // Determine tool result based on decision
         let tool_result = if decision_type == ApprovalDecisionType::Deny {
@@ -613,15 +600,19 @@ impl MessageHandler for GatewayMessageHandler {
                 session_id: handle.id().to_string(),
             });
             let deps = ToolDependencies {
-                sandbox: self.sandbox.clone(),
+                sandbox: self.services.sandbox.clone(),
                 agent_dir: agent.agent_dir.clone(),
                 scheduler: self.scheduler.clone(),
                 execution_context,
             };
-            let tools = create_tools(&agent.tools, &deps);
-            let executor = ToolExecutor::new(policy.clone(), handle.agent().to_string())
-                .register_all(tools)
-                .with_session_id(handle.id().to_string());
+            let executor = build_executor(
+                agent,
+                handle.agent(),
+                handle.id(),
+                policy.clone(),
+                deps,
+                &self.services.world_memory_path,
+            );
 
             // Build tool call from pending approval
             let tool_call = crate::llm::ToolCall {
@@ -649,6 +640,7 @@ impl MessageHandler for GatewayMessageHandler {
 
         // Get provider for resuming the loop
         let provider = match self
+            .services
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())
         {
@@ -667,15 +659,19 @@ impl MessageHandler for GatewayMessageHandler {
             session_id: handle.id().to_string(),
         });
         let deps = ToolDependencies {
-            sandbox: self.sandbox.clone(),
+            sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
             scheduler: self.scheduler.clone(),
             execution_context,
         };
-        let tools = create_tools(&agent.tools, &deps);
-        let executor = ToolExecutor::new(policy, handle.agent().to_string())
-            .register_all(tools)
-            .with_session_id(handle.id().to_string());
+        let executor = build_executor(
+            agent,
+            handle.agent(),
+            handle.id(),
+            policy,
+            deps,
+            &self.services.world_memory_path,
+        );
 
         // Resume the agentic loop
         let result = match resume_agentic_loop(
@@ -715,7 +711,8 @@ impl MessageHandler for GatewayMessageHandler {
 
                 // Send response via gateway
                 if let Err(e) = self
-                    .gateway_manager
+                    .services
+                    .gateways
                     .send_message(gateway, &data.chat_id, &content, None)
                     .await
                 {
@@ -746,7 +743,8 @@ impl MessageHandler for GatewayMessageHandler {
                 );
 
                 if let Err(e) = self
-                    .gateway_manager
+                    .services
+                    .gateways
                     .send_message_with_keyboard(
                         gateway,
                         &data.chat_id,

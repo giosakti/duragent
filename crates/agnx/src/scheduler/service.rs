@@ -17,16 +17,11 @@ use tracing::{debug, error, info, warn};
 /// Prevents LLM call storms when many schedules fire simultaneously.
 const MAX_CONCURRENT_EXECUTIONS: usize = 5;
 
-use crate::agent::AgentStore;
-use crate::context::ContextBuilder;
-use crate::gateway::GatewayManager;
-use crate::llm::ProviderRegistry;
-use crate::sandbox::Sandbox;
-use crate::session::{
-    AgenticResult, ChatSessionCache, SessionHandle, SessionRegistry, run_agentic_loop,
-};
-use crate::store::{PolicyStore, RunLogStore, ScheduleStore as ScheduleStoreTrait};
-use crate::tools::{ToolDependencies, ToolExecutor, create_tools};
+use crate::context::{ContextBuilder, load_all_directives};
+use crate::server::RuntimeServices;
+use crate::session::{AgenticResult, ChatSessionCache, SessionHandle, run_agentic_loop};
+use crate::store::{RunLogStore, ScheduleStore as ScheduleStoreTrait};
+use crate::tools::{ToolDependencies, build_executor};
 
 use super::error::{Result, SchedulerError};
 use super::schedule::{
@@ -112,16 +107,11 @@ impl SchedulerHandle {
 
 /// Configuration for the scheduler service.
 pub struct SchedulerConfig {
+    pub services: RuntimeServices,
     /// Storage backend for schedule persistence.
     pub schedule_store: Arc<dyn ScheduleStoreTrait>,
     /// Storage backend for run log persistence.
     pub run_log_store: RunLogStoreRef,
-    pub agents: AgentStore,
-    pub providers: ProviderRegistry,
-    pub session_registry: SessionRegistry,
-    pub gateways: GatewayManager,
-    pub sandbox: Arc<dyn Sandbox>,
-    pub policy_store: Arc<dyn PolicyStore>,
     pub chat_session_cache: ChatSessionCache,
 }
 
@@ -255,12 +245,7 @@ impl SchedulerService {
         let timers = self.timers.clone();
         let semaphore = self.execution_semaphore.clone();
         let config = SchedulerConfigRef {
-            agents: self.config.agents.clone(),
-            providers: self.config.providers.clone(),
-            session_registry: self.config.session_registry.clone(),
-            gateways: self.config.gateways.clone(),
-            sandbox: self.config.sandbox.clone(),
-            policy_store: self.config.policy_store.clone(),
+            services: self.config.services.clone(),
             chat_session_cache: self.config.chat_session_cache.clone(),
         };
 
@@ -344,12 +329,7 @@ enum SchedulerCommand {
 /// Clone-friendly config reference for spawned tasks.
 #[derive(Clone)]
 struct SchedulerConfigRef {
-    agents: AgentStore,
-    providers: ProviderRegistry,
-    session_registry: SessionRegistry,
-    gateways: GatewayManager,
-    sandbox: Arc<dyn Sandbox>,
-    policy_store: Arc<dyn PolicyStore>,
+    services: RuntimeServices,
     chat_session_cache: ChatSessionCache,
 }
 
@@ -585,6 +565,7 @@ async fn execute_message_payload(
     message: &str,
 ) -> Result<()> {
     config
+        .services
         .gateways
         .send_message(
             &schedule.destination.gateway,
@@ -606,12 +587,14 @@ async fn execute_task_payload(
 ) -> Result<()> {
     // Get agent
     let agent = config
+        .services
         .agents
         .get(&schedule.agent)
         .ok_or_else(|| SchedulerError::AgentNotFound(schedule.agent.clone()))?;
 
     // Get provider
     let provider = config
+        .services
         .providers
         .get(&agent.model.provider, agent.model.base_url.as_deref())
         .ok_or_else(|| {
@@ -643,23 +626,30 @@ async fn execute_task_payload(
 
     // Create tool executor (without execution context - schedules don't create nested schedules)
     // Load policy dynamically so AllowAlways approvals take effect immediately
-    let policy = config.policy_store.load(&schedule.agent).await;
+    let policy = config.services.policy_store.load(&schedule.agent).await;
     let deps = ToolDependencies {
-        sandbox: config.sandbox.clone(),
+        sandbox: config.services.sandbox.clone(),
         agent_dir: agent.agent_dir.clone(),
         scheduler: None, // Schedules don't create nested schedules
         execution_context: None,
     };
-    let tools = create_tools(&agent.tools, &deps);
-    let executor = ToolExecutor::new(policy, schedule.agent.clone())
-        .register_all(tools)
-        .with_session_id(handle.id().to_string());
+    let executor = build_executor(
+        agent,
+        &schedule.agent,
+        handle.id(),
+        policy,
+        deps,
+        &config.services.world_memory_path,
+    );
 
     // Build messages using StructuredContext
     let history = handle.get_messages().await.unwrap_or_default();
+    let directives =
+        load_all_directives(&config.services.workspace_directives_path, &agent.agent_dir);
     let messages = ContextBuilder::new()
         .from_agent_spec(agent)
         .with_messages(history)
+        .with_directives(directives)
         .build()
         .render(
             &agent.model.name,
@@ -692,6 +682,7 @@ async fn execute_task_payload(
 
     // Send response via gateway
     config
+        .services
         .gateways
         .send_message(
             &schedule.destination.gateway,
@@ -719,8 +710,8 @@ async fn get_or_create_session(
     chat_id: &str,
     agent: &str,
 ) -> Result<SessionHandle> {
-    let registry = config.session_registry.clone();
-    let registry_for_create = config.session_registry.clone();
+    let registry = config.services.session_registry.clone();
+    let registry_for_create = config.services.session_registry.clone();
     let agent_owned = agent.to_string();
     let gateway_owned = gateway.to_string();
     let chat_id_owned = chat_id.to_string();
@@ -775,6 +766,7 @@ async fn get_or_create_session(
 
     // Get the handle from registry
     let handle = config
+        .services
         .session_registry
         .get(&session_id)
         .ok_or_else(|| SchedulerError::ExecutionFailed("Session not found".to_string()))?;
