@@ -73,13 +73,15 @@ pub async fn run(
     let (store, providers, policy_store) = load_agents(&agents_dir).await;
     info!(agents = store.len(), "Loaded agents");
 
-    // Auto-create default memory directive if any agent has memory enabled
-    let any_memory_enabled = store.iter().any(|(_, a)| a.memory.is_some());
-    if any_memory_enabled {
-        agnx::context::ensure_memory_directive(
-            &workspace_directives_path,
-            agnx::memory::DEFAULT_MEMORY_DIRECTIVE,
-        );
+    // Auto-create memory directive per agent that has memory enabled
+    for (_, agent) in store.iter() {
+        if agent.memory.is_some() {
+            let agent_directives_path = agent.agent_dir.join("directives");
+            agnx::context::ensure_memory_directive(
+                &agent_directives_path,
+                agnx::memory::DEFAULT_MEMORY_DIRECTIVE,
+            );
+        }
     }
 
     // Initialize session store and registry, then recover persisted sessions

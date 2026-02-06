@@ -77,15 +77,15 @@ pub fn load_directives_from_dir(dir: &Path, scope: Scope) -> Vec<DirectiveEntry>
 
 /// Ensure the default memory directive file exists.
 ///
-/// Creates `{workspace_directives}/memory.md` with default content if it doesn't exist.
+/// Creates `{directives_path}/memory.md` with default content if it doesn't exist.
 /// No-op if the file already exists.
-pub fn ensure_memory_directive(workspace_directives: &Path, default_content: &str) {
-    let path = workspace_directives.join("memory.md");
+pub fn ensure_memory_directive(directives_path: &Path, default_content: &str) {
+    let path = directives_path.join("memory.md");
     if path.exists() {
         return;
     }
 
-    if let Err(e) = std::fs::create_dir_all(workspace_directives) {
+    if let Err(e) = std::fs::create_dir_all(directives_path) {
         warn!(error = %e, "Failed to create directives directory");
         return;
     }

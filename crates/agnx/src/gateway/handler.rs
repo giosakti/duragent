@@ -271,9 +271,12 @@ impl GatewayMessageHandler {
         };
 
         // Build structured context and render to ChatRequest
+        let directives =
+            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
         let chat_request = ContextBuilder::new()
             .from_agent_spec(agent)
             .with_messages(history)
+            .with_directives(directives)
             .build()
             .render(
                 &agent.model.name,
