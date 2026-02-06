@@ -26,6 +26,7 @@ pub mod agent;
 pub mod context;
 pub mod gateway;
 pub mod llm;
+pub mod memory;
 pub mod sandbox;
 pub mod scheduler;
 pub mod session;

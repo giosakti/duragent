@@ -11,6 +11,19 @@ pub use tools::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
 
 use std::path::PathBuf;
 
+/// Default instruction for memory tool access.
+pub const DEFAULT_MEMORY_DIRECTIVE: &str = r#"You have access to a persistent memory system:
+- `recall` - Load your memory (world knowledge, long-term memory, recent experiences)
+- `remember` - Record an experience to today's daily log
+- `reflect` - Read then update your long-term MEMORY.md (call without content to read, then with content to write)
+- `update_world` - Write shared world knowledge for a topic (replaces existing content)
+
+Guidelines:
+- Call `recall` at the start of conversations when context might be helpful
+- Use `remember` after learning something important about the user or project
+- Use `reflect` at the end of substantial sessions to consolidate learnings — always read first, then write
+- Use `update_world` when discovering facts relevant to all agents"#;
+
 use anyhow::Result;
 use chrono::Local;
 
@@ -144,6 +157,16 @@ impl Memory {
         file.write_all(entry.as_bytes())?;
 
         Ok(path)
+    }
+
+    /// Read agent's MEMORY.md content (empty string if not found).
+    pub fn read_memory(&self) -> Result<String> {
+        let path = self.agent_memory_dir.join("MEMORY.md");
+        match std::fs::read_to_string(&path) {
+            Ok(content) => Ok(content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Rewrite agent's MEMORY.md.
@@ -288,6 +311,21 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("First entry"));
         assert!(content.contains("Second entry"));
+    }
+
+    #[test]
+    fn read_memory_empty() {
+        let (_temp, memory) = setup();
+        let content = memory.read_memory().unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn read_memory_existing() {
+        let (_temp, memory) = setup();
+        memory.write_memory("Some notes").unwrap();
+        let content = memory.read_memory().unwrap();
+        assert_eq!(content, "Some notes");
     }
 
     #[test]

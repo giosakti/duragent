@@ -7,11 +7,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::agent::ToolConfig;
+use crate::memory::Memory;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 
 use super::bash::BashTool;
 use super::cli::CliTool;
+use super::memory::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
 use super::schedule::{
     CancelScheduleTool, ListSchedulesTool, ScheduleTaskTool, ToolExecutionContext,
 };
@@ -99,6 +101,22 @@ fn get_schedule_deps(deps: &ToolDependencies) -> Option<(SchedulerHandle, ToolEx
     let scheduler = deps.scheduler.clone()?;
     let ctx = deps.execution_context.clone()?;
     Some((scheduler, ctx))
+}
+
+/// Create memory tools for an agent.
+///
+/// Call this when an agent has memory configured. Returns all four memory tools:
+/// - `recall` — Load memory context
+/// - `remember` — Append to daily log
+/// - `reflect` — Rewrite MEMORY.md
+/// - `update_world` — Append to world knowledge
+pub fn create_memory_tools(memory: Arc<Memory>) -> Vec<SharedTool> {
+    vec![
+        Arc::new(RecallTool::new(memory.clone())) as SharedTool,
+        Arc::new(RememberTool::new(memory.clone())) as SharedTool,
+        Arc::new(ReflectTool::new(memory.clone())) as SharedTool,
+        Arc::new(UpdateWorldTool::new(memory)) as SharedTool,
+    ]
 }
 
 #[cfg(test)]
@@ -199,5 +217,22 @@ mod tests {
         let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"deploy"));
+    }
+
+    #[test]
+    fn create_memory_tools_returns_all_four_tools() {
+        let temp_dir = TempDir::new().unwrap();
+        let world_dir = temp_dir.path().join("world");
+        let agent_memory_dir = temp_dir.path().join("agent-memory");
+        let memory = Arc::new(Memory::new(world_dir, agent_memory_dir));
+
+        let tools = create_memory_tools(memory);
+
+        assert_eq!(tools.len(), 4);
+        let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"recall"));
+        assert!(names.contains(&"remember"));
+        assert!(names.contains(&"reflect"));
+        assert!(names.contains(&"update_world"));
     }
 }

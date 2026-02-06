@@ -169,7 +169,7 @@ impl ReflectTool {
 
 #[derive(Debug, Deserialize)]
 struct ReflectArgs {
-    content: String,
+    content: Option<String>,
 }
 
 #[async_trait]
@@ -183,34 +183,58 @@ impl Tool for ReflectTool {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
                 name: "reflect".to_string(),
-                description: "Update your long-term memory with curated learnings. This replaces your MEMORY.md file.".to_string(),
+                description: "Read or update your long-term MEMORY.md. Call without content to read current memory, then call again with content to write updates.".to_string(),
                 parameters: Some(json!({
                     "type": "object",
                     "properties": {
                         "content": {
                             "type": "string",
-                            "description": "New content for MEMORY.md (replaces existing)"
+                            "description": "New content for MEMORY.md (replaces existing). Omit to read current memory first."
                         }
-                    },
-                    "required": ["content"]
+                    }
                 })),
             },
         }
     }
 
     async fn execute(&self, arguments: &str) -> Result<ToolResult, ToolError> {
-        let args: ReflectArgs = serde_json::from_str(arguments)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: ReflectArgs =
+            serde_json::from_str(arguments).unwrap_or(ReflectArgs { content: None });
 
-        let path = self
-            .memory
-            .write_memory(&args.content)
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        match args.content {
+            // Read phase: return current MEMORY.md
+            None => {
+                let current = self
+                    .memory
+                    .read_memory()
+                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        Ok(ToolResult {
-            success: true,
-            content: format!("Reflected. Updated {}", path.display()),
-        })
+                if current.is_empty() {
+                    Ok(ToolResult {
+                        success: true,
+                        content: "MEMORY.md is empty. Call reflect with content to create it."
+                            .to_string(),
+                    })
+                } else {
+                    Ok(ToolResult {
+                        success: true,
+                        content: format!("Current MEMORY.md:\n\n{}", current),
+                    })
+                }
+            }
+            // Write phase: update MEMORY.md
+            Some(content) => {
+                let path = self
+                    .memory
+                    .write_memory(&content)
+                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+                Ok(ToolResult {
+                    success: true,
+                    content: format!("Reflected. Updated {}", path.display()),
+                })
+            }
+        }
     }
 }
 
@@ -348,13 +372,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflect_tool_requires_content() {
+    async fn reflect_tool_reads_empty_memory() {
         let (_temp, memory) = setup();
         let tool = ReflectTool::new(memory);
 
-        let result = tool.execute("{}").await;
+        let result = tool.execute("{}").await.unwrap();
 
-        assert!(result.is_err());
+        assert!(result.success);
+        assert!(result.content.contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn reflect_tool_reads_existing_memory() {
+        let (_temp, memory) = setup();
+        memory.write_memory("Existing notes").unwrap();
+        let tool = ReflectTool::new(memory);
+
+        let result = tool.execute("{}").await.unwrap();
+
+        assert!(result.success);
+        assert!(result.content.contains("Existing notes"));
     }
 
     #[tokio::test]
