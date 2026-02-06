@@ -83,8 +83,10 @@ Key specs and design docs:
 - [x] Directives system (workspace + agent scoped, file-based)
 - [x] Checkpoint-based snapshots for session persistence
 
-### v0.4.1 — Discord Gateway
-- [ ] First-party plugin: agnx-gateway-discord
+### v0.4.1 — Discord Gateway ✓
+- [x] First-party plugin: agnx-gateway-discord
+- [x] Typing indicator during message processing
+- [x] Memory tool robustness improvements
 
 ### v0.5.0 — Context & Observability
 - [ ] Context window management
@@ -136,6 +138,12 @@ Key specs and design docs:
 **v0.4.1 — Discord Gateway**: Adding Discord as a first-party gateway plugin.
 
 ## Recent Accomplishments
+
+- **Discord gateway** — Second platform gateway, mirroring Telegram patterns
+  - Built-in (feature flag) and subprocess modes
+  - Button components for approval flow
+  - 2000 char message chunking, reply support
+  - Typing indicator while processing (applied to all gateways)
 
 - **Memory system** — File-based agent memory with four tools
   - `recall`: Retrieve relevant memories from agent's memory store

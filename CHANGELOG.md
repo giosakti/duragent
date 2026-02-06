@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-06
+
+### Added
+- Discord gateway (`agnx-gateway-discord`)
+  - Supports both built-in (feature flag) and subprocess modes
+  - Serenity 0.12 for Discord API (websocket gateway + HTTP)
+  - Button components for approval flow (inline keyboard)
+  - Message chunking at 2000 char limit
+  - Reply support via message references
+  - Capabilities: edit, delete, typing, reply, inline keyboard
+- Typing indicator during message processing (all gateways)
+
+### Fixed
+- Memory tools (`remember`, `reflect`) now handle non-standard LLM argument formats gracefully
+- Schedule tool descriptions reworded to steer models toward `at` for one-shot reminders
+- Debug logging added to tool executor for diagnosing argument format issues
+
 ## [0.4.0] - 2026-02-06
 
 ### Added
@@ -135,7 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project documentation (architecture, API reference, deployment guide)
 - Agnx Agent Format (AAF) specification
 
-[Unreleased]: https://github.com/AgnxAI/agnx/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AgnxAI/agnx/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AgnxAI/agnx/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AgnxAI/agnx/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AgnxAI/agnx/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AgnxAI/agnx/compare/v0.1.0...v0.2.0

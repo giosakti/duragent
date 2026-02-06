@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agnx"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agnx-gateway-discord",
  "agnx-gateway-protocol",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "agnx-gateway-discord"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agnx-gateway-protocol",
  "anyhow",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "agnx-gateway-protocol"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "serde",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agnx-gateway-telegram"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agnx-gateway-protocol",
  "anyhow",
