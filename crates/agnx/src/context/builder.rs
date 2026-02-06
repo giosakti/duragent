@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::agent::AgentSpec;
 use crate::llm::Message;
 
-use super::{BlockSource, StructuredContext, SystemBlock, priority};
+use super::{BlockSource, DirectiveEntry, StructuredContext, SystemBlock, priority};
 
 /// Builder for constructing a StructuredContext.
 ///
@@ -73,6 +73,14 @@ impl ContextBuilder {
         self
     }
 
+    /// Add pre-loaded directives to the context.
+    pub fn with_directives(mut self, directives: Vec<DirectiveEntry>) -> Self {
+        for directive in directives {
+            self.context.add_directive(directive);
+        }
+        self
+    }
+
     /// Set tool references to restrict which tools the LLM sees.
     /// Actual tool definitions come from ToolExecutor at render time.
     pub fn with_tool_refs(mut self, refs: HashSet<String>) -> Self {
@@ -126,6 +134,7 @@ mod tests {
             system_prompt: system_prompt.map(|s| s.to_string()),
             instructions: instructions.map(|s| s.to_string()),
             session: AgentSessionConfig::default(),
+            memory: None,
             tools: Vec::new(),
             policy: ToolPolicy::default(),
             agent_dir: PathBuf::from("/tmp/test-agent"),

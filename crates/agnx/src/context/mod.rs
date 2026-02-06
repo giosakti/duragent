@@ -6,8 +6,10 @@
 //! the final render.
 
 mod builder;
+mod directives;
 
 pub use builder::ContextBuilder;
+pub use directives::{ensure_memory_directive, load_all_directives};
 
 use std::collections::HashSet;
 
