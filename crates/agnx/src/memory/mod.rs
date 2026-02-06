@@ -65,10 +65,10 @@ impl Memory {
 
         // Agent's curated memory
         let memory_path = self.agent_memory_dir.join("MEMORY.md");
-        if let Ok(memory) = std::fs::read_to_string(&memory_path) {
-            if !memory.is_empty() {
-                sections.push(format!("# Your Memory\n\n{}", memory));
-            }
+        if let Ok(memory) = std::fs::read_to_string(&memory_path)
+            && !memory.is_empty()
+        {
+            sections.push(format!("# Your Memory\n\n{}", memory));
         }
 
         // Recent daily experiences

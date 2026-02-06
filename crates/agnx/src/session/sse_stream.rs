@@ -10,7 +10,6 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::response::sse::Event;
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
@@ -34,10 +33,6 @@ pub struct StreamConfig {
     pub handle: SessionHandle,
     /// Session ID.
     pub session_id: String,
-    /// Agent name.
-    pub agent: String,
-    /// When the session was created.
-    pub created_at: DateTime<Utc>,
     /// Message ID for this response.
     pub message_id: String,
     /// Idle timeout before closing stream.
@@ -81,8 +76,6 @@ impl AccumulatingStream {
         let StreamConfig {
             handle,
             session_id,
-            agent,
-            created_at,
             message_id,
             idle_timeout,
             cancel_token,
@@ -114,8 +107,6 @@ impl AccumulatingStream {
         let stream_ctx = StreamContext {
             handle: handle.clone(),
             session_id: session_id.clone(),
-            agent,
-            created_at,
             message_id: message_id.clone(),
             on_disconnect,
         };
@@ -332,10 +323,6 @@ impl Drop for AccumulatingStream {
 struct StreamContext {
     handle: SessionHandle,
     session_id: String,
-    #[allow(dead_code)]
-    agent: String,
-    #[allow(dead_code)]
-    created_at: DateTime<Utc>,
     message_id: String,
     on_disconnect: OnDisconnect,
 }

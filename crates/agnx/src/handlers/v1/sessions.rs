@@ -296,18 +296,6 @@ pub async fn stream_session(
         Err(e) => return e.into_response(),
     };
 
-    // Get metadata for stream config
-    let metadata = match ctx.handle.get_metadata().await {
-        Ok(m) => m,
-        Err(e) => {
-            return problem_details::internal_error(format!(
-                "failed to get session metadata: {}",
-                e
-            ))
-            .into_response();
-        }
-    };
-
     let stream = match ctx.provider.chat_stream(ctx.request).await {
         Ok(s) => s,
         Err(e) => {
@@ -331,8 +319,6 @@ pub async fn stream_session(
         StreamConfig {
             handle: ctx.handle,
             session_id,
-            agent: metadata.agent,
-            created_at: metadata.created_at,
             message_id,
             idle_timeout: Duration::from_secs(state.idle_timeout_seconds),
             cancel_token,
@@ -457,7 +443,7 @@ pub async fn approve_command(
             execution_context: None,
         };
         let executor = build_executor(
-            &agent_spec,
+            agent_spec,
             &agent_name,
             &session_id,
             policy.clone(),
@@ -510,7 +496,7 @@ pub async fn approve_command(
         execution_context: None,
     };
     let executor = build_executor(
-        &agent_spec,
+        agent_spec,
         &agent_name,
         &session_id,
         policy,

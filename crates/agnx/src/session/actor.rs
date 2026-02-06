@@ -576,7 +576,7 @@ impl SessionActor {
     fn maybe_roll_checkpoint(&mut self) {
         if self.pending_messages.len() >= CHECKPOINT_THRESHOLD {
             self.checkpointed_messages
-                .extend(self.pending_messages.drain(..));
+                .append(&mut self.pending_messages);
             self.checkpoint_seq = self.last_event_seq;
         }
     }

@@ -111,6 +111,7 @@ impl SessionSnapshot {
     /// `checkpoint_seq` indicates the sequence up to which messages are stored.
     /// `conversation` should contain only messages up to that checkpoint.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: String,
         agent: String,

@@ -10,7 +10,7 @@ use thiserror::Error;
 // Config (root)
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub workspace: Option<PathBuf>,
@@ -44,21 +44,6 @@ pub enum ConfigError {
 
     #[error("unclosed variable reference '${{' (missing '}}')")]
     UnclosedVarReference,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            workspace: None,
-            server: ServerConfig::default(),
-            agents_dir: None,
-            services: ServicesConfig::default(),
-            world_memory: WorldMemoryConfig::default(),
-            gateways: GatewaysConfig::default(),
-            routes: Vec::new(),
-            sandbox: SandboxConfig::default(),
-        }
-    }
 }
 
 impl Config {
