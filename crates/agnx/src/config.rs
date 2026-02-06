@@ -13,11 +13,15 @@ use thiserror::Error;
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub workspace: Option<PathBuf>,
+    #[serde(default)]
     pub server: ServerConfig,
-    #[serde(default = "default_agents_dir")]
-    pub agents_dir: PathBuf,
+    #[serde(default)]
+    pub agents_dir: Option<PathBuf>,
     #[serde(default)]
     pub services: ServicesConfig,
+    #[serde(default)]
+    pub world_memory: WorldMemoryConfig,
     #[serde(default)]
     pub gateways: GatewaysConfig,
     /// Global routing rules for agent selection (evaluated in order, first match wins).
@@ -45,9 +49,11 @@ pub enum ConfigError {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            workspace: None,
             server: ServerConfig::default(),
-            agents_dir: default_agents_dir(),
+            agents_dir: None,
             services: ServicesConfig::default(),
+            world_memory: WorldMemoryConfig::default(),
             gateways: GatewaysConfig::default(),
             routes: Vec::new(),
             sandbox: SandboxConfig::default(),
@@ -84,16 +90,23 @@ pub fn resolve_path(config_path: &Path, path: &Path) -> PathBuf {
 }
 
 // ============================================================================
-// Private Helpers (Serde Defaults)
+// Default Paths
 // ============================================================================
 
-fn default_agents_dir() -> PathBuf {
-    PathBuf::from(".agnx/agents")
-}
+/// Default workspace directory (relative to config file).
+pub const DEFAULT_WORKSPACE: &str = ".agnx";
+/// Default agents directory (relative to workspace).
+pub const DEFAULT_AGENTS_DIR: &str = "agents";
+/// Default sessions directory (relative to workspace).
+pub const DEFAULT_SESSIONS_DIR: &str = "sessions";
+/// Default world memory directory (relative to workspace).
+pub const DEFAULT_WORLD_MEMORY_DIR: &str = "memory/world";
+/// Default directives directory (relative to workspace).
+pub const DEFAULT_DIRECTIVES_DIR: &str = "directives";
 
-fn default_session_path() -> PathBuf {
-    PathBuf::from(".agnx/sessions")
-}
+// ============================================================================
+// Private Helpers (Serde Defaults)
+// ============================================================================
 
 fn default_host() -> String {
     "0.0.0.0".to_string()
@@ -292,18 +305,21 @@ pub struct ServicesConfig {
 // SessionServiceConfig
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct SessionServiceConfig {
-    #[serde(default = "default_session_path")]
-    pub path: PathBuf,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
 }
 
-impl Default for SessionServiceConfig {
-    fn default() -> Self {
-        Self {
-            path: default_session_path(),
-        }
-    }
+// ============================================================================
+// WorldMemoryConfig
+// ============================================================================
+
+/// Configuration for shared world memory.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WorldMemoryConfig {
+    #[serde(default)]
+    pub path: Option<PathBuf>,
 }
 
 // ============================================================================
@@ -445,12 +461,11 @@ mod tests {
         assert_eq!(config.server.request_timeout_seconds, 300);
         assert_eq!(config.server.idle_timeout_seconds, 60);
         assert_eq!(config.server.keep_alive_interval_seconds, 15);
-        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents"));
+        assert!(config.workspace.is_none());
+        assert!(config.agents_dir.is_none());
+        assert!(config.services.session.path.is_none());
+        assert!(config.world_memory.path.is_none());
         assert_eq!(config.sandbox.mode, "trust");
-        assert_eq!(
-            config.services.session.path,
-            PathBuf::from(".agnx/sessions")
-        );
     }
 
     #[tokio::test]
@@ -485,7 +500,10 @@ agents_dir: ".agnx/agents-custom"
         assert_eq!(config.server.request_timeout_seconds, 60);
         assert_eq!(config.server.idle_timeout_seconds, 120);
         assert_eq!(config.server.keep_alive_interval_seconds, 30);
-        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents-custom"));
+        assert_eq!(
+            config.agents_dir,
+            Some(PathBuf::from(".agnx/agents-custom"))
+        );
     }
 
     #[tokio::test]
@@ -506,7 +524,8 @@ server:
         assert_eq!(config.server.request_timeout_seconds, 300); // default
         assert_eq!(config.server.idle_timeout_seconds, 60); // default
         assert_eq!(config.server.keep_alive_interval_seconds, 15); // default
-        assert_eq!(config.agents_dir, PathBuf::from(".agnx/agents")); // default
+        assert!(config.workspace.is_none()); // default
+        assert!(config.agents_dir.is_none()); // default
     }
 
     #[tokio::test]
