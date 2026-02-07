@@ -597,6 +597,7 @@ async fn execute_task_payload(
         .services
         .providers
         .get(&agent.model.provider, agent.model.base_url.as_deref())
+        .await
         .ok_or_else(|| {
             SchedulerError::ExecutionFailed(format!("Provider not found: {}", agent.model.provider))
         })?;

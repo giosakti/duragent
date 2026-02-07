@@ -260,7 +260,8 @@ impl GatewayMessageHandler {
         let provider = self
             .services
             .providers
-            .get(&agent.model.provider, agent.model.base_url.as_deref())?;
+            .get(&agent.model.provider, agent.model.base_url.as_deref())
+            .await?;
 
         let history = match handle.get_messages().await {
             Ok(msgs) => msgs,
@@ -322,7 +323,8 @@ impl GatewayMessageHandler {
         let provider = self
             .services
             .providers
-            .get(&agent.model.provider, agent.model.base_url.as_deref())?;
+            .get(&agent.model.provider, agent.model.base_url.as_deref())
+            .await?;
 
         // Load policy from store (picks up runtime changes from AllowAlways)
         let policy = self.services.policy_store.load(handle.agent()).await;
@@ -653,6 +655,7 @@ impl MessageHandler for GatewayMessageHandler {
             .services
             .providers
             .get(&agent.model.provider, agent.model.base_url.as_deref())
+            .await
         {
             Some(p) => p,
             None => {

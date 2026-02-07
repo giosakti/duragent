@@ -28,6 +28,11 @@ tokio-util = { workspace = true }
 # CLI
 clap = { workspace = true }
 
+# Crypto / encoding
+base64 = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -44,6 +49,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde-saphyr = { workspace = true }
 
+# Unix-specific (for prctl on Linux)
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 # Utilities
 chrono = { workspace = true }
 cron = { workspace = true }
@@ -52,10 +61,6 @@ rand = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ulid = { workspace = true }
-
-# Unix-specific (for prctl on Linux)
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

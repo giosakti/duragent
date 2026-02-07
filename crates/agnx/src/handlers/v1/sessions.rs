@@ -477,10 +477,15 @@ pub async fn approve_command(
     }
 
     // Get provider for resuming the loop
-    let Some(provider) = state.services.providers.get(
-        &agent_spec.model.provider,
-        agent_spec.model.base_url.as_deref(),
-    ) else {
+    let Some(provider) = state
+        .services
+        .providers
+        .get(
+            &agent_spec.model.provider,
+            agent_spec.model.base_url.as_deref(),
+        )
+        .await
+    else {
         return problem_details::internal_error(format!(
             "provider '{}' not configured",
             agent_spec.model.provider
@@ -614,6 +619,7 @@ async fn prepare_chat_context(
         .services
         .providers
         .get(&agent.model.provider, agent.model.base_url.as_deref())
+        .await
     else {
         return Err(SendMessageError::ProviderNotConfigured(
             agent.model.provider.to_string(),

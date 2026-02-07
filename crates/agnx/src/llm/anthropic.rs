@@ -15,11 +15,19 @@ use super::types::{
 };
 use crate::sse_parser::SseEventStream;
 
+/// Authentication mode for the Anthropic provider.
+pub enum AnthropicAuth {
+    /// Standard API key authentication.
+    ApiKey(String),
+    /// OAuth access token.
+    OAuth(String),
+}
+
 /// Anthropic provider with native API format.
 pub struct AnthropicProvider {
     client: Client,
     base_url: String,
-    api_key: String,
+    auth: AnthropicAuth,
     api_version: String,
 }
 
@@ -27,13 +35,58 @@ impl AnthropicProvider {
     pub const DEFAULT_API_VERSION: &'static str = "2023-06-01";
 
     #[must_use]
-    pub fn new(client: Client, api_key: String, base_url: String) -> Self {
+    pub fn new(client: Client, auth: AnthropicAuth, base_url: String) -> Self {
         Self {
             client,
             base_url,
-            api_key,
+            auth,
             api_version: Self::DEFAULT_API_VERSION.to_string(),
         }
+    }
+
+    /// Build a POST request with appropriate auth headers.
+    fn build_request(&self, url: &str, body: &Request) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("anthropic-version", &self.api_version);
+
+        builder = builder
+            .header("accept", "application/json")
+            .header("anthropic-dangerous-direct-browser-access", "true");
+
+        match &self.auth {
+            AnthropicAuth::ApiKey(key) => {
+                builder = builder.header("x-api-key", key).header(
+                    "anthropic-beta",
+                    "fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
+                );
+            }
+            AnthropicAuth::OAuth(token) => {
+                builder = builder
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header(
+                        "anthropic-beta",
+                        "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
+                    )
+                    .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+                    .header("x-app", "cli")
+                    .header("x-stainless-lang", "js")
+                    .header("x-stainless-package-version", "0.70.0")
+                    .header("x-stainless-os", "Linux")
+                    .header("x-stainless-arch", "x64")
+                    .header("x-stainless-runtime", "node")
+                    .header("x-stainless-runtime-version", "v22.13.0")
+                    .header("x-stainless-retry-count", "0");
+            }
+        }
+
+        builder.json(body)
+    }
+
+    fn is_oauth(&self) -> bool {
+        matches!(self.auth, AnthropicAuth::OAuth(_))
     }
 }
 
@@ -41,17 +94,9 @@ impl AnthropicProvider {
 impl LLMProvider for AnthropicProvider {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let anthropic_request = to_request(&request, None);
+        let anthropic_request = to_request(&request, None, self.is_oauth());
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", &self.api_version)
-            .json(&anthropic_request)
-            .send()
-            .await?;
+        let response = self.build_request(&url, &anthropic_request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -65,17 +110,9 @@ impl LLMProvider for AnthropicProvider {
 
     async fn chat_stream(&self, request: ChatRequest) -> Result<ChatStream, LLMError> {
         let url = format!("{}/v1/messages", self.base_url);
-        let anthropic_request = to_request(&request, Some(true));
+        let anthropic_request = to_request(&request, Some(true), self.is_oauth());
 
-        let response = self
-            .client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", &self.api_version)
-            .json(&anthropic_request)
-            .send()
-            .await?;
+        let response = self.build_request(&url, &anthropic_request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -99,8 +136,9 @@ impl LLMProvider for AnthropicProvider {
 struct Request {
     model: String,
     max_tokens: u32,
+    /// System prompt: plain string for API key mode, array of content blocks for OAuth.
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<serde_json::Value>,
     messages: Vec<RequestMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -117,19 +155,6 @@ struct AnthropicTool {
     description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_schema: Option<serde_json::Value>,
-}
-
-/// Convert OpenAI-style tool definitions to Anthropic format.
-fn convert_tools(tools: Option<&Vec<ToolDefinition>>) -> Option<Vec<AnthropicTool>> {
-    tools.map(|ts| {
-        ts.iter()
-            .map(|t| AnthropicTool {
-                name: t.function.name.clone(),
-                description: t.function.description.clone(),
-                input_schema: t.function.parameters.clone(),
-            })
-            .collect()
-    })
 }
 
 #[derive(serde::Serialize)]
@@ -188,14 +213,67 @@ struct ResponseUsage {
 // Conversions
 // ============================================================================
 
-fn to_request(request: &ChatRequest, stream: Option<bool>) -> Request {
-    let mut system = None;
+/// Anthropic canonical tool names.
+/// Tools matching these (case-insensitive) are renamed to this casing.
+const ANTHROPIC_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// Map a tool name to the canonical casing if it matches.
+fn to_canonical_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    for cc_name in ANTHROPIC_TOOLS {
+        if cc_name.to_lowercase() == lower {
+            return (*cc_name).to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// Convert OpenAI-style tool definitions to Anthropic format.
+fn convert_tools(tools: Option<&Vec<ToolDefinition>>, oauth: bool) -> Option<Vec<AnthropicTool>> {
+    tools.map(|ts| {
+        ts.iter()
+            .map(|t| AnthropicTool {
+                name: if oauth {
+                    to_canonical_name(&t.function.name)
+                } else {
+                    t.function.name.clone()
+                },
+                description: t.function.description.clone(),
+                input_schema: t.function.parameters.clone(),
+            })
+            .collect()
+    })
+}
+
+/// Identity string required by Anthropic's OAuth endpoint.
+const ANTHROPIC_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+fn to_request(request: &ChatRequest, stream: Option<bool>, oauth: bool) -> Request {
+    let mut system_text: Option<String> = None;
     let mut messages = Vec::new();
 
     for msg in &request.messages {
         match msg.role {
             Role::System => {
-                system = msg.content.clone();
+                system_text = msg.content.clone();
             }
             Role::User => {
                 let content = msg.content.clone().unwrap_or_default();
@@ -262,13 +340,35 @@ fn to_request(request: &ChatRequest, stream: Option<bool>) -> Request {
         }
     }
 
+    // Build system prompt: array format for OAuth, string for API key
+    let system = if oauth {
+        let cache_control = serde_json::json!({"type": "ephemeral"});
+        let mut blocks = vec![serde_json::json!({
+            "type": "text",
+            "text": ANTHROPIC_IDENTITY,
+            "cache_control": cache_control,
+        })];
+        if let Some(text) = system_text
+            && !text.is_empty()
+        {
+            blocks.push(serde_json::json!({
+                "type": "text",
+                "text": text,
+                "cache_control": cache_control,
+            }));
+        }
+        Some(serde_json::Value::Array(blocks))
+    } else {
+        system_text.map(serde_json::Value::String)
+    };
+
     Request {
         model: request.model.clone(),
         max_tokens: request.max_tokens.unwrap_or(4096),
         system,
         messages,
         temperature: request.temperature,
-        tools: convert_tools(request.tools.as_ref()),
+        tools: convert_tools(request.tools.as_ref(), oauth),
         stream,
     }
 }
