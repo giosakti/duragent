@@ -14,8 +14,8 @@ use duragent::server::{self, AppState, RuntimeServices};
 use duragent::session::SessionRegistry;
 use duragent::store::file::{FileAgentCatalog, FilePolicyStore, FileSessionStore};
 
-/// Create a test app with empty state.
-pub async fn test_app() -> Router {
+/// Create a test `AppState` with sensible defaults.
+pub async fn test_app_state() -> AppState {
     use tempfile::TempDir;
 
     let tmp = TempDir::new().unwrap();
@@ -31,7 +31,7 @@ pub async fn test_app() -> Router {
     let policy_store: Arc<dyn duragent::store::PolicyStore> =
         Arc::new(FilePolicyStore::new(&agents_dir));
     let (shutdown_tx, _shutdown_rx) = server::shutdown_channel();
-    let state = AppState {
+    AppState {
         services: RuntimeServices {
             agents: empty_agent_store().await,
             providers: ProviderRegistry::new(),
@@ -49,8 +49,12 @@ pub async fn test_app() -> Router {
         keep_alive_interval_seconds: 15,
         background_tasks: BackgroundTasks::new(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
-    };
+    }
+}
 
+/// Create a test app with empty state.
+pub async fn test_app() -> Router {
+    let state = test_app_state().await;
     server::build_app(state, 300)
 }
 

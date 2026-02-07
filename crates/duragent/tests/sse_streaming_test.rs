@@ -7,23 +7,14 @@
 //! to the library. These tests focus on error cases and behavior that
 //! can be verified with the existing test infrastructure.
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
-use tempfile::TempDir;
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use duragent::agent::OnDisconnect;
-use duragent::background::BackgroundTasks;
-use duragent::gateway::GatewayManager;
-use duragent::llm::{ProviderRegistry, Role, StreamEvent, Usage};
-use duragent::sandbox::TrustSandbox;
-use duragent::server::{self, AppState, RuntimeServices};
-use duragent::session::SessionRegistry;
-use duragent::store::file::{FilePolicyStore, FileSessionStore};
+use duragent::llm::{Role, StreamEvent, Usage};
+use duragent::server;
 
 mod common;
 use common::test_app;
@@ -367,36 +358,10 @@ fn role_deserialization() {
 /// Test that AppState can be created with custom timeout values.
 #[tokio::test]
 async fn app_state_with_custom_timeouts() {
-    let tmp = TempDir::new().unwrap();
-    let sessions_path = tmp.path().join("sessions");
-    std::fs::create_dir(&sessions_path).unwrap();
+    let mut state = common::test_app_state().await;
+    state.idle_timeout_seconds = 120;
+    state.keep_alive_interval_seconds = 30;
 
-    let session_store = Arc::new(FileSessionStore::new(&sessions_path));
-    let agents_dir = tmp.path().join("agents");
-    let policy_store: Arc<dyn duragent::store::PolicyStore> =
-        Arc::new(FilePolicyStore::new(&agents_dir));
-    let (shutdown_tx, _shutdown_rx) = server::shutdown_channel();
-    let state = AppState {
-        services: RuntimeServices {
-            agents: common::empty_agent_store().await,
-            providers: ProviderRegistry::new(),
-            session_registry: SessionRegistry::new(session_store),
-            gateways: GatewayManager::default(),
-            sandbox: Arc::new(TrustSandbox::new()),
-            policy_store,
-            world_memory_path: tmp.path().join("memory/world"),
-            workspace_directives_path: tmp.path().join("directives"),
-        },
-        scheduler: None,
-        policy_locks: duragent::sync::KeyedLocks::new(),
-        admin_token: None,
-        idle_timeout_seconds: 120,
-        keep_alive_interval_seconds: 30,
-        background_tasks: BackgroundTasks::new(),
-        shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
-    };
-
-    // Create an app with the custom state
     let app = server::build_app(state, 600);
 
     // Verify the app is functional
