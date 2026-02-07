@@ -7,7 +7,7 @@ mod provider;
 mod registry;
 mod types;
 
-pub use anthropic::AnthropicProvider;
+pub use anthropic::{AnthropicAuth, AnthropicProvider};
 pub use error::LLMError;
 pub use openai::OpenAICompatibleProvider;
 pub use provider::{LLMProvider, Provider};
