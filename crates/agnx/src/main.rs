@@ -64,6 +64,12 @@ enum Commands {
         server: Option<String>,
     },
 
+    /// Authenticate with an LLM provider
+    Login {
+        /// Provider to authenticate with (e.g., "anthropic")
+        provider: String,
+    },
+
     /// Manage the HTTP server
     Serve {
         #[command(subcommand)]
@@ -132,6 +138,7 @@ async fn run() -> Result<()> {
             agents_dir,
             server,
         } => commands::chat::run(&agent, &config, agents_dir.as_deref(), server.as_deref()).await,
+        Commands::Login { provider } => commands::login::run(&provider).await,
         Commands::Serve {
             action,
             config,
