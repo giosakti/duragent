@@ -348,14 +348,14 @@ fn to_request(request: &ChatRequest, stream: Option<bool>, oauth: bool) -> Reque
             "text": ANTHROPIC_IDENTITY,
             "cache_control": cache_control,
         })];
-        if let Some(text) = system_text {
-            if !text.is_empty() {
-                blocks.push(serde_json::json!({
-                    "type": "text",
-                    "text": text,
-                    "cache_control": cache_control,
-                }));
-            }
+        if let Some(text) = system_text
+            && !text.is_empty()
+        {
+            blocks.push(serde_json::json!({
+                "type": "text",
+                "text": text,
+                "cache_control": cache_control,
+            }));
         }
         Some(serde_json::Value::Array(blocks))
     } else {
