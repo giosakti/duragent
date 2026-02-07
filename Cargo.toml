@@ -30,6 +30,11 @@ tokio-util = "0.7"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Crypto / encoding
+base64 = "0.22"
+sha2 = "0.10"
+url = "2"
+
 # Error handling
 anyhow = "1"
 thiserror = "2.0"
@@ -46,6 +51,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-saphyr = "0.0"
 
+# Unix-specific
+libc = "0.2"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.15"
@@ -60,9 +68,6 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 
 # Gateway: Telegram
 teloxide = { version = "0.17", features = ["macros"] }
-
-# Unix-specific
-libc = "0.2"
 
 # Dev dependencies
 http-body-util = "0.1"
