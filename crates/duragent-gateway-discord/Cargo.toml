@@ -1,0 +1,38 @@
+[package]
+name = "duragent-gateway-discord"
+description = "Discord gateway for Duragent - can run as built-in or subprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+duragent-gateway-protocol = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+
+# Discord
+serenity = { workspace = true }
+
+[lib]
+name = "duragent_gateway_discord"
+path = "src/lib.rs"
+
+[[bin]]
+name = "duragent-discord"
+path = "src/main.rs"

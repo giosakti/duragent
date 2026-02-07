@@ -1,4 +1,4 @@
-# Project Status - Agnx
+# Project Status - Duragent
 
 > **Purpose:** Living status + session context. The stable vision and principles live in the [Project Charter](./202601111100.project-charter.md).
 
@@ -13,7 +13,7 @@ Key specs and design docs:
 - [Architecture](./202601111101.architecture.md)
 - [API Reference](./202601111102.api-reference.md)
 - [Deployment](./202601111103.deployment.md)
-- [Agnx Agent Format](./202601111200.agnx-agent-format.md)
+- [Duragent Format](./202601111200.duragent-format.md)
 
 ## Key Decisions
 
@@ -21,24 +21,24 @@ Key specs and design docs:
 |----------|--------|-----------|
 | Architecture | Crash-resilient core, durable sessions | Immediate persistence ensures recovery; sessions survive disconnects |
 | Deployment philosophy | Persistent-first, pluggable backends | Simple mode (files) for self-hosted, complex mode (external) for SaaS |
-| Storage default | File-based (`./.agnx/` files) | Zero dependencies, git-friendly, human-readable |
+| Storage default | File-based (`./.duragent/` files) | Zero dependencies, git-friendly, human-readable |
 | Storage pluggable | PostgreSQL, Redis, S3 | Upgrade path for production deployments |
 | Storage formats | JSONL (events), YAML (state), Markdown (prose) | JSONL for high-frequency append-only writes; YAML for structured snapshots; Markdown for human content |
 | Session persistence | Append-only event log + periodic YAML snapshot | Fast writes (append), fast reads (snapshot), human-readable, survives disconnects |
 | Session disconnect | Configurable: `continue` or `pause` | `continue` for async workflows (agent keeps working); `pause` for interactive chat |
 | Sandbox default | bubblewrap (Linux); Docker or trust mode (macOS/Windows) | Lightweight on Linux; heavier isolation or trust mode elsewhere |
 | Sandbox pluggable | Docker, None (trust mode) | Heavier isolation when needed |
-| Terminal attachment | `agnx attach` for remote sessions | "SSH to your agent" — connect/disconnect/resume, session survives |
-| Agent orchestration | Agnx supervises external agents (Claude Code, OpenCode) | Supervisor agent delegates to specialized workers |
+| Terminal attachment | `duragent attach` for remote sessions | "SSH to your agent" — connect/disconnect/resume, session survives |
+| Agent orchestration | Duragent supervises external agents (Claude Code, OpenCode) | Supervisor agent delegates to specialized workers |
 | Worker agents | Claude Code headless, OpenCode, custom | Leverage existing tools via their CLI/SDK interfaces |
 | Orchestration pattern | Supervisor reviews worker output | LLM-based review loop; approve/reject/retry before committing |
-| Core gateways | CLI/TUI, HTTP REST, SSE (built-in) | Protocols that ship with Agnx; SSE for streaming (simpler than WebSocket) |
+| Core gateways | CLI/TUI, HTTP REST, SSE (built-in) | Protocols that ship with Duragent; SSE for streaming (simpler than WebSocket) |
 | Platform gateways | Subprocess plugins (Telegram, Discord, Slack) | JSON-over-stdio protocol; crash independently; any language |
 | Runtime pattern | Simple event loop | Minimal complexity; add features only when needed |
 | Services layer | Session, Memory, Artifact | Clean separation of concerns, pluggable backends |
 | Multi-tenant | Server: thousands; Edge: optimized for few | Lazy loading + LRU cache; edge prioritizes efficiency |
 | Agent deployment | Admin API + file-based | Supports both GitOps and dynamic |
-| Agent definition | YAML + Markdown (AAF; no code) | Portability, inspectable, git-friendly |
+| Agent definition | YAML + Markdown (Duragent Format; no code) | Portability, inspectable, git-friendly |
 | Discovery | A2A Agent Card | Standards-compliant agent discovery |
 | Tool results | Content + Details separation | LLM sees minimal text/JSON; clients get structured metadata |
 | Security | Sandboxed by default (Linux); trust mode available | Sandbox for isolation; trust mode fallback for trusted setups |
@@ -51,11 +51,11 @@ Key specs and design docs:
 ## Roadmap / Milestones
 
 ### v0.1.0 — Foundation ✓
-- [x] Agent spec loader (AAF: YAML + Markdown)
+- [x] Agent spec loader (Duragent Format: YAML + Markdown)
 - [x] LLM providers (OpenRouter, OpenAI, Anthropic, Ollama)
 - [x] Basic agent executor (prompt → response)
 - [x] Core gateways: CLI, HTTP REST
-- [x] CLI: `agnx serve`, `agnx chat`
+- [x] CLI: `duragent serve`, `duragent chat`
 - [x] Sessions API (in-memory)
 - [x] Integration tests
 
@@ -63,13 +63,13 @@ Key specs and design docs:
 - [x] Session persistence (JSONL events + YAML snapshots)
 - [x] Session resume on reconnect
 - [x] Session disconnect behavior (`continue` / `pause`)
-- [x] CLI: `agnx attach` (connect to running/paused session)
+- [x] CLI: `duragent attach` (connect to running/paused session)
 - [x] Core gateways: SSE streaming
 
 ### v0.3.0 — Gateway Plugins ✓
 - [x] Gateway plugin protocol (JSON over stdio)
-- [x] First-party plugin: agnx-gateway-telegram
-- [x] Plugin configuration in agnx.yaml
+- [x] First-party plugin: duragent-gateway-telegram
+- [x] Plugin configuration in duragent.yaml
 - [x] Trust mode (no isolation) — sandbox placeholder
 
 ### v0.4.0 — Tools, Policy, Scheduling, and Memory ✓
@@ -84,7 +84,7 @@ Key specs and design docs:
 - [x] Checkpoint-based snapshots for session persistence
 
 ### v0.4.1 — Discord Gateway ✓
-- [x] First-party plugin: agnx-gateway-discord
+- [x] First-party plugin: duragent-gateway-discord
 - [x] Typing indicator during message processing
 - [x] Memory tool robustness improvements
 
@@ -103,7 +103,7 @@ Key specs and design docs:
 - [ ] Services: PostgreSQL backend
 - [ ] Services: Redis backend
 - [ ] Services: S3 backend
-- [ ] First-party plugin: agnx-gateway-whatsapp
+- [ ] First-party plugin: duragent-gateway-whatsapp
 
 ### v0.8.0 — Agent Orchestration
 - [ ] MCP tool integration
@@ -130,7 +130,7 @@ Key specs and design docs:
 - [ ] ARM64 + x86_64 builds
 - [ ] Raspberry Pi testing in CI
 - [ ] Performance benchmarks (x86, ARM)
-- [ ] `agnx-lite` minimal build
+- [ ] `duragent-lite` minimal build
 - [ ] <50MB runtime memory validation
 
 ## Current Focus
@@ -177,11 +177,11 @@ Key specs and design docs:
 
 ## Next Action
 
-- Implement v0.4.1: agnx-gateway-discord plugin
+- Implement v0.4.1: duragent-gateway-discord plugin
 
 ## Blockers / Known Issues / Decisions Needed
 
-- **Windows: Auto-started server may not survive CLI exit**: The launcher (`src/launcher.rs`) uses `process_group(0)` on Unix to detach the server process, but Windows lacks equivalent handling. On Windows, the auto-started server may be killed when the CLI exits. Workaround: use `agnx serve` in a separate terminal. Fix: add `CREATE_NEW_PROCESS_GROUP` via `std::os::windows::process::CommandExt`.
+- **Windows: Auto-started server may not survive CLI exit**: The launcher (`src/launcher.rs`) uses `process_group(0)` on Unix to detach the server process, but Windows lacks equivalent handling. On Windows, the auto-started server may be killed when the CLI exits. Workaround: use `duragent serve` in a separate terminal. Fix: add `CREATE_NEW_PROCESS_GROUP` via `std::os::windows::process::CommandExt`.
 - **State Synchronization**: `SessionStore` maintains parallel in-memory state while persistence logic is distributed across handlers and streaming code. Risk: forgetting to persist causes state drift on crash. Options: (1) write-through cache in SessionStore, or (2) SessionService layer that wraps store + persistence together. Recommendation: SessionService keeps the store simple (sync, easy to test) while centralizing persistence calls.
 - **Snapshot Data Duplication**: ~~`state.yaml` stores full conversation history, duplicating `events.jsonl`.~~ **Resolved** — checkpoint-based snapshots now store only checkpointed messages; pending messages rebuilt from events since checkpoint.
 

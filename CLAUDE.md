@@ -18,9 +18,9 @@ For full workflow details: `bd prime`
 
 ## Project Overview
 
-> **Agnx** is a durable, portable runtime for AI agents.
+> **Duragent** is a durable, portable runtime for AI agents.
 
-- **Sessions that survive** — crash, restart, reconnect from any terminal: agnx is durable by design
+- **Sessions that survive** — crash, restart, reconnect from any terminal: duragent is durable by design
 - **Transparent state** — agent specs, memories, and sessions are human-readable files you can inspect, version, and export
 - **Sandboxed by default** — bubblewrap on Linux; Docker or trust mode on other platforms
 - **Pluggable everything** — file-based by default; bring your own storage or messaging backends
@@ -36,10 +36,10 @@ Self-host it directly, or use it as the foundation for agent-powered products.
 |---------|-------------|
 | **Session** | Durable conversation context; survives crashes/disconnects; attach/detach like tmux |
 | **on_disconnect** | `continue` (agent keeps working) or `pause` (waits for reconnect) |
-| **Core gateways** | CLI/TUI, HTTP REST, SSE — built into Agnx |
+| **Core gateways** | CLI/TUI, HTTP REST, SSE — built into Duragent |
 | **Platform gateways** | Telegram, Discord, Slack — subprocess plugins via Gateway Protocol |
 | **Sandbox** | bubblewrap (Linux), Docker — configurable isolation |
-| **AAF** | Agnx Agent Format — YAML + Markdown agent definitions |
+| **Duragent Format** | YAML + Markdown agent definitions |
 
 ## Strategic Documents
 
@@ -49,7 +49,7 @@ Self-host it directly, or use it as the foundation for agent-powered products.
 - **[Architecture](./docs/specs/202601111101.architecture.md)**
 - **[API Reference](./docs/specs/202601111102.api-reference.md)**
 - **[Deployment](./docs/specs/202601111103.deployment.md)**
-- **[Agnx Agent Format (AAF)](./docs/specs/202601111200.agnx-agent-format.md)**
+- **[Duragent Format](./docs/specs/202601111200.duragent-format.md)**
 - **[Example skill](./docs/examples/skills/task-extraction/)**
 
 ## Tech Stack

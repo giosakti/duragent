@@ -1,23 +1,23 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/agnx",
-    "crates/agnx-gateway-protocol",
-    "crates/agnx-gateway-discord",
-    "crates/agnx-gateway-telegram",
+    "crates/duragent",
+    "crates/duragent-gateway-protocol",
+    "crates/duragent-gateway-discord",
+    "crates/duragent-gateway-telegram",
 ]
 
 [workspace.package]
 version = "0.4.1"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/AgnxAI/agnx"
+repository = "https://github.com/giosakti/duragent"
 
 [workspace.dependencies]
 # Workspace crates
-agnx-gateway-protocol = { path = "crates/agnx-gateway-protocol" }
-agnx-gateway-discord = { path = "crates/agnx-gateway-discord" }
-agnx-gateway-telegram = { path = "crates/agnx-gateway-telegram" }
+duragent-gateway-protocol = { path = "crates/duragent-gateway-protocol" }
+duragent-gateway-discord = { path = "crates/duragent-gateway-discord" }
+duragent-gateway-telegram = { path = "crates/duragent-gateway-telegram" }
 
 # Async runtime
 async-trait = "0.1"

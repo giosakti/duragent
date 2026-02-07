@@ -1,7 +1,7 @@
 .PHONY: build test test-nocapture lint coverage clean run help
 
 # Build variables
-BINARY_NAME := agnx
+BINARY_NAME := duragent
 BUILD_DIR := target
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")

@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "bash -lc 'cd \"$CLAUDE_PROJECT_DIR\" && if [ \"${AGNX_CLAUDE_RUST_TEST:-0}\" = \"1\" ] && [ -f Cargo.toml ]; then cargo test; fi'",
+            "command": "bash -lc 'cd \"$CLAUDE_PROJECT_DIR\" && if [ \"${DURAGENT_CLAUDE_RUST_TEST:-0}\" = \"1\" ] && [ -f Cargo.toml ]; then cargo test; fi'",
             "timeout": 60
           }
         ]

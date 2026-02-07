@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/AgnxAI/agnx/tree/main/docs
+    url: https://github.com/giosakti/duragent/tree/main/docs
     about: Check the documentation before opening an issue

@@ -1,6 +1,6 @@
-# Contributing to Agnx
+# Contributing to Duragent
 
-Thank you for your interest in contributing to Agnx! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Duragent! This document provides guidelines and instructions for contributing.
 
 ## Development Setup
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to Agnx! This document provides guid
 
 ```bash
 # Clone the repository
-git clone https://github.com/AgnxAI/agnx.git
-cd agnx
+git clone https://github.com/giosakti/duragent.git
+cd duragent
 
 # Build
 make build
@@ -107,7 +107,7 @@ docs: update API reference with new endpoints
 ## Project Structure
 
 ```
-agnx/
+duragent/
 ├── src/                # Source code
 │   ├── main.rs         # CLI entrypoint
 │   ├── config.rs       # Configuration loading

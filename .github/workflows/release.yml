@@ -41,14 +41,14 @@ jobs:
       - name: Package (Unix)
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../agnx-${{ matrix.target }}.${{ matrix.archive }} agnx
+          tar -czvf ../../../duragent-${{ matrix.target }}.${{ matrix.archive }} duragent
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: agnx-${{ matrix.target }}
-          path: agnx-${{ matrix.target }}.${{ matrix.archive }}
+          name: duragent-${{ matrix.target }}
+          path: duragent-${{ matrix.target }}.${{ matrix.archive }}
 
   release:
     name: Create Release

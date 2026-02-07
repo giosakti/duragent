@@ -1,10 +1,10 @@
-# Agnx
+# Duragent
 
-[![CI](https://github.com/AgnxAI/agnx/actions/workflows/ci.yml/badge.svg)](https://github.com/AgnxAI/agnx/actions/workflows/ci.yml)
+[![CI](https://github.com/giosakti/duragent/actions/workflows/ci.yml/badge.svg)](https://github.com/giosakti/duragent/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Agnx** — Assemble your own agent runtime.
+> **Duragent** — Assemble your own agent runtime.
 
 One binary. Modular parts. Zero dependencies.
 
@@ -14,7 +14,7 @@ Build a personal assistant, a support bot, or a multi-tenant platform. Same runt
 
 ### The problems we solve
 
-| Problem | Agnx |
+| Problem | Duragent |
 |---------|------|
 | Sessions lost on crash | **Durable** — attach/detach like tmux |
 | Agents locked in code | **Portable** — YAML + Markdown |
@@ -33,28 +33,28 @@ Use the built-ins, or we'll provide mechanism later for you to build and swap in
 | Sandbox | Trust mode | bubblewrap, Docker *(planned)* |
 | Storage | Filesystem | Postgres, Redis, S3 *(planned)* |
 
-Swappability through clean interfaces. See [Gateway Protocol](./crates/agnx-gateway-protocol) for an example.
+Swappability through clean interfaces. See [Gateway Protocol](./crates/duragent-gateway-protocol) for an example.
 
 ### Work-in-Progress (to be released soon)
 
 Memory banks, tools, and orchestration.
-Built the Agnx way: simple, transparent, portable, swappable.
+Built the Duragent way: simple, transparent, portable, swappable.
 
 ## Installation
 
 ### From Source
 
 ```bash
-git clone https://github.com/AgnxAI/agnx.git
-cd agnx
+git clone https://github.com/giosakti/duragent.git
+cd duragent
 make build
-./target/release/agnx --version
+./target/release/duragent --version
 ```
 
 ### Cargo Install
 
 ```bash
-cargo install --git https://github.com/AgnxAI/agnx.git
+cargo install --git https://github.com/giosakti/duragent.git
 ```
 
 ## Quick Start
@@ -62,10 +62,10 @@ cargo install --git https://github.com/AgnxAI/agnx.git
 ### 1. Create an agent
 
 ```bash
-mkdir -p .agnx/agents/my-assistant
+mkdir -p .duragent/agents/my-assistant
 
-cat > .agnx/agents/my-assistant/agent.yaml << 'EOF'
-apiVersion: agnx/v1alpha1
+cat > .duragent/agents/my-assistant/agent.yaml << 'EOF'
+apiVersion: duragent/v1alpha1
 kind: Agent
 metadata:
   name: my-assistant
@@ -78,7 +78,7 @@ spec:
     on_disconnect: pause
 EOF
 
-cat > .agnx/agents/my-assistant/SYSTEM_PROMPT.md << 'EOF'
+cat > .duragent/agents/my-assistant/SYSTEM_PROMPT.md << 'EOF'
 You are a helpful assistant. Be concise and actionable.
 EOF
 ```
@@ -87,31 +87,31 @@ EOF
 
 ```bash
 export OPENROUTER_API_KEY=your-key
-agnx serve --port 8080
+duragent serve --port 8080
 ```
 
 ### 3. Chat with your agent
 
 ```bash
-agnx chat --agent my-assistant
+duragent chat --agent my-assistant
 ```
 
 ### 4. Attach to a session later
 
 ```bash
 # List attachable sessions
-agnx attach --list
+duragent attach --list
 
 # Attach to existing session
-agnx attach SESSION_ID
+duragent attach SESSION_ID
 ```
 
 ## Workspace Layout
 
 ```
-./.agnx/
+./.duragent/
 ├── agents/<agent-name>/
-│   ├── agent.yaml           # Agent definition (AAF)
+│   ├── agent.yaml           # Agent definition (Duragent Format)
 │   ├── SYSTEM_PROMPT.md     # Agent personality
 │   └── INSTRUCTIONS.md      # Behavioral rules (optional)
 └── sessions/
@@ -129,7 +129,7 @@ agnx attach SESSION_ID
 | [Architecture](./docs/specs/202601111101.architecture.md) | System design and components |
 | [API Reference](./docs/specs/202601111102.api-reference.md) | HTTP API and CLI commands |
 | [Deployment](./docs/specs/202601111103.deployment.md) | Deployment modes and configuration |
-| [Agent Format (AAF)](./docs/specs/202601111200.agnx-agent-format.md) | Agent definition specification |
+| [Duragent Format](./docs/specs/202601111200.duragent-format.md) | Agent definition specification |
 | [Example Skill](./docs/examples/skills/task-extraction/) | Sample skill implementation |
 
 ## Tech Stack

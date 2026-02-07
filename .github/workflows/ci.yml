@@ -49,4 +49,4 @@ jobs:
         run: cargo build --release
 
       - name: Verify binary
-        run: ./target/release/agnx --version
+        run: ./target/release/duragent --version

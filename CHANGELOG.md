@@ -7,10 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Project renamed from Agnx to Duragent; repository moved to `github.com/giosakti/duragent`
+
 ## [0.4.1] - 2026-02-06
 
 ### Added
-- Discord gateway (`agnx-gateway-discord`)
+- Discord gateway (`duragent-gateway-discord`)
   - Supports both built-in (feature flag) and subprocess modes
   - Serenity 0.12 for Discord API (websocket gateway + HTTP)
   - Button components for approval flow (inline keyboard)
@@ -77,14 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Gateway plugin architecture for platform integrations
-  - Gateway Protocol (`agnx-gateway-protocol` crate) with JSON-over-stdio communication
+  - Gateway Protocol (`duragent-gateway-protocol` crate) with JSON-over-stdio communication
   - Gateway Manager with unified interface for built-in and subprocess gateways
   - Subprocess supervision with restart policies (`always`, `on_failure`, `never`)
   - Exponential backoff and parent-death handling for subprocess gateways
-- Telegram gateway (`agnx-gateway-telegram`)
+- Telegram gateway (`duragent-gateway-telegram`)
   - Supports both built-in (feature flag) and subprocess modes
   - DM and group chat support with bot commands
-- Global agent routing rules in `agnx.yaml`
+- Global agent routing rules in `duragent.yaml`
   - Match conditions: `gateway`, `chat_type`, `chat_id`, `sender_id`
   - First-match-wins evaluation order
   - Session routing persisted in snapshots (gateway + chat_id)
@@ -97,7 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `${VAR:-default}` for optional with defaults
 
 ### Changed
-- Refactored to workspace structure (`crates/agnx`, `crates/agnx-gateway-*`)
+- Refactored to workspace structure (`crates/duragent`, `crates/duragent-gateway-*`)
 - AssistantMessage events now track agent name for mid-session agent switching
 
 ## [0.2.0] - 2026-01-27
@@ -109,13 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Peek/commit pattern prevents sequence drift on write failures
 - Session resume on reconnect
   - Snapshot loading with event replay after `last_event_seq`
-  - Server startup recovery scans `.agnx/sessions/` directory
+  - Server startup recovery scans `.duragent/sessions/` directory
 - Session disconnect behavior (`on_disconnect` config)
   - `pause` mode: cancels LLM, saves partial content, pauses session
   - `continue` mode: transfers stream to background task, continues execution
-- CLI `agnx attach` command
-  - `agnx attach --list` shows attachable sessions
-  - `agnx attach SESSION_ID` reconnects with conversation history
+- CLI `duragent attach` command
+  - `duragent attach --list` shows attachable sessions
+  - `duragent attach SESSION_ID` reconnects with conversation history
 - SSE streaming endpoint (`POST /api/v1/sessions/{id}/stream`)
   - Events: `start`, `token`, `done`, `cancelled`, `error`, `keep-alive`
   - Configurable idle timeout and keep-alive heartbeat
@@ -127,16 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-01-25
 
 ### Added
-- Agent spec loader for Agnx Agent Format (AAF: YAML + Markdown)
+- Agent spec loader for Duragent Format (YAML + Markdown)
 - LLM provider abstraction with support for OpenRouter, OpenAI, Anthropic, and Ollama
 - Basic agent executor (prompt → response)
 - HTTP API endpoints:
   - Health checks: `/livez`, `/readyz`, `/version`
   - Agents API: `GET /api/v1/agents`, `GET /api/v1/agents/{name}`
   - Sessions API: `POST /api/v1/sessions`, `GET /api/v1/sessions/{id}`, `POST /api/v1/sessions/{id}/messages`
-- CLI commands: `agnx serve`, `agnx chat`
+- CLI commands: `duragent serve`, `duragent chat`
 - RFC 7807 Problem Details for error responses
-- Configuration loading from YAML (`agnx.yaml`)
+- Configuration loading from YAML (`duragent.yaml`)
 - In-memory session store
 - Integration tests for HTTP API
 - CI pipeline with linting, testing, and build verification
@@ -150,12 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial repository setup
 - Project documentation (architecture, API reference, deployment guide)
-- Agnx Agent Format (AAF) specification
+- Duragent Format specification
 
-[Unreleased]: https://github.com/AgnxAI/agnx/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/AgnxAI/agnx/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/AgnxAI/agnx/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/AgnxAI/agnx/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/AgnxAI/agnx/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/AgnxAI/agnx/compare/v0.0.1...v0.1.0
-[0.0.1]: https://github.com/AgnxAI/agnx/releases/tag/v0.0.1
+[Unreleased]: https://github.com/giosakti/duragent/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/giosakti/duragent/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/giosakti/duragent/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/giosakti/duragent/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/giosakti/duragent/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/giosakti/duragent/compare/v0.0.1...v0.1.0
+[0.0.1]: https://github.com/giosakti/duragent/releases/tag/v0.0.1

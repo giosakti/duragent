@@ -28,7 +28,7 @@ What actually happened.
 
 - OS: [e.g., Ubuntu 24.04, macOS 26]
 - Rust version: [e.g., 1.92.0]
-- Agnx version: [e.g., v0.1.0 or commit hash]
+- Duragent version: [e.g., v0.1.0 or commit hash]
 
 ## Additional Context
 
