@@ -9,13 +9,15 @@
 use async_trait::async_trait;
 use tracing::{debug, error, warn};
 
-use duragent_gateway_protocol::{CallbackQueryData, MessageContent, RoutingContext, Sender};
+use duragent_gateway_protocol::{
+    CallbackQueryData, MessageContent, MessageReceivedData, RoutingContext, Sender,
+};
 
 use super::{MessageHandler, build_approval_keyboard};
-use crate::agent::PolicyLocks;
+use crate::agent::{ActivationMode, ContextBufferConfig, ContextBufferMode, PolicyLocks};
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
-use crate::context::{ContextBuilder, load_all_directives};
+use crate::context::{BlockSource, ContextBuilder, SystemBlock, load_all_directives, priority};
 use crate::scheduler::SchedulerHandle;
 use crate::server::RuntimeServices;
 use crate::session::{
@@ -118,6 +120,11 @@ impl GatewayMessageHandler {
         let gateway_clone = gateway.to_string();
         let chat_id_clone = routing.chat_id.clone();
         let on_disconnect = agent.session.on_disconnect;
+        let silent_buffer_cap = agent
+            .access
+            .as_ref()
+            .map(|a| a.groups.context_buffer.max_messages)
+            .unwrap_or(crate::session::DEFAULT_SILENT_BUFFER_CAP);
 
         // Use atomic get-or-insert to prevent race conditions
         let session_id = match self
@@ -144,6 +151,7 @@ impl GatewayMessageHandler {
                                 on_disconnect,
                                 Some(gateway.clone()),
                                 Some(chat_id.clone()),
+                                silent_buffer_cap,
                             )
                             .await?;
 
@@ -233,6 +241,59 @@ impl GatewayMessageHandler {
         None
     }
 
+    /// Build a context buffer system block from recent silent messages.
+    ///
+    /// Returns None if there are no recent silent messages.
+    async fn build_context_buffer_block(
+        &self,
+        handle: &SessionHandle,
+        config: &ContextBufferConfig,
+    ) -> Option<SystemBlock> {
+        let max_age = chrono::Duration::hours(config.max_age_hours as i64);
+        let entries = handle
+            .get_recent_silent_messages(config.max_messages, max_age)
+            .await
+            .ok()?;
+
+        if entries.is_empty() {
+            return None;
+        }
+
+        let mut buffer = String::from("Recent group conversation before you were mentioned:\n\n");
+        for entry in &entries {
+            buffer.push_str(&entry.content);
+            buffer.push('\n');
+        }
+
+        Some(SystemBlock {
+            content: buffer,
+            label: "group_context".to_string(),
+            source: BlockSource::Session,
+            priority: priority::SESSION,
+        })
+    }
+
+    /// Check if context buffer injection should apply for this routing context.
+    ///
+    /// Returns `None` for passive mode since those messages are already in conversation history.
+    fn should_inject_context_buffer<'a>(
+        &self,
+        agent: &'a crate::agent::AgentSpec,
+        routing: &RoutingContext,
+    ) -> Option<&'a ContextBufferConfig> {
+        if !is_group_chat(&routing.chat_type) {
+            return None;
+        }
+        let access = agent.access.as_ref()?;
+        if access.groups.activation != ActivationMode::Mention {
+            return None;
+        }
+        if access.groups.context_buffer.mode == ContextBufferMode::Passive {
+            return None;
+        }
+        Some(&access.groups.context_buffer)
+    }
+
     /// Process a text message and return the response.
     async fn process_text_message(
         &self,
@@ -241,6 +302,7 @@ impl GatewayMessageHandler {
         handle: &SessionHandle,
         text: &str,
         sender: &Sender,
+        routing: &RoutingContext,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
 
@@ -260,7 +322,7 @@ impl GatewayMessageHandler {
         // Route to agentic loop if agent has tools configured
         if !agent.tools.is_empty() {
             return self
-                .process_text_message_agentic(gateway, chat_id, handle, text)
+                .process_text_message_agentic(gateway, chat_id, handle, text, routing)
                 .await;
         }
 
@@ -282,17 +344,24 @@ impl GatewayMessageHandler {
         // Build structured context and render to ChatRequest
         let directives =
             load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
-        let chat_request = ContextBuilder::new()
+        let mut builder = ContextBuilder::new()
             .from_agent_spec(agent)
             .with_messages(history)
-            .with_directives(directives)
-            .build()
-            .render(
-                &agent.model.name,
-                agent.model.temperature,
-                agent.model.max_output_tokens,
-                vec![],
-            );
+            .with_directives(directives);
+
+        // Inject context buffer for mention-activated group chats
+        if let Some(config) = self.should_inject_context_buffer(agent, routing) {
+            if let Some(block) = self.build_context_buffer_block(handle, config).await {
+                builder = builder.add_block(block);
+            }
+        }
+
+        let chat_request = builder.build().render(
+            &agent.model.name,
+            agent.model.temperature,
+            agent.model.max_output_tokens,
+            vec![],
+        );
 
         let response = match provider.chat(chat_request).await {
             Ok(resp) => resp,
@@ -325,6 +394,7 @@ impl GatewayMessageHandler {
         chat_id: &str,
         handle: &SessionHandle,
         _text: &str,
+        routing: &RoutingContext,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
 
@@ -369,10 +439,19 @@ impl GatewayMessageHandler {
         };
         let directives =
             load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
-        let messages = ContextBuilder::new()
+        let mut builder = ContextBuilder::new()
             .from_agent_spec(agent)
             .with_messages(history)
-            .with_directives(directives)
+            .with_directives(directives);
+
+        // Inject context buffer for mention-activated group chats
+        if let Some(config) = self.should_inject_context_buffer(agent, routing) {
+            if let Some(block) = self.build_context_buffer_block(handle, config).await {
+                builder = builder.add_block(block);
+            }
+        }
+
+        let messages = builder
             .build()
             .render(
                 &agent.model.name,
@@ -452,13 +531,11 @@ impl GatewayMessageHandler {
 
 #[async_trait]
 impl MessageHandler for GatewayMessageHandler {
-    async fn handle_message(
-        &self,
-        gateway: &str,
-        routing: &RoutingContext,
-        content: &MessageContent,
-        sender: &Sender,
-    ) -> Option<String> {
+    async fn handle_message(&self, gateway: &str, data: &MessageReceivedData) -> Option<String> {
+        let routing = &data.routing;
+        let content = &data.content;
+        let sender = &data.sender;
+
         // Get or create session for this chat
         let handle = self.get_or_create_session(gateway, routing).await?;
 
@@ -522,7 +599,45 @@ impl MessageHandler for GatewayMessageHandler {
                         }
                         return None;
                     }
-                    SenderDisposition::Allow => {} // proceed normally
+                    SenderDisposition::Allow => {
+                        // Mention gating: in mention mode, non-triggered messages go to context buffer
+                        if access.groups.activation == ActivationMode::Mention
+                            && !data.mentions_bot
+                            && !data.reply_to_bot
+                        {
+                            if let Some(text) = extract_text(content) {
+                                let sender_label = resolve_sender_label(sender);
+                                let prefixed = format!("{}: {}", sender_label, text);
+                                match access.groups.context_buffer.mode {
+                                    ContextBufferMode::Silent => {
+                                        if let Err(e) = handle
+                                            .add_silent_message(
+                                                prefixed,
+                                                sender.id.clone(),
+                                                Some(sender_label),
+                                            )
+                                            .await
+                                        {
+                                            warn!(error = %e, "Failed to persist context buffer message");
+                                        }
+                                    }
+                                    ContextBufferMode::Passive => {
+                                        if let Err(e) = handle
+                                            .add_user_message_with_sender(
+                                                prefixed,
+                                                Some(sender.id.clone()),
+                                                Some(sender_label),
+                                            )
+                                            .await
+                                        {
+                                            warn!(error = %e, "Failed to persist context buffer message");
+                                        }
+                                    }
+                                }
+                            }
+                            return None;
+                        }
+                    }
                 }
             }
         }
@@ -548,8 +663,15 @@ impl MessageHandler for GatewayMessageHandler {
                 } else {
                     text.clone()
                 };
-                self.process_text_message(gateway, &routing.chat_id, &handle, &text, sender)
-                    .await
+                self.process_text_message(
+                    gateway,
+                    &routing.chat_id,
+                    &handle,
+                    &text,
+                    sender,
+                    routing,
+                )
+                .await
             }
             MessageContent::Media { caption, .. } => {
                 if let Some(caption) = caption
@@ -561,7 +683,14 @@ impl MessageHandler for GatewayMessageHandler {
                         caption.clone()
                     };
                     return self
-                        .process_text_message(gateway, &routing.chat_id, &handle, &text, sender)
+                        .process_text_message(
+                            gateway,
+                            &routing.chat_id,
+                            &handle,
+                            &text,
+                            sender,
+                            routing,
+                        )
                         .await;
                 }
                 None

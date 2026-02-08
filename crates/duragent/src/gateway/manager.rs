@@ -17,8 +17,7 @@ use tracing::{debug, error, info, warn};
 const DEFAULT_MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(300);
 
 use duragent_gateway_protocol::{
-    GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageContent, RoutingContext,
-    Sender,
+    GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageReceivedData,
 };
 
 // ============================================================================
@@ -282,12 +281,7 @@ impl GatewayManager {
                             // Wrap handler with timeout to prevent hung LLM calls
                             let handler_result = tokio::time::timeout(
                                 handler_timeout,
-                                handler.handle_message(
-                                    &gateway,
-                                    &data.routing,
-                                    &data.content,
-                                    &data.sender,
-                                ),
+                                handler.handle_message(&gateway, &data),
                             )
                             .await;
 
@@ -498,13 +492,7 @@ pub trait MessageHandler: Send + Sync {
     /// Handle an incoming message from a gateway.
     ///
     /// Returns the response content to send back, or None if no response.
-    async fn handle_message(
-        &self,
-        gateway: &str,
-        routing: &RoutingContext,
-        content: &MessageContent,
-        sender: &Sender,
-    ) -> Option<String>;
+    async fn handle_message(&self, gateway: &str, data: &MessageReceivedData) -> Option<String>;
 
     /// Handle a callback query from an inline keyboard button press.
     ///
