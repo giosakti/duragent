@@ -130,6 +130,29 @@ pub async fn run(
         .rebuild_from_sessions(&session_store, &recovered_session_ids)
         .await;
 
+    // Spawn session TTL expiry loop
+    if config.sessions.ttl_hours > 0 {
+        let expiry_registry = session_registry.clone();
+        let expiry_cache = chat_session_cache.clone();
+        let expiry_agents = store.clone();
+        let ttl_hours = config.sessions.ttl_hours;
+        tokio::spawn(async move {
+            let ttl = chrono::Duration::hours(ttl_hours as i64);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // skip immediate tick
+            loop {
+                interval.tick().await;
+                expiry_registry
+                    .expire_inactive_sessions(ttl, &expiry_cache, &expiry_agents)
+                    .await;
+            }
+        });
+        info!(
+            ttl_hours = config.sessions.ttl_hours,
+            "Session TTL expiry enabled"
+        );
+    }
+
     // Initialize scheduler service (before gateway handler so it can be passed in)
     let schedules_path = sessions_path
         .parent()

@@ -137,6 +137,7 @@ impl SessionRegistry {
         gateway_chat_id: Option<String>,
         silent_buffer_cap: usize,
         actor_message_limit: usize,
+        compaction_override: Option<CompactionMode>,
     ) -> Result<SessionHandle, ActorError> {
         let id = format!("{}{}", SESSION_ID_PREFIX, Ulid::new());
 
@@ -149,7 +150,7 @@ impl SessionRegistry {
             gateway_chat_id,
             silent_buffer_cap,
             actor_message_limit,
-            compaction_mode: self.compaction_mode,
+            compaction_mode: compaction_override.unwrap_or(self.compaction_mode),
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -425,6 +426,74 @@ impl SessionRegistry {
     }
 
     // ------------------------------------------------------------------------
+    // TTL / Expiry
+    // ------------------------------------------------------------------------
+
+    /// Expire sessions that have been inactive beyond the given TTL.
+    ///
+    /// Checks per-agent TTL override via `agents`. Falls back to `global_ttl`.
+    /// Skips sessions already in `Completed` status.
+    /// Returns the number of sessions expired.
+    pub async fn expire_inactive_sessions(
+        &self,
+        global_ttl: chrono::Duration,
+        chat_session_cache: &super::ChatSessionCache,
+        agents: &crate::agent::AgentStore,
+    ) -> usize {
+        let now = chrono::Utc::now();
+
+        // Collect handles to avoid holding DashMap ref across await
+        let handles: Vec<SessionHandle> = self
+            .handles
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+
+        let mut expired_count = 0;
+
+        for handle in handles {
+            let Ok(metadata) = handle.get_metadata().await else {
+                continue;
+            };
+
+            // Skip already completed sessions
+            if metadata.status == SessionStatus::Completed {
+                continue;
+            }
+
+            // Determine TTL: per-agent override or global
+            let ttl = agents
+                .get(&metadata.agent)
+                .and_then(|agent| agent.session.ttl_hours)
+                .map(|h| chrono::Duration::hours(h as i64))
+                .unwrap_or(global_ttl);
+
+            let inactive_duration = now - metadata.updated_at;
+            if inactive_duration < ttl {
+                continue;
+            }
+
+            info!(
+                session_id = %metadata.id,
+                agent = %metadata.agent,
+                inactive_hours = inactive_duration.num_hours(),
+                "Expiring inactive session"
+            );
+
+            let _ = handle.set_status(SessionStatus::Completed).await;
+            chat_session_cache.remove_by_session_id(&metadata.id).await;
+            self.handles.remove(&metadata.id);
+            expired_count += 1;
+        }
+
+        if expired_count > 0 {
+            info!(expired = expired_count, "Session expiry sweep complete");
+        }
+
+        expired_count
+    }
+
+    // ------------------------------------------------------------------------
     // Special
     // ------------------------------------------------------------------------
 
@@ -487,6 +556,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -523,6 +593,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -534,6 +605,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -560,6 +632,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -583,6 +656,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -606,6 +680,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -725,6 +800,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
