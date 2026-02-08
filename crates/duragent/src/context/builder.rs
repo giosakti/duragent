@@ -137,6 +137,7 @@ mod tests {
             memory: None,
             tools: Vec::new(),
             policy: ToolPolicy::default(),
+            access: None,
             agent_dir: PathBuf::from("/tmp/test-agent"),
         }
     }
