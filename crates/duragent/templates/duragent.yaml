@@ -1,0 +1,40 @@
+# Duragent configuration
+# See: https://github.com/giosakti/duragent
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  # request_timeout_seconds: 300
+  # idle_timeout_seconds: 60
+  # keep_alive_interval_seconds: 15
+  # admin_token: ${DURAGENT_ADMIN_TOKEN:-}
+
+# Session lifecycle
+# sessions:
+#   ttl_hours: 168              # 0 to disable auto-expiry
+#   compaction: discard          # discard | archive | disabled
+
+# Sandbox isolation
+# sandbox:
+#   mode: trust                  # trust | bubblewrap | docker
+
+# Gateway integrations
+# gateways:
+#   telegram:
+#     bot_token: ${TELEGRAM_BOT_TOKEN:-}
+#   discord:
+#     bot_token: ${DISCORD_BOT_TOKEN:-}
+#   external:
+#     - name: my-gateway
+#       command: /path/to/gateway-binary
+#       args: []
+#       restart: on_failure      # always | on_failure | never
+
+# Message routing (evaluated in order, first match wins)
+# routes:
+#   - match:
+#       gateway: telegram
+#       chat_type: dm            # dm | group | channel
+#     agent: my-assistant
+#   - match: {}                  # catch-all
+#     agent: default-assistant

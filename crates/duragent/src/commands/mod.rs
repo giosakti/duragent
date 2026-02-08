@@ -8,6 +8,7 @@ use duragent::config::DEFAULT_WORKSPACE;
 
 pub mod attach;
 pub mod chat;
+pub mod init;
 mod interactive;
 pub mod login;
 pub mod serve;

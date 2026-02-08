@@ -64,6 +64,30 @@ enum Commands {
         server: Option<String>,
     },
 
+    /// Initialize a new Duragent workspace
+    Init {
+        /// Directory to initialize (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Name for the starter agent
+        #[arg(long)]
+        agent_name: Option<String>,
+
+        /// LLM provider [anthropic, openrouter, openai, ollama]
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Model name — format depends on provider (e.g., "claude-sonnet-4-20250514"
+        /// for anthropic, "anthropic/claude-sonnet-4" for openrouter)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Skip interactive prompts; use defaults for missing flags
+        #[arg(long)]
+        no_interactive: bool,
+    },
+
     /// Authenticate with an LLM provider
     Login {
         /// Provider to authenticate with (e.g., "anthropic")
@@ -138,6 +162,13 @@ async fn run() -> Result<()> {
             agents_dir,
             server,
         } => commands::chat::run(&agent, &config, agents_dir.as_deref(), server.as_deref()).await,
+        Commands::Init {
+            path,
+            agent_name,
+            provider,
+            model,
+            no_interactive,
+        } => commands::init::run(&path, agent_name, provider, model, no_interactive).await,
         Commands::Login { provider } => commands::login::run(&provider).await,
         Commands::Serve {
             action,

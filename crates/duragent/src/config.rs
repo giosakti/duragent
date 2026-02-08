@@ -90,6 +90,10 @@ pub const DEFAULT_SESSIONS_DIR: &str = "sessions";
 pub const DEFAULT_WORLD_MEMORY_DIR: &str = "memory/world";
 /// Default directives directory (relative to workspace).
 pub const DEFAULT_DIRECTIVES_DIR: &str = "directives";
+/// Default schedules directory (relative to workspace).
+pub const DEFAULT_SCHEDULES_DIR: &str = "schedules";
+/// Default artifacts directory (relative to workspace).
+pub const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
 
 // ============================================================================
 // Private Helpers (Serde Defaults)
