@@ -94,13 +94,35 @@ impl TelegramGateway {
 
         info!("Telegram gateway starting");
 
+        // Get bot identity for mention detection
+        let bot_user = match bot.get_me().await {
+            Ok(me) => {
+                info!(
+                    bot_id = %me.id,
+                    bot_username = ?me.username(),
+                    "Got bot identity"
+                );
+                Some(std::sync::Arc::new(BotIdentity {
+                    user_id: me.id.0,
+                    username: me.username().to_string(),
+                }))
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to get bot identity, mention detection disabled");
+                None
+            }
+        };
+
         // Build dispatcher and get shutdown token for graceful shutdown
         let message_handler = Update::filter_message().endpoint({
             let event_tx = event_tx.clone();
+            let bot_user = bot_user.clone();
             move |bot: Bot, msg: Message| {
                 let event_tx = event_tx.clone();
+                let bot_user = bot_user.clone();
                 async move {
-                    if let Err(e) = handle_message(&bot, &msg, &event_tx).await {
+                    if let Err(e) = handle_message(&bot, &msg, &event_tx, bot_user.as_deref()).await
+                    {
                         warn!(error = %e, "Failed to handle message");
                     }
                     respond(())
@@ -321,6 +343,16 @@ impl TelegramGateway {
 }
 
 // ============================================================================
+// Bot Identity
+// ============================================================================
+
+/// Bot identity for mention detection.
+struct BotIdentity {
+    user_id: u64,
+    username: String,
+}
+
+// ============================================================================
 // Message Handling
 // ============================================================================
 
@@ -328,6 +360,7 @@ async fn handle_message(
     _bot: &Bot,
     msg: &Message,
     event_tx: &mpsc::Sender<GatewayEvent>,
+    bot_identity: Option<&BotIdentity>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content = extract_content(msg);
     let Some(content) = content else {
@@ -338,6 +371,9 @@ async fn handle_message(
     let sender = extract_sender(msg);
     let routing = extract_routing(msg);
 
+    // Detect if bot was @mentioned or replied to
+    let (mentions_bot, reply_to_bot) = detect_bot_trigger(msg, bot_identity);
+
     let event = GatewayEvent::MessageReceived(Box::new(MessageReceivedData {
         message_id: msg.id.0.to_string(),
         chat_id: msg.chat.id.0.to_string(),
@@ -345,12 +381,46 @@ async fn handle_message(
         content,
         routing,
         reply_to: msg.reply_to_message().map(|m| m.id.0.to_string()),
+        mentions_bot,
+        reply_to_bot,
         timestamp: Some(msg.date),
         metadata: serde_json::json!({}),
     }));
 
     event_tx.send(event).await?;
     Ok(())
+}
+
+/// Detect if the bot was @mentioned or replied to in a message.
+fn detect_bot_trigger(msg: &Message, bot_identity: Option<&BotIdentity>) -> (bool, bool) {
+    let Some(identity) = bot_identity else {
+        return (false, false);
+    };
+
+    // Check @mentions in message entities (using MessageEntityRef for safe UTF-16 → UTF-8 conversion)
+    let mentions_bot = msg
+        .parse_entities()
+        .map(|entities| {
+            entities.iter().any(|entity| match entity.kind() {
+                teloxide::types::MessageEntityKind::Mention => {
+                    let mention = entity.text().strip_prefix('@').unwrap_or(entity.text());
+                    mention.eq_ignore_ascii_case(&identity.username)
+                }
+                teloxide::types::MessageEntityKind::TextMention { user } => {
+                    user.id.0 == identity.user_id
+                }
+                _ => false,
+            })
+        })
+        .unwrap_or(false);
+
+    // Check if this is a reply to a bot message
+    let reply_to_bot = msg
+        .reply_to_message()
+        .and_then(|reply| reply.from.as_ref())
+        .is_some_and(|user| user.id.0 == identity.user_id);
+
+    (mentions_bot, reply_to_bot)
 }
 
 async fn handle_callback_query(

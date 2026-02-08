@@ -85,6 +85,11 @@ pub enum SessionCommand {
     GetMessages {
         reply: oneshot::Sender<Result<Vec<Message>, ActorError>>,
     },
+    GetRecentSilentMessages {
+        max_messages: usize,
+        max_age: chrono::Duration,
+        reply: oneshot::Sender<Result<Vec<SilentMessageEntry>, ActorError>>,
+    },
     GetMetadata {
         reply: oneshot::Sender<Result<SessionMetadata, ActorError>>,
     },
@@ -104,6 +109,13 @@ pub enum SessionCommand {
     ForceSnapshot {
         reply: oneshot::Sender<Result<(), ActorError>>,
     },
+}
+
+/// Entry in the ephemeral silent message buffer for context injection.
+#[derive(Debug, Clone)]
+pub struct SilentMessageEntry {
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 // ============================================================================
@@ -148,6 +160,9 @@ pub struct SessionMetadata {
 // Configuration
 // ============================================================================
 
+/// Default silent buffer capacity when no agent config is available.
+pub const DEFAULT_SILENT_BUFFER_CAP: usize = 200;
+
 /// Configuration for spawning a new actor.
 pub struct ActorConfig {
     pub id: String,
@@ -156,6 +171,8 @@ pub struct ActorConfig {
     pub on_disconnect: OnDisconnect,
     pub gateway: Option<String>,
     pub gateway_chat_id: Option<String>,
+    /// Maximum entries in the ephemeral silent message buffer.
+    pub silent_buffer_cap: usize,
 }
 
 /// Configuration for recovering an actor from a snapshot.
@@ -164,6 +181,8 @@ pub struct RecoverConfig {
     pub store: Arc<dyn SessionStore>,
     /// Messages reconstructed from events after checkpoint_seq.
     pub pending_messages: Vec<Message>,
+    /// Maximum entries in the ephemeral silent message buffer.
+    pub silent_buffer_cap: usize,
 }
 
 // ============================================================================

@@ -21,9 +21,11 @@ use crate::api::SessionStatus;
 use crate::llm::{Message, Role, Usage};
 use crate::store::SessionStore;
 
+#[cfg(test)]
+use super::actor_types::DEFAULT_SILENT_BUFFER_CAP;
 use super::actor_types::{
     ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, CHECKPOINT_THRESHOLD, FLUSH_INTERVAL,
-    RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata,
+    RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata, SilentMessageEntry,
 };
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
 use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
@@ -58,6 +60,10 @@ pub struct SessionActor {
 
     // Approval state
     pending_approval: Option<PendingApproval>,
+
+    // Ephemeral silent message buffer for context injection (lost on crash)
+    silent_buffer: VecDeque<SilentMessageEntry>,
+    silent_buffer_cap: usize,
 
     // Configuration
     on_disconnect: OnDisconnect,
@@ -99,6 +105,8 @@ impl SessionActor {
             last_flushed_seq: 0,
             last_snapshot_seq: 0,
             pending_approval: None,
+            silent_buffer: VecDeque::new(),
+            silent_buffer_cap: config.silent_buffer_cap,
             on_disconnect: config.on_disconnect,
             gateway: config.gateway,
             gateway_chat_id: config.gateway_chat_id,
@@ -139,6 +147,8 @@ impl SessionActor {
             last_flushed_seq: snapshot.last_event_seq,
             last_snapshot_seq: snapshot.last_event_seq,
             pending_approval: snapshot.config.pending_approval,
+            silent_buffer: VecDeque::new(),
+            silent_buffer_cap: config.silent_buffer_cap,
             on_disconnect: snapshot.config.on_disconnect,
             gateway: snapshot.config.gateway,
             gateway_chat_id: snapshot.config.gateway_chat_id,
@@ -363,6 +373,14 @@ impl SessionActor {
             SessionCommand::GetPendingApproval { reply } => {
                 let _ = reply.send(Ok(self.pending_approval.clone()));
             }
+            SessionCommand::GetRecentSilentMessages {
+                max_messages,
+                max_age,
+                reply,
+            } => {
+                let result = self.get_recent_silent_messages(max_messages, max_age);
+                let _ = reply.send(Ok(result));
+            }
             SessionCommand::FinalizeStream {
                 content,
                 usage,
@@ -451,6 +469,15 @@ impl SessionActor {
     ) -> Result<u64, ActorError> {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
+
+        // Push to ephemeral context buffer (capped at configured limit)
+        self.silent_buffer.push_back(SilentMessageEntry {
+            content: content.clone(),
+            timestamp: self.updated_at,
+        });
+        if self.silent_buffer.len() > self.silent_buffer_cap {
+            self.silent_buffer.pop_front();
+        }
 
         // Queue event but do NOT add to pending_messages — excluded from LLM conversation
         self.pending_events.push_back(SessionEvent::new(
@@ -629,6 +656,32 @@ impl SessionActor {
     }
 
     // ------------------------------------------------------------------------
+    // Silent Buffer Helpers
+    // ------------------------------------------------------------------------
+
+    /// Query recent silent messages from the ephemeral buffer.
+    ///
+    /// Returns entries within `max_age` of now, limited to `max_messages`,
+    /// in chronological order (oldest first).
+    fn get_recent_silent_messages(
+        &self,
+        max_messages: usize,
+        max_age: chrono::Duration,
+    ) -> Vec<SilentMessageEntry> {
+        let cutoff = Utc::now() - max_age;
+        let mut entries: Vec<SilentMessageEntry> = self
+            .silent_buffer
+            .iter()
+            .rev()
+            .filter(|e| e.timestamp >= cutoff)
+            .take(max_messages)
+            .cloned()
+            .collect();
+        entries.reverse(); // chronological order
+        entries
+    }
+
+    // ------------------------------------------------------------------------
     // Persistence
     // ------------------------------------------------------------------------
 
@@ -739,6 +792,7 @@ mod tests {
             on_disconnect: OnDisconnect::Pause,
             gateway: None,
             gateway_chat_id: None,
+            silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         (tx, shutdown_tx, task_handle)
@@ -966,6 +1020,7 @@ mod tests {
             on_disconnect: OnDisconnect::Pause,
             gateway: None,
             gateway_chat_id: None,
+            silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
         };
 
         let (tx, _task_handle) = SessionActor::spawn(config, shutdown_rx);

@@ -17,7 +17,7 @@ mod snapshot;
 mod sse_stream;
 
 // Types and errors
-pub use actor_types::{ActorError, SessionMetadata};
+pub use actor_types::{ActorError, DEFAULT_SILENT_BUFFER_CAP, SessionMetadata, SilentMessageEntry};
 pub use chat_session_cache::ChatSessionCache;
 pub use events::{
     ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,

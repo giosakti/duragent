@@ -42,6 +42,7 @@
 
 pub mod handler;
 pub mod manager;
+pub mod queue;
 pub mod subprocess;
 
 // Re-export protocol types from the protocol crate

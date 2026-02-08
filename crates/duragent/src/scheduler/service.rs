@@ -741,6 +741,7 @@ async fn get_or_create_session(
                             crate::agent::OnDisconnect::Continue, // Scheduled tasks continue in background
                             Some(gateway.clone()),
                             Some(chat_id.clone()),
+                            crate::session::DEFAULT_SILENT_BUFFER_CAP,
                         )
                         .await?;
                     let session_id = handle.id().to_string();

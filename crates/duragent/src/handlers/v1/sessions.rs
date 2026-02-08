@@ -76,7 +76,13 @@ pub async fn create_session(
     let handle = match state
         .services
         .session_registry
-        .create(&req.agent, agent_spec.session.on_disconnect, None, None)
+        .create(
+            &req.agent,
+            agent_spec.session.on_disconnect,
+            None,
+            None,
+            crate::session::DEFAULT_SILENT_BUFFER_CAP,
+        )
         .await
     {
         Ok(h) => h,

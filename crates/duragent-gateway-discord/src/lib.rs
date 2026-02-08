@@ -99,8 +99,10 @@ impl DiscordGateway {
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
 
+        let bot_user_id = Arc::new(tokio::sync::OnceCell::new());
         let handler = Handler {
             event_tx: event_tx.clone(),
+            bot_user_id: bot_user_id.clone(),
         };
 
         let mut client = match Client::builder(&self.config.bot_token, intents)
@@ -288,6 +290,8 @@ impl DiscordGateway {
 
 struct Handler {
     event_tx: mpsc::Sender<GatewayEvent>,
+    /// Bot user ID, set from the Ready event.
+    bot_user_id: Arc<tokio::sync::OnceCell<u64>>,
 }
 
 #[async_trait]
@@ -305,6 +309,15 @@ impl EventHandler for Handler {
         let sender = extract_sender(&msg);
         let routing = extract_routing(&msg);
 
+        // Detect if bot was @mentioned or replied to
+        let bot_id = self.bot_user_id.get().copied();
+        let mentions_bot = bot_id.is_some_and(|id| msg.mentions.iter().any(|u| u.id.get() == id));
+        let reply_to_bot = bot_id.is_some_and(|id| {
+            msg.referenced_message
+                .as_ref()
+                .is_some_and(|m| m.author.id.get() == id)
+        });
+
         let event = GatewayEvent::MessageReceived(Box::new(MessageReceivedData {
             message_id: msg.id.to_string(),
             chat_id: msg.channel_id.to_string(),
@@ -312,6 +325,8 @@ impl EventHandler for Handler {
             content,
             routing,
             reply_to: msg.referenced_message.as_ref().map(|m| m.id.to_string()),
+            mentions_bot,
+            reply_to_bot,
             timestamp: {
                 let ts = msg.timestamp;
                 chrono::DateTime::from_timestamp(ts.unix_timestamp(), ts.nanosecond())
@@ -333,7 +348,12 @@ impl EventHandler for Handler {
     }
 
     async fn ready(&self, _ctx: Context, ready: Ready) {
-        info!(user = %ready.user.name, "Discord bot connected");
+        let _ = self.bot_user_id.set(ready.user.id.get());
+        info!(
+            user = %ready.user.name,
+            user_id = %ready.user.id,
+            "Discord bot connected"
+        );
     }
 }
 

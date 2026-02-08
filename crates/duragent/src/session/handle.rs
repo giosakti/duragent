@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::api::SessionStatus;
 use crate::llm::{Message, Usage};
 
-use super::actor_types::{ActorError, SessionCommand, SessionMetadata};
+use super::actor_types::{ActorError, SessionCommand, SessionMetadata, SilentMessageEntry};
 use super::events::ApprovalDecisionType;
 use super::snapshot::PendingApproval;
 
@@ -355,6 +355,28 @@ impl SessionHandle {
         reply_rx.await.map_err(|_| ActorError::ActorShutdown)?
     }
 
+    /// Get recent silent messages from the ephemeral buffer for context injection.
+    ///
+    /// Returns entries within `max_age` of now, limited to `max_messages`,
+    /// in chronological order (oldest first).
+    pub async fn get_recent_silent_messages(
+        &self,
+        max_messages: usize,
+        max_age: chrono::Duration,
+    ) -> Result<Vec<SilentMessageEntry>, ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SessionCommand::GetRecentSilentMessages {
+                max_messages,
+                max_age,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ActorError::ActorShutdown)?;
+
+        reply_rx.await.map_err(|_| ActorError::ActorShutdown)?
+    }
+
     /// Get session metadata.
     pub async fn get_metadata(&self) -> Result<SessionMetadata, ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -442,7 +464,7 @@ mod tests {
     use super::*;
     use crate::agent::OnDisconnect;
     use crate::session::actor::SessionActor;
-    use crate::session::actor_types::ActorConfig;
+    use crate::session::actor_types::{ActorConfig, DEFAULT_SILENT_BUFFER_CAP};
     use crate::store::file::FileSessionStore;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -464,6 +486,7 @@ mod tests {
             on_disconnect: OnDisconnect::Pause,
             gateway: None,
             gateway_chat_id: None,
+            silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         let handle = SessionHandle::new(tx, "session_test".to_string(), "test-agent".to_string());

@@ -241,6 +241,12 @@ pub struct MessageReceivedData {
     pub routing: RoutingContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
+    /// Whether the bot was explicitly @mentioned in this message.
+    #[serde(default)]
+    pub mentions_bot: bool,
+    /// Whether this message is a reply to a bot message.
+    #[serde(default)]
+    pub reply_to_bot: bool,
     /// Timestamp when the message was sent (from the platform).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
@@ -428,6 +434,37 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_message_received_mentions_bot_fields() {
+        let json = r#"{
+            "message_id": "1",
+            "chat_id": "100",
+            "sender": {"id": "42"},
+            "content": {"type": "text", "text": "hello @bot"},
+            "routing": {"channel": "telegram", "chat_type": "group", "chat_id": "100", "sender_id": "42"},
+            "mentions_bot": true,
+            "reply_to_bot": true
+        }"#;
+        let data: MessageReceivedData = serde_json::from_str(json).unwrap();
+        assert!(data.mentions_bot);
+        assert!(data.reply_to_bot);
+    }
+
+    #[test]
+    fn test_message_received_mentions_bot_defaults_false() {
+        // Backward compat: old gateways won't send these fields
+        let json = r#"{
+            "message_id": "1",
+            "chat_id": "100",
+            "sender": {"id": "42"},
+            "content": {"type": "text", "text": "hello"},
+            "routing": {"channel": "telegram", "chat_type": "group", "chat_id": "100", "sender_id": "42"}
+        }"#;
+        let data: MessageReceivedData = serde_json::from_str(json).unwrap();
+        assert!(!data.mentions_bot);
+        assert!(!data.reply_to_bot);
     }
 
     #[test]

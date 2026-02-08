@@ -20,7 +20,9 @@ use crate::api::{SESSION_ID_PREFIX, SessionStatus};
 use crate::store::SessionStore;
 
 use super::actor::SessionActor;
-use super::actor_types::{ActorConfig, ActorError, RecoverConfig, SessionMetadata};
+use super::actor_types::{
+    ActorConfig, ActorError, DEFAULT_SILENT_BUFFER_CAP, RecoverConfig, SessionMetadata,
+};
 use super::handle::SessionHandle;
 
 // ============================================================================
@@ -128,6 +130,7 @@ impl SessionRegistry {
         on_disconnect: OnDisconnect,
         gateway: Option<String>,
         gateway_chat_id: Option<String>,
+        silent_buffer_cap: usize,
     ) -> Result<SessionHandle, ActorError> {
         let id = format!("{}{}", SESSION_ID_PREFIX, Ulid::new());
 
@@ -138,6 +141,7 @@ impl SessionRegistry {
             on_disconnect,
             gateway,
             gateway_chat_id,
+            silent_buffer_cap,
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -377,6 +381,7 @@ impl SessionRegistry {
             snapshot: recovered_snapshot,
             store: self.store.clone(),
             pending_messages,
+            silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
@@ -452,7 +457,13 @@ mod tests {
         let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
-            .create("test-agent", OnDisconnect::Pause, None, None)
+            .create(
+                "test-agent",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
 
@@ -481,11 +492,23 @@ mod tests {
         let (registry, _store) = create_test_registry(&temp_dir);
 
         registry
-            .create("agent1", OnDisconnect::Pause, None, None)
+            .create(
+                "agent1",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
         registry
-            .create("agent2", OnDisconnect::Continue, None, None)
+            .create(
+                "agent2",
+                OnDisconnect::Continue,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
 
@@ -504,7 +527,13 @@ mod tests {
         assert_eq!(registry.len(), 0);
 
         registry
-            .create("agent1", OnDisconnect::Pause, None, None)
+            .create(
+                "agent1",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
 
@@ -520,7 +549,13 @@ mod tests {
         let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
-            .create("test-agent", OnDisconnect::Pause, None, None)
+            .create(
+                "test-agent",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
 
@@ -629,7 +664,13 @@ mod tests {
         let (registry, _store) = create_test_registry(&temp_dir);
 
         let handle = registry
-            .create("test-agent", OnDisconnect::Pause, None, None)
+            .create(
+                "test-agent",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+            )
             .await
             .unwrap();
         let session_id = handle.id().to_string();
