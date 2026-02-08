@@ -685,7 +685,13 @@ impl MessageHandler for GatewayMessageHandler {
             use crate::agent::SenderDisposition;
             use crate::agent::access::{check_access, resolve_sender_disposition};
 
-            if !check_access(access, &routing.chat_type, &routing.chat_id, &sender.id) {
+            if !check_access(
+                access,
+                &routing.chat_type,
+                &routing.channel,
+                &routing.chat_id,
+                &sender.id,
+            ) {
                 debug!(
                     gateway = %gateway,
                     chat_id = %routing.chat_id,

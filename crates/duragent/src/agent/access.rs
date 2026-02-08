@@ -9,9 +9,14 @@ use super::spec::{AccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy, Sender
 /// Check if the message should be accepted based on chat type and access policy.
 ///
 /// Returns `true` if the message passes the top-level gate.
+///
+/// Group allowlists match against `{channel}:{chat_id}` composite keys
+/// (e.g. `telegram:-100123`). DM allowlists match against bare `sender_id`.
+/// Both support trailing `*` wildcards.
 pub fn check_access(
     access: &AccessConfig,
     chat_type: &str,
+    channel: &str,
     chat_id: &str,
     sender_id: &str,
 ) -> bool {
@@ -19,12 +24,23 @@ pub fn check_access(
         "dm" | "private" => match access.dm.policy {
             DmPolicy::Open => true,
             DmPolicy::Disabled => false,
-            DmPolicy::Allowlist => access.dm.allowlist.iter().any(|id| id == sender_id),
+            DmPolicy::Allowlist => access
+                .dm
+                .allowlist
+                .iter()
+                .any(|p| matches_pattern(p, sender_id)),
         },
         "group" | "supergroup" | "channel" => match access.groups.policy {
             GroupPolicy::Open => true,
             GroupPolicy::Disabled => false,
-            GroupPolicy::Allowlist => access.groups.allowlist.iter().any(|id| id == chat_id),
+            GroupPolicy::Allowlist => {
+                let composite = format!("{channel}:{chat_id}");
+                access
+                    .groups
+                    .allowlist
+                    .iter()
+                    .any(|p| matches_pattern(p, &composite))
+            }
         },
         // Unknown chat types: allow (forward compatibility)
         _ => true,
@@ -33,16 +49,46 @@ pub fn check_access(
 
 /// Resolve the disposition for a sender within an allowed group.
 ///
-/// Checks `sender_overrides` first, falls back to `sender_default`.
+/// Resolution order: exact match in `sender_overrides`, then longest
+/// matching wildcard pattern, then `sender_default`.
 pub fn resolve_sender_disposition(
     groups: &GroupAccessConfig,
     sender_id: &str,
 ) -> SenderDisposition {
-    groups
-        .sender_overrides
-        .get(sender_id)
-        .copied()
-        .unwrap_or(groups.sender_default)
+    // Exact match first
+    if let Some(&d) = groups.sender_overrides.get(sender_id) {
+        return d;
+    }
+    // Wildcard pattern match — longest prefix wins for deterministic ordering
+    let mut best: Option<(usize, SenderDisposition)> = None;
+    for (pattern, &d) in &groups.sender_overrides {
+        if pattern.contains('*') && matches_pattern(pattern, sender_id) {
+            let len = pattern.len();
+            if best.is_none() || len > best.unwrap().0 {
+                best = Some((len, d));
+            }
+        }
+    }
+    if let Some((_, d)) = best {
+        return d;
+    }
+    groups.sender_default
+}
+
+// ============================================================================
+// Private helpers
+// ============================================================================
+
+/// Match a pattern with optional trailing `*` wildcard against a value.
+///
+/// `telegram:*` matches any string starting with `telegram:`.
+/// `*` alone matches everything. Exact strings require exact match.
+fn matches_pattern(pattern: &str, value: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        value.starts_with(prefix)
+    } else {
+        pattern == value
+    }
 }
 
 #[cfg(test)]
@@ -61,8 +107,10 @@ mod tests {
     #[test]
     fn dm_open_allows_any_sender() {
         let access = default_access();
-        assert!(check_access(&access, "dm", "chat1", "sender1"));
-        assert!(check_access(&access, "private", "chat1", "sender1"));
+        assert!(check_access(&access, "dm", "telegram", "chat1", "sender1"));
+        assert!(check_access(
+            &access, "private", "telegram", "chat1", "sender1"
+        ));
     }
 
     #[test]
@@ -74,7 +122,7 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(!check_access(&access, "dm", "chat1", "sender1"));
+        assert!(!check_access(&access, "dm", "telegram", "chat1", "sender1"));
     }
 
     #[test]
@@ -86,8 +134,34 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(check_access(&access, "dm", "chat1", "allowed_user"));
-        assert!(!check_access(&access, "dm", "chat1", "other_user"));
+        assert!(check_access(
+            &access,
+            "dm",
+            "telegram",
+            "chat1",
+            "allowed_user"
+        ));
+        assert!(!check_access(
+            &access,
+            "dm",
+            "telegram",
+            "chat1",
+            "other_user"
+        ));
+    }
+
+    #[test]
+    fn dm_allowlist_wildcard_matches() {
+        let access = AccessConfig {
+            dm: DmAccessConfig {
+                policy: DmPolicy::Allowlist,
+                allowlist: vec!["user_*".to_string()],
+            },
+            ..Default::default()
+        };
+        assert!(check_access(&access, "dm", "telegram", "chat1", "user_123"));
+        assert!(check_access(&access, "dm", "telegram", "chat1", "user_abc"));
+        assert!(!check_access(&access, "dm", "telegram", "chat1", "admin_1"));
     }
 
     // ========================================================================
@@ -97,9 +171,19 @@ mod tests {
     #[test]
     fn group_open_allows_any_group() {
         let access = default_access();
-        assert!(check_access(&access, "group", "-100123", "sender1"));
-        assert!(check_access(&access, "supergroup", "-100123", "sender1"));
-        assert!(check_access(&access, "channel", "-100123", "sender1"));
+        assert!(check_access(
+            &access, "group", "telegram", "-100123", "sender1"
+        ));
+        assert!(check_access(
+            &access,
+            "supergroup",
+            "telegram",
+            "-100123",
+            "sender1"
+        ));
+        assert!(check_access(
+            &access, "channel", "telegram", "-100123", "sender1"
+        ));
     }
 
     #[test]
@@ -111,21 +195,69 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(!check_access(&access, "group", "-100123", "sender1"));
+        assert!(!check_access(
+            &access, "group", "telegram", "-100123", "sender1"
+        ));
     }
 
     #[test]
-    fn group_allowlist_checks_chat_id() {
+    fn group_allowlist_checks_composite_key() {
         let access = AccessConfig {
             groups: GroupAccessConfig {
                 policy: GroupPolicy::Allowlist,
-                allowlist: vec!["-100123".to_string()],
+                allowlist: vec!["telegram:-100123".to_string()],
                 ..Default::default()
             },
             ..Default::default()
         };
-        assert!(check_access(&access, "group", "-100123", "sender1"));
-        assert!(!check_access(&access, "group", "-100999", "sender1"));
+        assert!(check_access(
+            &access, "group", "telegram", "-100123", "sender1"
+        ));
+        assert!(!check_access(
+            &access, "group", "telegram", "-100999", "sender1"
+        ));
+        assert!(!check_access(
+            &access, "group", "discord", "-100123", "sender1"
+        ));
+    }
+
+    #[test]
+    fn group_allowlist_wildcard_matches() {
+        let access = AccessConfig {
+            groups: GroupAccessConfig {
+                policy: GroupPolicy::Allowlist,
+                allowlist: vec!["telegram:*".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(check_access(
+            &access, "group", "telegram", "-100123", "sender1"
+        ));
+        assert!(check_access(
+            &access, "group", "telegram", "-100999", "sender1"
+        ));
+        assert!(!check_access(
+            &access, "group", "discord", "12345", "sender1"
+        ));
+    }
+
+    #[test]
+    fn wildcard_star_alone_matches_everything() {
+        let access = AccessConfig {
+            groups: GroupAccessConfig {
+                policy: GroupPolicy::Allowlist,
+                allowlist: vec!["*".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(check_access(
+            &access, "group", "telegram", "-100123", "sender1"
+        ));
+        assert!(check_access(
+            &access, "group", "discord", "12345", "sender1"
+        ));
     }
 
     // ========================================================================
@@ -135,9 +267,13 @@ mod tests {
     #[test]
     fn chat_type_case_insensitive() {
         let access = default_access();
-        assert!(check_access(&access, "DM", "chat1", "sender1"));
-        assert!(check_access(&access, "Group", "-100123", "sender1"));
-        assert!(check_access(&access, "PRIVATE", "chat1", "sender1"));
+        assert!(check_access(&access, "DM", "telegram", "chat1", "sender1"));
+        assert!(check_access(
+            &access, "Group", "telegram", "-100123", "sender1"
+        ));
+        assert!(check_access(
+            &access, "PRIVATE", "telegram", "chat1", "sender1"
+        ));
     }
 
     // ========================================================================
@@ -157,7 +293,9 @@ mod tests {
             },
         };
         // Even with everything disabled, unknown types pass through
-        assert!(check_access(&access, "thread", "chat1", "sender1"));
+        assert!(check_access(
+            &access, "thread", "telegram", "chat1", "sender1"
+        ));
     }
 
     // ========================================================================
@@ -214,6 +352,74 @@ mod tests {
         );
         assert_eq!(
             resolve_sender_disposition(&groups, "anyone_else"),
+            SenderDisposition::Allow
+        );
+    }
+
+    #[test]
+    fn sender_override_wildcard_matches() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("admin_*".to_string(), SenderDisposition::Allow);
+
+        let groups = GroupAccessConfig {
+            sender_default: SenderDisposition::Silent,
+            sender_overrides: overrides,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_sender_disposition(&groups, "admin_bob"),
+            SenderDisposition::Allow
+        );
+        assert_eq!(
+            resolve_sender_disposition(&groups, "admin_alice"),
+            SenderDisposition::Allow
+        );
+        assert_eq!(
+            resolve_sender_disposition(&groups, "user_bob"),
+            SenderDisposition::Silent
+        );
+    }
+
+    #[test]
+    fn sender_override_longest_wildcard_wins() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("a*".to_string(), SenderDisposition::Block);
+        overrides.insert("admin_*".to_string(), SenderDisposition::Allow);
+
+        let groups = GroupAccessConfig {
+            sender_default: SenderDisposition::Silent,
+            sender_overrides: overrides,
+            ..Default::default()
+        };
+        // "admin_*" (len 7) beats "a*" (len 2)
+        assert_eq!(
+            resolve_sender_disposition(&groups, "admin_bob"),
+            SenderDisposition::Allow
+        );
+        // Only "a*" matches
+        assert_eq!(
+            resolve_sender_disposition(&groups, "abc"),
+            SenderDisposition::Block
+        );
+    }
+
+    #[test]
+    fn sender_override_exact_takes_priority_over_wildcard() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("admin_*".to_string(), SenderDisposition::Allow);
+        overrides.insert("admin_blocked".to_string(), SenderDisposition::Block);
+
+        let groups = GroupAccessConfig {
+            sender_default: SenderDisposition::Silent,
+            sender_overrides: overrides,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_sender_disposition(&groups, "admin_blocked"),
+            SenderDisposition::Block
+        );
+        assert_eq!(
+            resolve_sender_disposition(&groups, "admin_other"),
             SenderDisposition::Allow
         );
     }
