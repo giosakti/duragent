@@ -261,6 +261,8 @@ mod tests {
             seq,
             SessionEventPayload::UserMessage {
                 content: content.to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         )
     }

@@ -32,6 +32,8 @@ pub struct AgentSpec {
     pub instructions: Option<String>,
     /// Session behavior configuration.
     pub session: AgentSessionConfig,
+    /// Access control configuration.
+    pub access: Option<AccessConfig>,
     /// Memory configuration.
     pub memory: Option<AgentMemoryConfig>,
     /// Tool configurations for agentic capabilities.
@@ -87,6 +89,109 @@ fn default_max_tool_iterations() -> u32 {
     DEFAULT_MAX_TOOL_ITERATIONS
 }
 
+/// Behavior when client disconnects from a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDisconnect {
+    /// Pause the session and wait for reconnect (default).
+    #[default]
+    Pause,
+    /// Continue executing in the background.
+    Continue,
+}
+
+/// Access control configuration for an agent.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AccessConfig {
+    #[serde(default)]
+    pub dm: DmAccessConfig,
+    #[serde(default)]
+    pub groups: GroupAccessConfig,
+}
+
+/// DM access policy configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DmAccessConfig {
+    #[serde(default)]
+    pub policy: DmPolicy,
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+}
+
+impl Default for DmAccessConfig {
+    fn default() -> Self {
+        Self {
+            policy: DmPolicy::Open,
+            allowlist: Vec::new(),
+        }
+    }
+}
+
+/// DM access policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DmPolicy {
+    /// Accept DMs from anyone (default).
+    #[default]
+    Open,
+    /// Reject all DMs.
+    Disabled,
+    /// Only accept DMs from listed sender IDs.
+    Allowlist,
+}
+
+/// Group access policy configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct GroupAccessConfig {
+    #[serde(default)]
+    pub policy: GroupPolicy,
+    #[serde(default)]
+    pub allowlist: Vec<String>,
+    #[serde(default)]
+    pub sender_default: SenderDisposition,
+    #[serde(default)]
+    pub sender_overrides: HashMap<String, SenderDisposition>,
+}
+
+impl Default for GroupAccessConfig {
+    fn default() -> Self {
+        Self {
+            policy: GroupPolicy::Open,
+            allowlist: Vec::new(),
+            sender_default: SenderDisposition::Allow,
+            sender_overrides: HashMap::new(),
+        }
+    }
+}
+
+/// Group access policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupPolicy {
+    /// Accept messages from any group (default).
+    #[default]
+    Open,
+    /// Reject all group messages.
+    Disabled,
+    /// Only accept messages from listed group IDs.
+    Allowlist,
+}
+
+/// Disposition for a sender within an allowed group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SenderDisposition {
+    /// Message is visible to the LLM and triggers a response.
+    #[default]
+    Allow,
+    /// Message is stored as a UserMessage (LLM sees it in future turns) but does not trigger a response.
+    Passive,
+    /// Message is stored in session history for audit but excluded from LLM conversation.
+    Silent,
+    /// Message is discarded entirely.
+    Block,
+}
+
 /// Memory configuration for an agent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentMemoryConfig {
@@ -115,17 +220,6 @@ pub enum ToolConfig {
         #[serde(default)]
         description: Option<String>,
     },
-}
-
-/// Behavior when client disconnects from a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OnDisconnect {
-    /// Pause the session and wait for reconnect (default).
-    #[default]
-    Pause,
-    /// Continue executing in the background.
-    Continue,
 }
 
 /// Loaded file contents for optional agent files.
@@ -192,6 +286,7 @@ impl AgentSpec {
             system_prompt: files.system_prompt,
             instructions: files.instructions,
             session: raw.spec.session,
+            access: raw.spec.access,
             memory: raw.spec.memory,
             tools: raw.spec.tools,
             policy,
@@ -237,6 +332,8 @@ struct RawAgentSpecBody {
     instructions: Option<String>,
     #[serde(default)]
     session: AgentSessionConfig,
+    #[serde(default)]
+    access: Option<AccessConfig>,
     #[serde(default)]
     memory: Option<AgentMemoryConfig>,
     #[serde(default)]
@@ -519,5 +616,81 @@ spec:
             serde_json::to_string(&OnDisconnect::Continue).unwrap(),
             "\"continue\""
         );
+    }
+
+    #[tokio::test]
+    async fn load_agent_with_access_config() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("guarded-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: guarded-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+  access:
+    dm:
+      policy: allowlist
+      allowlist: ["12345"]
+    groups:
+      policy: allowlist
+      allowlist: ["-100123456"]
+      sender_default: silent
+      sender_overrides:
+        "67890": passive
+        "99999": block
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "guarded-agent").await.unwrap();
+        let access = agent.access.unwrap();
+        assert_eq!(access.dm.policy, DmPolicy::Allowlist);
+        assert_eq!(access.dm.allowlist, vec!["12345"]);
+        assert_eq!(access.groups.policy, GroupPolicy::Allowlist);
+        assert_eq!(access.groups.allowlist, vec!["-100123456"]);
+        assert_eq!(access.groups.sender_default, SenderDisposition::Silent);
+        assert_eq!(
+            access.groups.sender_overrides.get("67890"),
+            Some(&SenderDisposition::Passive)
+        );
+        assert_eq!(
+            access.groups.sender_overrides.get("99999"),
+            Some(&SenderDisposition::Block)
+        );
+    }
+
+    #[tokio::test]
+    async fn load_agent_without_access_config() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("open-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: open-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "open-agent").await.unwrap();
+        assert!(agent.access.is_none());
     }
 }

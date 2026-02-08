@@ -43,6 +43,8 @@ async fn event_write_read_roundtrip() {
             2,
             SessionEventPayload::UserMessage {
                 content: "Hello, agent!".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         ),
         SessionEvent::new(
@@ -77,7 +79,7 @@ async fn event_write_read_roundtrip() {
 
     assert_eq!(read_events[1].seq, 2);
     match &read_events[1].payload {
-        SessionEventPayload::UserMessage { content } => {
+        SessionEventPayload::UserMessage { content, .. } => {
             assert_eq!(content, "Hello, agent!");
         }
         _ => panic!("expected UserMessage"),
@@ -113,6 +115,8 @@ async fn events_preserve_sequence_order() {
                 i,
                 SessionEventPayload::UserMessage {
                     content: format!("Message {}", i),
+                    sender_id: None,
+                    sender_name: None,
                 },
             )
         })
@@ -143,12 +147,16 @@ async fn append_to_existing_file() {
                     1,
                     SessionEventPayload::UserMessage {
                         content: "First".to_string(),
+                        sender_id: None,
+                        sender_name: None,
                     },
                 ),
                 SessionEvent::new(
                     2,
                     SessionEventPayload::UserMessage {
                         content: "Second".to_string(),
+                        sender_id: None,
+                        sender_name: None,
                     },
                 ),
             ],
@@ -164,6 +172,8 @@ async fn append_to_existing_file() {
                 3,
                 SessionEventPayload::UserMessage {
                     content: "Third".to_string(),
+                    sender_id: None,
+                    sender_name: None,
                 },
             )],
         )
@@ -202,6 +212,8 @@ async fn all_event_types_roundtrip() {
             2,
             SessionEventPayload::UserMessage {
                 content: "Search for rust".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         ),
         SessionEvent::new(
@@ -414,6 +426,8 @@ async fn read_events_from_snapshot_seq() {
                 i,
                 SessionEventPayload::UserMessage {
                     content: format!("Message {}", i),
+                    sender_id: None,
+                    sender_name: None,
                 },
             )
         })
@@ -473,6 +487,8 @@ async fn events_and_snapshot_coordinate_recovery() {
             2,
             SessionEventPayload::UserMessage {
                 content: "Hello".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         ),
         SessionEvent::new(
@@ -513,6 +529,8 @@ async fn events_and_snapshot_coordinate_recovery() {
             4,
             SessionEventPayload::UserMessage {
                 content: "How are you?".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         ),
         SessionEvent::new(
@@ -591,6 +609,8 @@ async fn recovery_replays_events_after_snapshot() {
                     i,
                     SessionEventPayload::UserMessage {
                         content: format!("User message {}", i),
+                        sender_id: None,
+                        sender_name: None,
                     },
                 )
             } else {
@@ -691,6 +711,8 @@ async fn recovery_uses_latest_snapshot() {
                 i,
                 SessionEventPayload::UserMessage {
                     content: format!("Message {}", i),
+                    sender_id: None,
+                    sender_name: None,
                 },
             )
         })
@@ -758,6 +780,8 @@ async fn recovery_with_no_events_after_snapshot() {
                 i,
                 SessionEventPayload::UserMessage {
                     content: format!("Message {}", i),
+                    sender_id: None,
+                    sender_name: None,
                 },
             )
         })
@@ -838,18 +862,24 @@ async fn load_events_skips_malformed_lines() {
         1,
         SessionEventPayload::UserMessage {
             content: "First".to_string(),
+            sender_id: None,
+            sender_name: None,
         },
     );
     let valid_event_2 = SessionEvent::new(
         2,
         SessionEventPayload::UserMessage {
             content: "Second".to_string(),
+            sender_id: None,
+            sender_name: None,
         },
     );
     let valid_event_3 = SessionEvent::new(
         3,
         SessionEventPayload::UserMessage {
             content: "Third".to_string(),
+            sender_id: None,
+            sender_name: None,
         },
     );
 

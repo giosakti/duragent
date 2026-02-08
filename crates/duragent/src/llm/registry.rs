@@ -180,7 +180,7 @@ impl ProviderRegistry {
                 )))
             }
             Provider::Other(name) => {
-                warn!("Unknown provider: {}", name);
+                warn!(provider = %name, "Unknown provider");
                 None
             }
         }

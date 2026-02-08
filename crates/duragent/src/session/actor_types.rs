@@ -27,11 +27,19 @@ pub enum SessionCommand {
     // Write operations
     AddUserMessage {
         content: String,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
     AddAssistantMessage {
         content: String,
         usage: Option<Usage>,
+        reply: oneshot::Sender<Result<u64, ActorError>>,
+    },
+    AddSilentMessage {
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
     RecordToolCall {

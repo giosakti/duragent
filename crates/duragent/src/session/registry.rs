@@ -302,7 +302,7 @@ impl SessionRegistry {
             last_seq = event.seq;
 
             match &event.payload {
-                super::events::SessionEventPayload::UserMessage { content } => {
+                super::events::SessionEventPayload::UserMessage { content, .. } => {
                     pending_messages
                         .push(crate::llm::Message::text(crate::llm::Role::User, content));
                 }

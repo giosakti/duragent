@@ -289,7 +289,7 @@ async fn load_agents(
 async fn shutdown_signal(http_shutdown: tokio::sync::oneshot::Receiver<()>) {
     let ctrl_c = async {
         if let Err(e) = signal::ctrl_c().await {
-            warn!("Failed to install Ctrl+C handler: {}", e);
+            warn!(error = %e, "Failed to install Ctrl+C handler");
         }
     };
 
@@ -300,7 +300,7 @@ async fn shutdown_signal(http_shutdown: tokio::sync::oneshot::Receiver<()>) {
                 sig.recv().await;
             }
             Err(e) => {
-                warn!("Failed to install SIGTERM handler: {}", e);
+                warn!(error = %e, "Failed to install SIGTERM handler");
             }
         }
     };

@@ -47,17 +47,39 @@ impl SessionHandle {
     ///
     /// Returns the event sequence number on success.
     pub async fn add_user_message(&self, content: String) -> Result<u64, ActorError> {
-        let seq = self.enqueue_user_message(content).await?;
+        self.add_user_message_with_sender(content, None, None).await
+    }
+
+    /// Add a user message with sender attribution to the session.
+    ///
+    /// Used for gateway messages where sender identity should be stored.
+    /// Returns the event sequence number on success.
+    pub async fn add_user_message_with_sender(
+        &self,
+        content: String,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
+        let seq = self
+            .enqueue_user_message(content, sender_id, sender_name)
+            .await?;
         self.force_flush().await?;
         Ok(seq)
     }
 
     /// Enqueue a user message without forcing a flush.
-    pub async fn enqueue_user_message(&self, content: String) -> Result<u64, ActorError> {
+    pub async fn enqueue_user_message(
+        &self,
+        content: String,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(SessionCommand::AddUserMessage {
                 content,
+                sender_id,
+                sender_name,
                 reply: reply_tx,
             })
             .await
@@ -98,6 +120,33 @@ impl SessionHandle {
             .map_err(|_| ActorError::ActorShutdown)?;
 
         reply_rx.await.map_err(|_| ActorError::ActorShutdown)?
+    }
+
+    /// Add a silent message to session history, excluded from LLM conversation.
+    ///
+    /// Used for group messages from senders with `silent` disposition.
+    /// Persisted in `events.jsonl` for audit but not included in `get_messages()`.
+    /// Returns the event sequence number on success.
+    pub async fn add_silent_message(
+        &self,
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SessionCommand::AddSilentMessage {
+                content,
+                sender_id,
+                sender_name,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ActorError::ActorShutdown)?;
+
+        let seq = reply_rx.await.map_err(|_| ActorError::ActorShutdown)??;
+        self.force_flush().await?;
+        Ok(seq)
     }
 
     /// Record a tool call event.

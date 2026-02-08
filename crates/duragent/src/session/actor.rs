@@ -261,8 +261,13 @@ impl SessionActor {
     /// Handle a single command.
     async fn handle_command(&mut self, cmd: SessionCommand) {
         match cmd {
-            SessionCommand::AddUserMessage { content, reply } => {
-                let result = self.add_user_message(content).await;
+            SessionCommand::AddUserMessage {
+                content,
+                sender_id,
+                sender_name,
+                reply,
+            } => {
+                let result = self.add_user_message(content, sender_id, sender_name).await;
                 let _ = reply.send(result);
             }
             SessionCommand::AddAssistantMessage {
@@ -271,6 +276,17 @@ impl SessionActor {
                 reply,
             } => {
                 let result = self.add_assistant_message(content, usage).await;
+                let _ = reply.send(result);
+            }
+            SessionCommand::AddSilentMessage {
+                content,
+                sender_id,
+                sender_name,
+                reply,
+            } => {
+                let result = self
+                    .add_silent_message(content, sender_id, sender_name)
+                    .await;
                 let _ = reply.send(result);
             }
             SessionCommand::RecordToolCall {
@@ -370,7 +386,12 @@ impl SessionActor {
     // Write Operations
     // ------------------------------------------------------------------------
 
-    async fn add_user_message(&mut self, content: String) -> Result<u64, ActorError> {
+    async fn add_user_message(
+        &mut self,
+        content: String,
+        sender_id: Option<String>,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
 
@@ -381,7 +402,11 @@ impl SessionActor {
         // Queue event
         self.pending_events.push_back(SessionEvent::new(
             seq,
-            SessionEventPayload::UserMessage { content },
+            SessionEventPayload::UserMessage {
+                content,
+                sender_id,
+                sender_name,
+            },
         ));
 
         // Roll checkpoint if pending is too large
@@ -414,6 +439,28 @@ impl SessionActor {
 
         // Roll checkpoint if pending is too large
         self.maybe_roll_checkpoint();
+
+        Ok(seq)
+    }
+
+    async fn add_silent_message(
+        &mut self,
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
+        self.updated_at = Utc::now();
+        let seq = self.next_seq();
+
+        // Queue event but do NOT add to pending_messages — excluded from LLM conversation
+        self.pending_events.push_back(SessionEvent::new(
+            seq,
+            SessionEventPayload::SilentMessage {
+                content,
+                sender_id,
+                sender_name,
+            },
+        ));
 
         Ok(seq)
     }
@@ -705,6 +752,8 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(SessionCommand::AddUserMessage {
             content: "Hello".to_string(),
+            sender_id: None,
+            sender_name: None,
             reply: reply_tx,
         })
         .await
@@ -727,6 +776,8 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(SessionCommand::AddUserMessage {
             content: "Test message".to_string(),
+            sender_id: None,
+            sender_name: None,
             reply: reply_tx,
         })
         .await
@@ -773,6 +824,8 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(SessionCommand::AddUserMessage {
             content: "Persistent message".to_string(),
+            sender_id: None,
+            sender_name: None,
             reply: reply_tx,
         })
         .await
@@ -802,6 +855,8 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(SessionCommand::AddUserMessage {
             content: "Will be saved".to_string(),
+            sender_id: None,
+            sender_name: None,
             reply: reply_tx,
         })
         .await
@@ -924,6 +979,8 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.send(SessionCommand::AddUserMessage {
             content: "Hello after retry".to_string(),
+            sender_id: None,
+            sender_name: None,
             reply: reply_tx,
         })
         .await

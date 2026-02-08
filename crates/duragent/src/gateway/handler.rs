@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use tracing::{debug, error, warn};
 
-use duragent_gateway_protocol::{CallbackQueryData, MessageContent, RoutingContext};
+use duragent_gateway_protocol::{CallbackQueryData, MessageContent, RoutingContext, Sender};
 
 use super::{MessageHandler, build_approval_keyboard};
 use crate::agent::PolicyLocks;
@@ -240,11 +240,19 @@ impl GatewayMessageHandler {
         chat_id: &str,
         handle: &SessionHandle,
         text: &str,
+        sender: &Sender,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
 
-        // Persist user message via actor
-        if let Err(e) = handle.add_user_message(text.to_string()).await {
+        // Persist user message via actor (with sender attribution for gateway messages)
+        if let Err(e) = handle
+            .add_user_message_with_sender(
+                text.to_string(),
+                Some(sender.id.clone()),
+                Some(resolve_sender_label(sender)),
+            )
+            .await
+        {
             error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
             return None;
         }
@@ -449,9 +457,76 @@ impl MessageHandler for GatewayMessageHandler {
         gateway: &str,
         routing: &RoutingContext,
         content: &MessageContent,
+        sender: &Sender,
     ) -> Option<String> {
         // Get or create session for this chat
         let handle = self.get_or_create_session(gateway, routing).await?;
+
+        // Check agent-level access control
+        let agent = self.services.agents.get(handle.agent())?;
+        if let Some(ref access) = agent.access {
+            use crate::agent::SenderDisposition;
+            use crate::agent::access::{check_access, resolve_sender_disposition};
+
+            if !check_access(access, &routing.chat_type, &routing.chat_id, &sender.id) {
+                debug!(
+                    gateway = %gateway,
+                    chat_id = %routing.chat_id,
+                    sender_id = %sender.id,
+                    chat_type = %routing.chat_type,
+                    "Message denied by agent access policy"
+                );
+                return None;
+            }
+
+            // For group messages, check sender disposition
+            if is_group_chat(&routing.chat_type) {
+                match resolve_sender_disposition(&access.groups, &sender.id) {
+                    SenderDisposition::Block => {
+                        debug!(
+                            gateway = %gateway,
+                            sender_id = %sender.id,
+                            "Sender blocked in group"
+                        );
+                        return None;
+                    }
+                    SenderDisposition::Silent => {
+                        // Store in events.jsonl for audit, but LLM never sees it
+                        if let Some(text) = extract_text(content) {
+                            let sender_label = resolve_sender_label(sender);
+                            let prefixed = format!("{}: {}", sender_label, text);
+                            if let Err(e) = handle
+                                .add_silent_message(prefixed, sender.id.clone(), Some(sender_label))
+                                .await
+                            {
+                                warn!(error = %e, "Failed to persist silent message");
+                            }
+                        }
+                        return None;
+                    }
+                    SenderDisposition::Passive => {
+                        // Store as regular UserMessage (LLM sees in future turns) but don't trigger a response
+                        if let Some(text) = extract_text(content) {
+                            let sender_label = resolve_sender_label(sender);
+                            let prefixed = format!("{}: {}", sender_label, text);
+                            if let Err(e) = handle
+                                .add_user_message_with_sender(
+                                    prefixed,
+                                    Some(sender.id.clone()),
+                                    Some(sender_label),
+                                )
+                                .await
+                            {
+                                warn!(error = %e, "Failed to persist passive message");
+                            }
+                        }
+                        return None;
+                    }
+                    SenderDisposition::Allow => {} // proceed normally
+                }
+            }
+        }
+
         let lock = self.message_locks.get(handle.id());
         let _guard = lock.lock().await;
 
@@ -462,19 +537,31 @@ impl MessageHandler for GatewayMessageHandler {
             .send_typing(gateway, &routing.chat_id)
             .await;
 
+        // For group messages, prefix content with sender label
+        let should_prefix = is_group_chat(&routing.chat_type);
+
         // Process based on content type
         match content {
             MessageContent::Text { text } => {
-                self.process_text_message(gateway, &routing.chat_id, &handle, text)
+                let text = if should_prefix {
+                    format!("{}: {}", resolve_sender_label(sender), text)
+                } else {
+                    text.clone()
+                };
+                self.process_text_message(gateway, &routing.chat_id, &handle, &text, sender)
                     .await
             }
             MessageContent::Media { caption, .. } => {
-                // For media, process the caption if present
                 if let Some(caption) = caption
                     && !caption.is_empty()
                 {
+                    let text = if should_prefix {
+                        format!("{}: {}", resolve_sender_label(sender), caption)
+                    } else {
+                        caption.clone()
+                    };
                     return self
-                        .process_text_message(gateway, &routing.chat_id, &handle, caption)
+                        .process_text_message(gateway, &routing.chat_id, &handle, &text, sender)
                         .await;
                 }
                 None
@@ -794,6 +881,40 @@ fn truncate_command(command: &str, max_len: usize) -> String {
     }
 }
 
+/// Check if a chat type represents a group conversation.
+fn is_group_chat(chat_type: &str) -> bool {
+    matches!(
+        chat_type.to_ascii_lowercase().as_str(),
+        "group" | "supergroup" | "channel"
+    )
+}
+
+/// Resolve the display label for a sender.
+///
+/// Priority: display_name > username > id
+fn resolve_sender_label(sender: &Sender) -> String {
+    if let Some(ref name) = sender.display_name
+        && !name.is_empty()
+    {
+        return name.clone();
+    }
+    if let Some(ref username) = sender.username
+        && !username.is_empty()
+    {
+        return username.clone();
+    }
+    sender.id.clone()
+}
+
+/// Extract text content from a message.
+fn extract_text(content: &MessageContent) -> Option<&str> {
+    match content {
+        MessageContent::Text { text } => Some(text),
+        MessageContent::Media { caption, .. } => caption.as_deref().filter(|c| !c.is_empty()),
+        _ => None,
+    }
+}
+
 /// Check if a routing rule matches the given context.
 ///
 /// Gateway and chat_type comparisons are case-insensitive to prevent
@@ -1081,5 +1202,101 @@ mod tests {
     fn routing_config_empty() {
         let config = RoutingConfig::empty();
         assert!(config.rules.is_empty());
+    }
+
+    // ------------------------------------------------------------------------
+    // is_group_chat
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn is_group_chat_recognizes_group_types() {
+        assert!(is_group_chat("group"));
+        assert!(is_group_chat("supergroup"));
+        assert!(is_group_chat("channel"));
+        assert!(is_group_chat("Group"));
+        assert!(is_group_chat("SUPERGROUP"));
+    }
+
+    #[test]
+    fn is_group_chat_rejects_non_group_types() {
+        assert!(!is_group_chat("dm"));
+        assert!(!is_group_chat("private"));
+        assert!(!is_group_chat("thread"));
+    }
+
+    // ------------------------------------------------------------------------
+    // resolve_sender_label
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn sender_label_prefers_display_name() {
+        let sender = Sender {
+            id: "123".to_string(),
+            username: Some("alice_bot".to_string()),
+            display_name: Some("Alice".to_string()),
+        };
+        assert_eq!(resolve_sender_label(&sender), "Alice");
+    }
+
+    #[test]
+    fn sender_label_falls_back_to_username() {
+        let sender = Sender {
+            id: "123".to_string(),
+            username: Some("alice_bot".to_string()),
+            display_name: None,
+        };
+        assert_eq!(resolve_sender_label(&sender), "alice_bot");
+    }
+
+    #[test]
+    fn sender_label_falls_back_to_id() {
+        let sender = Sender {
+            id: "123".to_string(),
+            username: None,
+            display_name: None,
+        };
+        assert_eq!(resolve_sender_label(&sender), "123");
+    }
+
+    #[test]
+    fn sender_label_skips_empty_display_name() {
+        let sender = Sender {
+            id: "123".to_string(),
+            username: Some("alice_bot".to_string()),
+            display_name: Some("".to_string()),
+        };
+        assert_eq!(resolve_sender_label(&sender), "alice_bot");
+    }
+
+    // ------------------------------------------------------------------------
+    // extract_text
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn extract_text_from_text_message() {
+        let content = MessageContent::Text {
+            text: "hello".to_string(),
+        };
+        assert_eq!(extract_text(&content), Some("hello"));
+    }
+
+    #[test]
+    fn extract_text_from_media_with_caption() {
+        let content = MessageContent::Media {
+            media_type: "photo".to_string(),
+            url: None,
+            caption: Some("nice photo".to_string()),
+        };
+        assert_eq!(extract_text(&content), Some("nice photo"));
+    }
+
+    #[test]
+    fn extract_text_from_media_without_caption() {
+        let content = MessageContent::Media {
+            media_type: "photo".to_string(),
+            url: None,
+            caption: None,
+        };
+        assert_eq!(extract_text(&content), None);
     }
 }

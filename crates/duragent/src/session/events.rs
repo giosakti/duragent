@@ -40,7 +40,13 @@ pub enum SessionEventPayload {
     /// Session ended (completed or terminated).
     SessionEnd { reason: SessionEndReason },
     /// User sent a message.
-    UserMessage { content: String },
+    UserMessage {
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_name: Option<String>,
+    },
     /// Assistant (LLM) responded.
     AssistantMessage {
         /// Which agent produced this response.
@@ -72,6 +78,16 @@ pub enum SessionEventPayload {
     StatusChange {
         from: SessionStatus,
         to: SessionStatus,
+    },
+    /// A message stored in session history but excluded from LLM conversation.
+    ///
+    /// Used for group messages from senders with `silent` disposition.
+    /// Visible in `events.jsonl` for audit; `to_message()` returns `None`.
+    SilentMessage {
+        content: String,
+        sender_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sender_name: Option<String>,
     },
     /// An error occurred (recoverable).
     Error { code: String, message: String },
@@ -126,7 +142,7 @@ impl SessionEvent {
     /// Convert this event to a Message if it represents a chat message.
     pub fn to_message(&self) -> Option<Message> {
         match &self.payload {
-            SessionEventPayload::UserMessage { content } => {
+            SessionEventPayload::UserMessage { content, .. } => {
                 Some(Message::text(Role::User, content))
             }
             SessionEventPayload::AssistantMessage { content, .. } => {
@@ -147,6 +163,8 @@ mod tests {
             1,
             SessionEventPayload::UserMessage {
                 content: "Hello".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         );
 
@@ -228,6 +246,8 @@ mod tests {
             1,
             SessionEventPayload::UserMessage {
                 content: "Hello".to_string(),
+                sender_id: None,
+                sender_name: None,
             },
         );
         let msg = user_event.to_message().unwrap();
@@ -255,6 +275,50 @@ mod tests {
             },
         );
         assert!(start_event.to_message().is_none());
+    }
+
+    #[test]
+    fn silent_message_serialization_roundtrip() {
+        let event = SessionEvent::new(
+            5,
+            SessionEventPayload::SilentMessage {
+                content: "alice: hello everyone".to_string(),
+                sender_id: "12345".to_string(),
+                sender_name: Some("alice".to_string()),
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"silent_message\""));
+        assert!(json.contains("\"sender_id\":\"12345\""));
+
+        let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 5);
+        match parsed.payload {
+            SessionEventPayload::SilentMessage {
+                content,
+                sender_id,
+                sender_name,
+            } => {
+                assert_eq!(content, "alice: hello everyone");
+                assert_eq!(sender_id, "12345");
+                assert_eq!(sender_name, Some("alice".to_string()));
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn silent_message_to_message_returns_none() {
+        let event = SessionEvent::new(
+            1,
+            SessionEventPayload::SilentMessage {
+                content: "ignored content".to_string(),
+                sender_id: "123".to_string(),
+                sender_name: None,
+            },
+        );
+        assert!(event.to_message().is_none());
     }
 
     #[test]
