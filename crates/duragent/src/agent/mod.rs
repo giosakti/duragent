@@ -6,6 +6,7 @@
 pub const API_VERSION_V1ALPHA1: &str = "duragent/v1alpha1";
 pub const KIND_AGENT: &str = "Agent";
 
+pub mod access;
 mod error;
 mod policy;
 mod spec;
@@ -16,7 +17,8 @@ pub use policy::{
     Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
 };
 pub use spec::{
-    AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec, DEFAULT_MAX_TOOL_ITERATIONS,
-    LoadedAgentFiles, ModelConfig, OnDisconnect, ToolConfig,
+    AccessConfig, AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec,
+    DEFAULT_MAX_TOOL_ITERATIONS, DmAccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy,
+    LoadedAgentFiles, ModelConfig, OnDisconnect, SenderDisposition, ToolConfig,
 };
 pub use store::{AgentStore, log_scan_warnings};
