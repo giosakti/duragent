@@ -42,6 +42,9 @@ struct GatewayManagerInner {
 
     /// Timeout for message handler execution.
     message_handler_timeout: Duration,
+
+    /// JoinHandles for event handler tasks, awaited at shutdown.
+    event_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl GatewayManager {
@@ -59,6 +62,7 @@ impl GatewayManager {
                 gateways: HashMap::new(),
                 handler: None,
                 message_handler_timeout,
+                event_handles: Vec::new(),
             })),
         }
     }
@@ -97,9 +101,14 @@ impl GatewayManager {
         // Spawn event handler task
         let manager = self.clone();
         let gateway_name = name.clone();
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             manager.handle_events(gateway_name, evt_rx).await;
         });
+
+        {
+            let mut inner = self.inner.write().await;
+            inner.event_handles.push(join_handle);
+        }
 
         info!(gateway = %name, "Gateway registered");
         (cmd_rx, evt_tx)
@@ -235,11 +244,25 @@ impl GatewayManager {
             debug!(gateway = %name, "Sending shutdown to gateway");
             let _ = tx.send(GatewayCommand::Shutdown).await;
         }
+
+        // Wait for event handler tasks to finish
+        let handles = {
+            let mut inner = self.inner.write().await;
+            std::mem::take(&mut inner.event_handles)
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     /// Handle events from a gateway.
     async fn handle_events(&self, gateway: String, mut rx: mpsc::Receiver<GatewayEvent>) {
+        let mut inflight = tokio::task::JoinSet::new();
+
         while let Some(event) = rx.recv().await {
+            // Reap completed handler tasks
+            while inflight.try_join_next().is_some() {}
+
             match event {
                 GatewayEvent::Ready {
                     gateway: gw_name,
@@ -274,7 +297,7 @@ impl GatewayManager {
                         let manager = self.clone();
                         let gateway = gateway.clone();
 
-                        tokio::spawn(async move {
+                        inflight.spawn(async move {
                             // No per-chat lock here. The gateway handler serializes per session
                             // to preserve message ordering while allowing cross-chat parallelism.
 
@@ -427,7 +450,7 @@ impl GatewayManager {
                         let manager = self.clone();
                         let gateway = gateway.clone();
 
-                        tokio::spawn(async move {
+                        inflight.spawn(async move {
                             // No per-chat lock - session actor handles state serialization.
                             // For approval flows, the actor ensures approval state consistency.
 
@@ -468,6 +491,9 @@ impl GatewayManager {
                 }
             }
         }
+
+        // Wait for in-flight handlers to complete
+        while inflight.join_next().await.is_some() {}
 
         debug!(gateway = %gateway, "Gateway event handler stopped");
     }
