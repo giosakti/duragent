@@ -149,7 +149,7 @@ pub fn drop_oldest_iterations(
     token_budget: u32,
 ) {
     // Calculate total tokens
-    let total_tokens: u32 = messages.iter().map(|m| estimate_message_tokens(m)).sum();
+    let total_tokens: u32 = messages.iter().map(estimate_message_tokens).sum();
 
     if total_tokens <= token_budget {
         return;
@@ -173,7 +173,7 @@ pub fn drop_oldest_iterations(
         }
         let group_tokens: u32 = messages[group.start..=group.end]
             .iter()
-            .map(|m| estimate_message_tokens(m))
+            .map(estimate_message_tokens)
             .sum();
         current_tokens -= group_tokens;
         groups_to_drop.push(*group);

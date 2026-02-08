@@ -25,10 +25,10 @@ pub fn estimate_message_tokens(msg: &Message) -> u32 {
     }
 
     // Tool calls tokens (serialized JSON)
-    if let Some(tool_calls) = &msg.tool_calls {
-        if let Ok(json) = serde_json::to_string(tool_calls) {
-            total += estimate_tokens(&json);
-        }
+    if let Some(tool_calls) = &msg.tool_calls
+        && let Ok(json) = serde_json::to_string(tool_calls)
+    {
+        total += estimate_tokens(&json);
     }
 
     // Tool call ID overhead

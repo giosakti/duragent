@@ -12,12 +12,7 @@ use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-/// Maximum concurrent scheduled task executions.
-///
-/// Prevents LLM call storms when many schedules fire simultaneously.
-const MAX_CONCURRENT_EXECUTIONS: usize = 5;
-
-use crate::context::{ContextBuilder, load_all_directives};
+use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
 use crate::server::RuntimeServices;
 use crate::session::{AgenticResult, ChatSessionCache, SessionHandle, run_agentic_loop};
 use crate::store::{RunLogStore, ScheduleStore as ScheduleStoreTrait};
@@ -30,11 +25,18 @@ use super::schedule::{
 };
 use super::schedule_cache::ScheduleCache;
 
-/// Type alias for the run log store trait object.
-type RunLogStoreRef = Arc<dyn RunLogStore>;
+use std::str::FromStr;
+
+/// Maximum concurrent scheduled task executions.
+///
+/// Prevents LLM call storms when many schedules fire simultaneously.
+const MAX_CONCURRENT_EXECUTIONS: usize = 5;
 
 /// Timeout for stuck run detection (2 hours).
 const STUCK_RUN_TIMEOUT_SECS: i64 = 2 * 60 * 60;
+
+/// Type alias for the run log store trait object.
+type RunLogStoreRef = Arc<dyn RunLogStore>;
 
 // ============================================================================
 // Public API
@@ -647,16 +649,22 @@ async fn execute_task_payload(
     let history = handle.get_messages().await.unwrap_or_default();
     let directives =
         load_all_directives(&config.services.workspace_directives_path, &agent.agent_dir);
+    let budget = TokenBudget {
+        max_input_tokens: agent.model.effective_max_input_tokens(),
+        max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+        max_history_tokens: agent.session.context.max_history_tokens,
+    };
     let messages = ContextBuilder::new()
         .from_agent_spec(agent)
         .with_messages(history)
         .with_directives(directives)
         .build()
-        .render(
+        .render_with_budget(
             &agent.model.name,
             agent.model.temperature,
             agent.model.max_output_tokens,
             vec![], // Tools handled by agentic loop via executor
+            &budget,
         )
         .messages;
 
@@ -742,6 +750,7 @@ async fn get_or_create_session(
                             Some(gateway.clone()),
                             Some(chat_id.clone()),
                             crate::session::DEFAULT_SILENT_BUFFER_CAP,
+                            crate::session::DEFAULT_ACTOR_MESSAGE_LIMIT,
                         )
                         .await?;
                     let session_id = handle.id().to_string();
@@ -844,8 +853,6 @@ fn calculate_next_run(
         }
     }
 }
-
-use std::str::FromStr;
 
 #[cfg(test)]
 mod tests {

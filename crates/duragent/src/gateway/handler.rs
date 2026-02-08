@@ -25,7 +25,9 @@ use crate::agent::{
 };
 use crate::api::SessionStatus;
 use crate::config::{RoutingMatch, RoutingRule};
-use crate::context::{BlockSource, ContextBuilder, SystemBlock, load_all_directives, priority};
+use crate::context::{
+    BlockSource, ContextBuilder, SystemBlock, TokenBudget, load_all_directives, priority,
+};
 use crate::scheduler::SchedulerHandle;
 use crate::server::RuntimeServices;
 use crate::session::{
@@ -141,6 +143,8 @@ impl GatewayMessageHandler {
             .as_ref()
             .map(|a| a.groups.context_buffer.max_messages)
             .unwrap_or(crate::session::DEFAULT_SILENT_BUFFER_CAP);
+        let msg_limit =
+            crate::session::actor_message_limit(agent.model.effective_max_input_tokens());
 
         // Use atomic get-or-insert to prevent race conditions
         let session_id = match self
@@ -168,6 +172,7 @@ impl GatewayMessageHandler {
                                 Some(gateway.clone()),
                                 Some(chat_id.clone()),
                                 silent_buffer_cap,
+                                msg_limit,
                             )
                             .await?;
 
@@ -203,6 +208,13 @@ impl GatewayMessageHandler {
         self.services.session_registry.get(&session_id)
     }
 
+    /// Get the shared chat session cache.
+    ///
+    /// This is used by the scheduler to look up and share sessions.
+    pub fn chat_session_cache(&self) -> &ChatSessionCache {
+        &self.chat_session_cache
+    }
+
     /// Resolve the agent to use for new sessions based on routing rules.
     ///
     /// Rules are evaluated in order; first match wins.
@@ -226,13 +238,6 @@ impl GatewayMessageHandler {
             "No matching route found, message dropped"
         );
         None
-    }
-
-    /// Get the shared chat session cache.
-    ///
-    /// This is used by the scheduler to look up and share sessions.
-    pub fn chat_session_cache(&self) -> &ChatSessionCache {
-        &self.chat_session_cache
     }
 
     /// Find an existing session for a gateway chat.
@@ -496,11 +501,17 @@ impl GatewayMessageHandler {
             builder = builder.add_block(block);
         }
 
-        let chat_request = builder.build().render(
+        let budget = TokenBudget {
+            max_input_tokens: agent.model.effective_max_input_tokens(),
+            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+            max_history_tokens: agent.session.context.max_history_tokens,
+        };
+        let chat_request = builder.build().render_with_budget(
             &agent.model.name,
             agent.model.temperature,
             agent.model.max_output_tokens,
             vec![],
+            &budget,
         );
 
         let response = match provider.chat(chat_request).await {
@@ -591,13 +602,19 @@ impl GatewayMessageHandler {
             builder = builder.add_block(block);
         }
 
+        let budget = TokenBudget {
+            max_input_tokens: agent.model.effective_max_input_tokens(),
+            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+            max_history_tokens: agent.session.context.max_history_tokens,
+        };
         let messages = builder
             .build()
-            .render(
+            .render_with_budget(
                 &agent.model.name,
                 agent.model.temperature,
                 agent.model.max_output_tokens,
                 vec![],
+                &budget,
             )
             .messages;
 
