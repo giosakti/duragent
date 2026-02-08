@@ -151,6 +151,18 @@ pub fn log_scan_warnings(warnings: &[AgentScanWarning]) {
                     "Missing referenced agent file"
                 );
             }
+            AgentScanWarning::AgentWarning(AgentLoadWarning::InvalidSkill {
+                agent,
+                skill_dir,
+                error,
+            }) => {
+                warn!(
+                    agent = %agent,
+                    skill_dir = %skill_dir,
+                    error = %error,
+                    "Invalid skill in agent"
+                );
+            }
         }
     }
 }

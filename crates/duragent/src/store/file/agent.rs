@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use super::policy::FilePolicyStore;
+use crate::agent::skill::{SkillMetadata, parse_skill_frontmatter};
 use crate::agent::{AgentLoadWarning, AgentSpec, LoadedAgentFiles};
 use crate::store::PolicyStore;
 use crate::store::agent::{AgentCatalog, AgentScanResult, ScanWarning};
@@ -98,6 +99,16 @@ impl AgentCatalog for FileAgentCatalog {
                                     resource: location,
                                 });
                             }
+                            AgentLoadWarning::InvalidSkill {
+                                agent,
+                                skill_dir,
+                                error,
+                            } => {
+                                warnings.push(ScanWarning::MissingResource {
+                                    agent,
+                                    resource: format!("skill '{}': {}", skill_dir, error),
+                                });
+                            }
                         }
                     }
                 }
@@ -180,7 +191,18 @@ async fn load_agent_from_dir(
         instructions,
     };
 
-    let agent = AgentSpec::from_yaml(&yaml_content, files, policy, agent_dir.to_path_buf())?;
+    // Load skills from skills directory
+    let skills_dir = refs.skills_dir.as_deref().unwrap_or("./skills/");
+    let skills_path = agent_dir.join(skills_dir);
+    let skills = load_skills_from_dir(&skills_path, agent_name, &mut warnings).await;
+
+    let agent = AgentSpec::from_yaml(
+        &yaml_content,
+        files,
+        skills,
+        policy,
+        agent_dir.to_path_buf(),
+    )?;
 
     Ok((agent, warnings))
 }
@@ -211,6 +233,65 @@ async fn load_optional_file(
             None
         }
     }
+}
+
+/// Load skills from a directory, parsing SKILL.md frontmatter in each subdirectory.
+///
+/// Returns empty vec if the directory doesn't exist (skills are optional).
+/// Invalid skills produce warnings, not errors.
+async fn load_skills_from_dir(
+    skills_dir: &Path,
+    agent_name: &str,
+    warnings: &mut Vec<AgentLoadWarning>,
+) -> Vec<SkillMetadata> {
+    let mut skills = Vec::new();
+
+    // Skills directory is optional — if missing, return empty
+    if fs::metadata(skills_dir).await.is_err() {
+        return skills;
+    }
+
+    let mut entries = match fs::read_dir(skills_dir).await {
+        Ok(e) => e,
+        Err(_) => return skills,
+    };
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+
+        // Only process directories
+        let is_dir = match fs::metadata(&path).await {
+            Ok(m) => m.is_dir(),
+            Err(_) => false,
+        };
+        if !is_dir {
+            continue;
+        }
+
+        let skill_md_path = path.join("SKILL.md");
+        let content = match fs::read_to_string(&skill_md_path).await {
+            Ok(c) => c,
+            Err(_) => continue, // No SKILL.md, skip silently
+        };
+
+        let dir_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        match parse_skill_frontmatter(&content, path.clone()) {
+            Ok(skill) => skills.push(skill),
+            Err(e) => {
+                warnings.push(AgentLoadWarning::InvalidSkill {
+                    agent: agent_name.to_string(),
+                    skill_dir: dir_name,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    skills
 }
 
 #[cfg(test)]
@@ -339,5 +420,124 @@ spec:
         let result = catalog.load("nonexistent").await;
 
         assert!(matches!(result, Err(StorageError::NotFound { .. })));
+    }
+
+    // ------------------------------------------------------------------------
+    // Skill discovery
+    // ------------------------------------------------------------------------
+
+    fn create_skill(skills_dir: &Path, name: &str, frontmatter: &str) {
+        let skill_dir = skills_dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), frontmatter).unwrap();
+    }
+
+    #[tokio::test]
+    async fn load_agent_with_skills() {
+        let temp_dir = TempDir::new().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("test-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+        create_minimal_agent(&agent_dir, "test-agent");
+
+        let skills_dir = agent_dir.join("skills");
+        std::fs::create_dir(&skills_dir).unwrap();
+        create_skill(
+            &skills_dir,
+            "task-extraction",
+            "---\nname: task-extraction\ndescription: Extract tasks\nallowed-tools: bash\n---\n\nBody.",
+        );
+
+        let catalog = FileAgentCatalog::new(&agents_dir);
+        let agent = catalog.load("test-agent").await.unwrap();
+
+        assert_eq!(agent.skills.len(), 1);
+        assert_eq!(agent.skills[0].name, "task-extraction");
+        assert_eq!(agent.skills[0].description, "Extract tasks");
+        assert_eq!(agent.skills[0].allowed_tools, vec!["bash"]);
+    }
+
+    #[tokio::test]
+    async fn load_agent_no_skills_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("test-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+        create_minimal_agent(&agent_dir, "test-agent");
+
+        // No skills/ directory at all
+        let catalog = FileAgentCatalog::new(&agents_dir);
+        let agent = catalog.load("test-agent").await.unwrap();
+
+        assert!(agent.skills.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_agent_invalid_skill_produces_warning() {
+        let temp_dir = TempDir::new().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("test-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+        create_minimal_agent(&agent_dir, "test-agent");
+
+        let skills_dir = agent_dir.join("skills");
+        std::fs::create_dir(&skills_dir).unwrap();
+        // Invalid skill: missing description
+        create_skill(&skills_dir, "bad-skill", "---\nname: bad-skill\n---\n");
+
+        let catalog = FileAgentCatalog::new(&agents_dir);
+        let result = catalog.load_all().await.unwrap();
+
+        // Agent still loads
+        assert_eq!(result.agents.len(), 1);
+        assert!(result.agents[0].skills.is_empty());
+        // But there's a warning
+        assert!(result.warnings.iter().any(|w| {
+            matches!(w, ScanWarning::MissingResource { resource, .. } if resource.contains("bad-skill"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn load_agent_with_custom_skills_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("test-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        let yaml = format!(
+            r#"apiVersion: {API_VERSION_V1ALPHA1}
+kind: {KIND_AGENT}
+metadata:
+  name: test-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+  skills_dir: ./my-skills/
+"#
+        );
+        std::fs::write(agent_dir.join("agent.yaml"), yaml).unwrap();
+
+        let skills_dir = agent_dir.join("my-skills");
+        std::fs::create_dir(&skills_dir).unwrap();
+        create_skill(
+            &skills_dir,
+            "my-skill",
+            "---\nname: my-skill\ndescription: Custom dir skill\n---\n",
+        );
+
+        let catalog = FileAgentCatalog::new(&agents_dir);
+        let agent = catalog.load("test-agent").await.unwrap();
+
+        assert_eq!(agent.skills.len(), 1);
+        assert_eq!(agent.skills[0].name, "my-skill");
     }
 }

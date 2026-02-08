@@ -1,15 +1,10 @@
-# Task Extraction (Example Skill)
-
 ---
 name: task-extraction
 description: Extract actionable tasks from a message or conversation
-version: 1.0.0
-author: Duragent
-allowed_tools:
-  - calculator
-triggers:
-  - pattern: "extract tasks *"
-  - pattern: "what tasks *"
+allowed-tools: calculator
+metadata:
+  version: "1.0.0"
+  author: Duragent
 ---
 
 ## Goal

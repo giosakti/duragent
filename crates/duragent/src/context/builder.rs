@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use crate::agent::AgentSpec;
+use crate::agent::skill::SkillMetadata;
 use crate::llm::Message;
 
 use super::{BlockSource, DirectiveEntry, StructuredContext, SystemBlock, priority};
@@ -64,6 +65,15 @@ impl ContextBuilder {
             });
         }
 
+        if !spec.skills.is_empty() {
+            self.context.add_block(SystemBlock {
+                content: render_skills_block(&spec.skills),
+                label: "available_skills".to_string(),
+                source: BlockSource::AgentSpec,
+                priority: priority::SKILL,
+            });
+        }
+
         self
     }
 
@@ -100,6 +110,28 @@ impl ContextBuilder {
     }
 }
 
+/// Render an XML block listing available skills for the LLM.
+///
+/// Follows the agentskills.io integration guidance format.
+fn render_skills_block(skills: &[SkillMetadata]) -> String {
+    let mut xml = String::from("<available_skills>\n");
+    for skill in skills {
+        xml.push_str("  <skill>\n");
+        xml.push_str(&format!("    <name>{}</name>\n", skill.name));
+        xml.push_str(&format!(
+            "    <description>{}</description>\n",
+            skill.description
+        ));
+        xml.push_str(&format!(
+            "    <location>{}</location>\n",
+            skill.skill_path.join("SKILL.md").display()
+        ));
+        xml.push_str("  </skill>\n");
+    }
+    xml.push_str("</available_skills>");
+    xml
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +165,7 @@ mod tests {
             soul: soul.map(|s| s.to_string()),
             system_prompt: system_prompt.map(|s| s.to_string()),
             instructions: instructions.map(|s| s.to_string()),
+            skills: Vec::new(),
             session: AgentSessionConfig::default(),
             memory: None,
             tools: Vec::new(),
@@ -217,6 +250,51 @@ mod tests {
         assert_eq!(request.model, "gpt-4");
         assert_eq!(request.messages.len(), 2);
         assert_eq!(request.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn builder_injects_skills_block() {
+        use crate::agent::skill::SkillMetadata;
+
+        let mut spec = test_agent_spec(None, Some("You are helpful."), None);
+        spec.skills = vec![SkillMetadata {
+            name: "task-extraction".to_string(),
+            description: "Extract tasks from messages".to_string(),
+            skill_path: PathBuf::from("/agents/test/skills/task-extraction"),
+            allowed_tools: vec!["bash".to_string()],
+            metadata: HashMap::new(),
+        }];
+
+        let ctx = ContextBuilder::new().from_agent_spec(&spec).build();
+
+        // system_prompt + available_skills
+        assert_eq!(ctx.system_blocks.len(), 2);
+
+        let skills_block = &ctx.system_blocks[1];
+        assert_eq!(skills_block.label, "available_skills");
+        assert!(skills_block.content.contains("<available_skills>"));
+        assert!(
+            skills_block
+                .content
+                .contains("<name>task-extraction</name>")
+        );
+        assert!(
+            skills_block
+                .content
+                .contains("<description>Extract tasks from messages</description>")
+        );
+        assert!(skills_block.content.contains("SKILL.md</location>"));
+    }
+
+    #[test]
+    fn builder_no_skills_block_when_empty() {
+        let spec = test_agent_spec(None, Some("You are helpful."), None);
+
+        let ctx = ContextBuilder::new().from_agent_spec(&spec).build();
+
+        // Only system_prompt, no skills block
+        assert_eq!(ctx.system_blocks.len(), 1);
+        assert_eq!(ctx.system_blocks[0].label, "system_prompt");
     }
 
     #[test]

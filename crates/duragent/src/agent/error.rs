@@ -25,4 +25,10 @@ pub enum AgentLoadWarning {
         location: String,
         error: String,
     },
+    /// A skill directory contained an invalid SKILL.md.
+    InvalidSkill {
+        agent: String,
+        skill_dir: String,
+        error: String,
+    },
 }

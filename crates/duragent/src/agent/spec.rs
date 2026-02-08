@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::AgentLoadError;
 use super::policy::ToolPolicy;
+use super::skill::SkillMetadata;
 use super::{API_VERSION_V1ALPHA1, KIND_AGENT};
 use crate::context::default_context_window;
 use crate::llm::Provider;
@@ -31,6 +32,8 @@ pub struct AgentSpec {
     pub system_prompt: Option<String>,
     /// Additional runtime instructions.
     pub instructions: Option<String>,
+    /// Loaded skill metadata from skills directory.
+    pub skills: Vec<SkillMetadata>,
     /// Session behavior configuration.
     pub session: AgentSessionConfig,
     /// Access control configuration.
@@ -477,6 +480,7 @@ pub struct AgentFileRefs {
     pub soul: Option<String>,
     pub system_prompt: Option<String>,
     pub instructions: Option<String>,
+    pub skills_dir: Option<String>,
 }
 
 // ============================================================================
@@ -491,6 +495,7 @@ impl AgentSpec {
     pub fn from_yaml(
         yaml_content: &str,
         files: LoadedAgentFiles,
+        skills: Vec<SkillMetadata>,
         policy: ToolPolicy,
         agent_dir: PathBuf,
     ) -> Result<Self, AgentLoadError> {
@@ -528,6 +533,7 @@ impl AgentSpec {
             soul: files.soul,
             system_prompt: files.system_prompt,
             instructions: files.instructions,
+            skills,
             session: raw.spec.session,
             access: raw.spec.access,
             memory: raw.spec.memory,
@@ -549,6 +555,7 @@ impl AgentSpec {
             soul: raw.spec.soul,
             system_prompt: raw.spec.system_prompt,
             instructions: raw.spec.instructions,
+            skills_dir: raw.spec.skills_dir,
         })
     }
 }
@@ -573,6 +580,8 @@ struct RawAgentSpecBody {
     soul: Option<String>,
     system_prompt: Option<String>,
     instructions: Option<String>,
+    #[serde(default)]
+    skills_dir: Option<String>,
     #[serde(default)]
     session: AgentSessionConfig,
     #[serde(default)]
