@@ -157,6 +157,9 @@ pub struct GroupAccessConfig {
     /// Configuration for the context buffer (silent messages injected on trigger).
     #[serde(default)]
     pub context_buffer: ContextBufferConfig,
+    /// Queue configuration for handling concurrent messages.
+    #[serde(default)]
+    pub queue: QueueConfig,
 }
 
 impl Default for GroupAccessConfig {
@@ -168,6 +171,7 @@ impl Default for GroupAccessConfig {
             sender_overrides: HashMap::new(),
             activation: ActivationMode::default(),
             context_buffer: ContextBufferConfig::default(),
+            queue: QueueConfig::default(),
         }
     }
 }
@@ -252,6 +256,96 @@ fn default_max_messages() -> usize {
 
 fn default_max_age_hours() -> u64 {
     24
+}
+
+/// Queue mode for group message handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueMode {
+    /// Batch all pending messages into one combined message (default).
+    #[default]
+    Batch,
+    /// Process pending messages one at a time in order.
+    Sequential,
+    /// Drop all pending messages when session becomes idle.
+    Drop,
+}
+
+/// Overflow strategy when the queue is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowStrategy {
+    /// Drop oldest pending messages to make room (default).
+    #[default]
+    DropOld,
+    /// Reject the new message (queue stays unchanged).
+    DropNew,
+    /// Reject with a user-visible message.
+    Reject,
+}
+
+/// Debounce configuration for batching rapid messages from the same sender.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DebounceConfig {
+    /// Whether debouncing is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Idle window in milliseconds before flushing the debounce buffer.
+    #[serde(default = "default_debounce_window_ms")]
+    pub window_ms: u64,
+}
+
+impl Default for DebounceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            window_ms: default_debounce_window_ms(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_debounce_window_ms() -> u64 {
+    1500
+}
+
+/// Queue configuration for group message handling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QueueConfig {
+    /// How pending messages are processed when the session becomes idle.
+    #[serde(default)]
+    pub mode: QueueMode,
+    /// Maximum number of pending messages in the queue.
+    #[serde(default = "default_max_pending")]
+    pub max_pending: usize,
+    /// What happens when the queue is full.
+    #[serde(default)]
+    pub overflow: OverflowStrategy,
+    /// Message sent back to the user when a message is rejected.
+    #[serde(default)]
+    pub reject_message: Option<String>,
+    /// Debounce settings for batching rapid messages.
+    #[serde(default)]
+    pub debounce: DebounceConfig,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            mode: QueueMode::default(),
+            max_pending: default_max_pending(),
+            overflow: OverflowStrategy::default(),
+            reject_message: None,
+            debounce: DebounceConfig::default(),
+        }
+    }
+}
+
+fn default_max_pending() -> usize {
+    10
 }
 
 /// Memory configuration for an agent.
@@ -979,5 +1073,132 @@ spec:
 
         let agent = load_agent(&agents_dir, "open-agent").await.unwrap();
         assert!(agent.access.is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // Queue config
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn queue_mode_serialization() {
+        assert_eq!(
+            serde_json::to_string(&QueueMode::Batch).unwrap(),
+            "\"batch\""
+        );
+        assert_eq!(
+            serde_json::to_string(&QueueMode::Sequential).unwrap(),
+            "\"sequential\""
+        );
+        assert_eq!(serde_json::to_string(&QueueMode::Drop).unwrap(), "\"drop\"");
+    }
+
+    #[test]
+    fn overflow_strategy_serialization() {
+        assert_eq!(
+            serde_json::to_string(&OverflowStrategy::DropOld).unwrap(),
+            "\"drop_old\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OverflowStrategy::DropNew).unwrap(),
+            "\"drop_new\""
+        );
+        assert_eq!(
+            serde_json::to_string(&OverflowStrategy::Reject).unwrap(),
+            "\"reject\""
+        );
+    }
+
+    #[test]
+    fn queue_config_defaults() {
+        let config = QueueConfig::default();
+        assert_eq!(config.mode, QueueMode::Batch);
+        assert_eq!(config.max_pending, 10);
+        assert_eq!(config.overflow, OverflowStrategy::DropOld);
+        assert!(config.reject_message.is_none());
+        assert!(config.debounce.enabled);
+        assert_eq!(config.debounce.window_ms, 1500);
+    }
+
+    #[tokio::test]
+    async fn load_agent_with_queue_config() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("queued-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: queued-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+  access:
+    groups:
+      policy: open
+      queue:
+        mode: sequential
+        max_pending: 5
+        overflow: reject
+        reject_message: "I'm busy, please wait."
+        debounce:
+          enabled: false
+          window_ms: 2000
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "queued-agent").await.unwrap();
+        let access = agent.access.unwrap();
+        assert_eq!(access.groups.queue.mode, QueueMode::Sequential);
+        assert_eq!(access.groups.queue.max_pending, 5);
+        assert_eq!(access.groups.queue.overflow, OverflowStrategy::Reject);
+        assert_eq!(
+            access.groups.queue.reject_message,
+            Some("I'm busy, please wait.".to_string())
+        );
+        assert!(!access.groups.queue.debounce.enabled);
+        assert_eq!(access.groups.queue.debounce.window_ms, 2000);
+    }
+
+    #[tokio::test]
+    async fn load_agent_queue_config_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("default-queue-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: default-queue-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+  access:
+    groups:
+      policy: open
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "default-queue-agent")
+            .await
+            .unwrap();
+        let access = agent.access.unwrap();
+        assert_eq!(access.groups.queue.mode, QueueMode::Batch);
+        assert_eq!(access.groups.queue.max_pending, 10);
+        assert_eq!(access.groups.queue.overflow, OverflowStrategy::DropOld);
+        assert!(access.groups.queue.reject_message.is_none());
+        assert!(access.groups.queue.debounce.enabled);
+        assert_eq!(access.groups.queue.debounce.window_ms, 1500);
     }
 }

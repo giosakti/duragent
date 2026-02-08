@@ -18,8 +18,8 @@ pub use policy::{
 };
 pub use spec::{
     AccessConfig, ActivationMode, AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec,
-    ContextBufferConfig, ContextBufferMode, DEFAULT_MAX_TOOL_ITERATIONS, DmAccessConfig, DmPolicy,
-    GroupAccessConfig, GroupPolicy, LoadedAgentFiles, ModelConfig, OnDisconnect, SenderDisposition,
-    ToolConfig,
+    ContextBufferConfig, ContextBufferMode, DEFAULT_MAX_TOOL_ITERATIONS, DebounceConfig,
+    DmAccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy, LoadedAgentFiles, ModelConfig,
+    OnDisconnect, OverflowStrategy, QueueConfig, QueueMode, SenderDisposition, ToolConfig,
 };
 pub use store::{AgentStore, log_scan_warnings};

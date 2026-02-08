@@ -21,10 +21,11 @@ use crate::api::SessionStatus;
 use crate::llm::{Message, Role, Usage};
 use crate::store::SessionStore;
 
+#[cfg(test)]
+use super::actor_types::DEFAULT_SILENT_BUFFER_CAP;
 use super::actor_types::{
-    ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, CHECKPOINT_THRESHOLD,
-    DEFAULT_SILENT_BUFFER_CAP, FLUSH_INTERVAL, RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand,
-    SessionMetadata, SilentMessageEntry,
+    ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, CHECKPOINT_THRESHOLD, FLUSH_INTERVAL,
+    RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata, SilentMessageEntry,
 };
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
 use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
