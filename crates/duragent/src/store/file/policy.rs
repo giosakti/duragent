@@ -75,17 +75,9 @@ impl PolicyStore for FilePolicyStore {
         let content = serde_saphyr::to_string(policy)
             .map_err(|e| StorageError::serialization(e.to_string()))?;
 
-        // Write to temp file first
-        fs::write(&tmp_path, &content)
-            .await
-            .map_err(|e| StorageError::file_io(&tmp_path, e))?;
+        super::atomic_write_file(&tmp_path, &path, content.as_bytes()).await?;
 
-        // Atomic rename
-        fs::rename(&tmp_path, &path)
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
-
-        tracing::debug!(path = %path.display(), "Saved local policy");
+        tracing::debug!(path = %path.display(), "saved local policy");
         Ok(())
     }
 }

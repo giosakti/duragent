@@ -228,17 +228,7 @@ impl SessionStore for FileSessionStore {
         let yaml = serde_saphyr::to_string(snapshot)
             .map_err(|e| StorageError::serialization(e.to_string()))?;
 
-        // Write to temp file first
-        fs::write(&temp_path, yaml.as_bytes())
-            .await
-            .map_err(|e| StorageError::file_io(&temp_path, e))?;
-
-        // Atomic rename
-        fs::rename(&temp_path, &final_path)
-            .await
-            .map_err(|e| StorageError::file_io(&final_path, e))?;
-
-        Ok(())
+        super::atomic_write_file(&temp_path, &final_path, yaml.as_bytes()).await
     }
 
     // ========================================================================
@@ -313,14 +303,7 @@ impl SessionStore for FileSessionStore {
             retained_buf.push('\n');
         }
 
-        fs::write(&temp_path, retained_buf.as_bytes())
-            .await
-            .map_err(|e| StorageError::file_io(&temp_path, e))?;
-        fs::rename(&temp_path, &path)
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
-
-        Ok(())
+        super::atomic_write_file(&temp_path, &path, retained_buf.as_bytes()).await
     }
 }
 
