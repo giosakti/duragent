@@ -490,6 +490,7 @@ mod tests {
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
             actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+            compaction_mode: crate::config::CompactionMode::Disabled,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         let handle = SessionHandle::new(tx, "session_test".to_string(), "test-agent".to_string());

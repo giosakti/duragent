@@ -52,7 +52,7 @@ pub fn generate_pkce() -> (String, String) {
 
 /// Build the authorization URL for the browser.
 ///
-/// Uses the PKCE verifier as the state parameter (same approach as pi-mono).
+/// Uses the PKCE verifier as the state parameter.
 pub fn build_authorize_url(challenge: &str, verifier: &str) -> String {
     let mut url = url::Url::parse(AUTHORIZE_URL).expect("valid authorize URL");
     url.query_pairs_mut()

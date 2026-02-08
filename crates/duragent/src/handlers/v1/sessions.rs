@@ -83,6 +83,7 @@ pub async fn create_session(
             None,
             crate::session::DEFAULT_SILENT_BUFFER_CAP,
             crate::session::actor_message_limit(agent_spec.model.effective_max_input_tokens()),
+            agent_spec.session.compaction,
         )
         .await
     {

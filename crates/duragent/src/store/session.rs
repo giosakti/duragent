@@ -63,4 +63,20 @@ pub trait SessionStore: Send + Sync {
         session_id: &str,
         snapshot: &SessionSnapshot,
     ) -> StorageResult<()>;
+
+    // ========================================================================
+    // Compaction
+    // ========================================================================
+
+    /// Compact events up to the given sequence from the event log.
+    ///
+    /// Events with `seq <= up_to_seq` are removed from `events.jsonl`.
+    /// If `archive` is true, old events are appended to `events.archive.jsonl` first.
+    /// Safe to call after a successful snapshot that covers these events.
+    async fn compact_events(
+        &self,
+        session_id: &str,
+        up_to_seq: u64,
+        archive: bool,
+    ) -> StorageResult<()>;
 }

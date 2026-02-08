@@ -647,6 +647,7 @@ impl GatewayMessageHandler {
             .unwrap_or(crate::session::DEFAULT_SILENT_BUFFER_CAP);
         let msg_limit =
             crate::session::actor_message_limit(agent.model.effective_max_input_tokens());
+        let compaction_override = agent.session.compaction;
 
         // Use atomic get-or-insert to prevent race conditions
         let session_id = match self
@@ -675,6 +676,7 @@ impl GatewayMessageHandler {
                                 Some(chat_id.clone()),
                                 silent_buffer_cap,
                                 msg_limit,
+                                compaction_override,
                             )
                             .await?;
 

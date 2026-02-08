@@ -17,6 +17,7 @@ use ulid::Ulid;
 
 use crate::agent::OnDisconnect;
 use crate::api::{SESSION_ID_PREFIX, SessionStatus};
+use crate::config::CompactionMode;
 use crate::store::SessionStore;
 
 use super::actor::SessionActor;
@@ -42,6 +43,8 @@ pub struct SessionRegistry {
     task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Session store for persistence.
     store: Arc<dyn SessionStore>,
+    /// Event log compaction mode.
+    compaction_mode: CompactionMode,
     /// Shutdown signal sender.
     shutdown_tx: Arc<watch::Sender<bool>>,
     /// Shutdown signal receiver (cloned for each actor).
@@ -76,13 +79,14 @@ impl SessionRegistry {
     // ------------------------------------------------------------------------
 
     /// Create a new session registry.
-    pub fn new(store: Arc<dyn SessionStore>) -> Self {
+    pub fn new(store: Arc<dyn SessionStore>, compaction_mode: CompactionMode) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         Self {
             handles: Arc::new(DashMap::new()),
             task_handles: Arc::new(Mutex::new(Vec::new())),
             store,
+            compaction_mode,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -145,6 +149,7 @@ impl SessionRegistry {
             gateway_chat_id,
             silent_buffer_cap,
             actor_message_limit,
+            compaction_mode: self.compaction_mode,
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -399,6 +404,7 @@ impl SessionRegistry {
             pending_messages,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
             actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+            compaction_mode: self.compaction_mode,
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
@@ -439,7 +445,7 @@ mod tests {
 
     fn create_test_registry(temp_dir: &TempDir) -> (SessionRegistry, Arc<FileSessionStore>) {
         let store = Arc::new(FileSessionStore::new(temp_dir.path()));
-        let registry = SessionRegistry::new(store.clone());
+        let registry = SessionRegistry::new(store.clone(), CompactionMode::Disabled);
         (registry, store)
     }
 

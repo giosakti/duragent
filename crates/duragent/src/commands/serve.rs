@@ -87,7 +87,7 @@ pub async fn run(
     // Initialize session store and registry, then recover persisted sessions
     let session_store: Arc<dyn duragent::store::SessionStore> =
         Arc::new(FileSessionStore::new(&sessions_path));
-    let session_registry = SessionRegistry::new(session_store.clone());
+    let session_registry = SessionRegistry::new(session_store.clone(), config.sessions.compaction);
     let recovery = session_registry.recover().await?;
     if recovery.recovered > 0 {
         info!(
