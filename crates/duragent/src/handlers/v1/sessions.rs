@@ -146,6 +146,41 @@ pub async fn get_session(
     (StatusCode::OK, Json(response)).into_response()
 }
 
+/// DELETE /api/v1/sessions/{session_id}
+pub async fn delete_session(
+    State(state): State<AppState>,
+    PathExtract(session_id): PathExtract<String>,
+) -> Response {
+    let Some(handle) = state.services.session_registry.get(&session_id) else {
+        return problem_details::not_found("session not found").into_response();
+    };
+
+    // Mark session as completed so it won't be recovered
+    let _ = handle.set_status(SessionStatus::Completed).await;
+
+    // Remove from registry and cache
+    state.services.session_registry.remove(&session_id);
+    state
+        .services
+        .chat_session_cache
+        .remove_by_session_id(&session_id)
+        .await;
+
+    // Delete persisted data
+    if let Err(e) = state
+        .services
+        .session_registry
+        .store()
+        .delete(&session_id)
+        .await
+    {
+        return problem_details::internal_error(format!("failed to delete session: {}", e))
+            .into_response();
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// GET /api/v1/sessions/{session_id}/messages
 pub async fn get_messages(
     State(state): State<AppState>,

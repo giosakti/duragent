@@ -145,6 +145,7 @@ pub async fn run(
         policy_store: policy_store.clone(),
         world_memory_path: world_memory_path.clone(),
         workspace_directives_path: workspace_directives_path.clone(),
+        chat_session_cache: chat_session_cache.clone(),
     };
 
     let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));

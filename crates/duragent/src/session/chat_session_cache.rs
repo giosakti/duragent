@@ -58,6 +58,12 @@ impl ChatSessionCache {
         cache.insert(key, session_id.to_string());
     }
 
+    /// Remove all cache entries matching a given session_id.
+    pub async fn remove_by_session_id(&self, session_id: &str) {
+        let mut cache = self.cache.write().await;
+        cache.retain(|_key, cached_id| cached_id != session_id);
+    }
+
     /// Atomically get or insert a session_id for a (gateway, chat_id, agent) tuple.
     ///
     /// This prevents race conditions where two concurrent callers could both miss
@@ -235,6 +241,36 @@ mod tests {
         assert_eq!(
             cache.get("discord", "123", "agent1").await,
             Some("session_2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_by_session_id_removes_matching_entries() {
+        let cache = ChatSessionCache::new();
+        cache.insert("telegram", "123", "agent1", "session_A").await;
+        cache.insert("telegram", "456", "agent1", "session_A").await;
+        cache.insert("discord", "789", "agent2", "session_B").await;
+
+        cache.remove_by_session_id("session_A").await;
+
+        assert!(cache.get("telegram", "123", "agent1").await.is_none());
+        assert!(cache.get("telegram", "456", "agent1").await.is_none());
+        assert_eq!(
+            cache.get("discord", "789", "agent2").await,
+            Some("session_B".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_by_session_id_noop_when_not_found() {
+        let cache = ChatSessionCache::new();
+        cache.insert("telegram", "123", "agent1", "session_A").await;
+
+        cache.remove_by_session_id("nonexistent").await;
+
+        assert_eq!(
+            cache.get("telegram", "123", "agent1").await,
+            Some("session_A".to_string())
         );
     }
 

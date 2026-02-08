@@ -15,7 +15,7 @@ use crate::handlers;
 use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
-use crate::session::SessionRegistry;
+use crate::session::{ChatSessionCache, SessionRegistry};
 use crate::store::PolicyStore;
 
 // ============================================================================
@@ -33,6 +33,7 @@ pub struct RuntimeServices {
     pub policy_store: Arc<dyn PolicyStore>,
     pub world_memory_path: PathBuf,
     pub workspace_directives_path: PathBuf,
+    pub chat_session_cache: ChatSessionCache,
 }
 
 // ============================================================================
@@ -80,7 +81,10 @@ pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
             "/sessions",
             get(handlers::v1::list_sessions).post(handlers::v1::create_session),
         )
-        .route("/sessions/{session_id}", get(handlers::v1::get_session))
+        .route(
+            "/sessions/{session_id}",
+            get(handlers::v1::get_session).delete(handlers::v1::delete_session),
+        )
         .route(
             "/sessions/{session_id}/messages",
             get(handlers::v1::get_messages).post(handlers::v1::send_message),

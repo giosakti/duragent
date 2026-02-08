@@ -205,6 +205,19 @@ impl SessionRegistry {
             .await
     }
 
+    /// Remove a session handle from the registry.
+    ///
+    /// Returns true if a session was removed.
+    /// When all clones of the handle are dropped, the actor shuts down naturally.
+    pub fn remove(&self, id: &str) -> bool {
+        self.handles.remove(id).is_some()
+    }
+
+    /// Get a reference to the session store.
+    pub fn store(&self) -> &Arc<dyn SessionStore> {
+        &self.store
+    }
+
     /// Get the number of active sessions.
     pub fn len(&self) -> usize {
         self.handles.len()
@@ -570,6 +583,32 @@ mod tests {
 
         assert!(registry.contains(handle.id()));
         assert!(!registry.contains("session_unknown"));
+
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn remove_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let (registry, _store) = create_test_registry(&temp_dir);
+
+        let handle = registry
+            .create(
+                "test-agent",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
+            )
+            .await
+            .unwrap();
+        let id = handle.id().to_string();
+
+        assert!(registry.contains(&id));
+        assert!(registry.remove(&id));
+        assert!(!registry.contains(&id));
+        assert!(!registry.remove(&id)); // second remove returns false
 
         registry.shutdown().await;
     }
