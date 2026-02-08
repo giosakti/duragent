@@ -893,15 +893,15 @@ fn is_group_chat(chat_type: &str) -> bool {
 ///
 /// Priority: display_name > username > id
 fn resolve_sender_label(sender: &Sender) -> String {
-    if let Some(ref name) = sender.display_name {
-        if !name.is_empty() {
-            return name.clone();
-        }
+    if let Some(ref name) = sender.display_name
+        && !name.is_empty()
+    {
+        return name.clone();
     }
-    if let Some(ref username) = sender.username {
-        if !username.is_empty() {
-            return username.clone();
-        }
+    if let Some(ref username) = sender.username
+        && !username.is_empty()
+    {
+        return username.clone();
     }
     sender.id.clone()
 }
