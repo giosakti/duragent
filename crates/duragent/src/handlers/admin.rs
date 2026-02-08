@@ -48,7 +48,12 @@ fn is_admin_authorized(
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
-                .map(|token| token == expected_token)
+                .map(|token| {
+                    use sha2::{Digest, Sha256};
+                    let a = Sha256::digest(token.as_bytes());
+                    let b = Sha256::digest(expected_token.as_bytes());
+                    a == b
+                })
                 .unwrap_or(false)
         }
         None => {
