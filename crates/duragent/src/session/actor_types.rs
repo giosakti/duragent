@@ -36,6 +36,12 @@ pub enum SessionCommand {
         usage: Option<Usage>,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
+    AddSilentMessage {
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
+        reply: oneshot::Sender<Result<u64, ActorError>>,
+    },
     RecordToolCall {
         call_id: String,
         tool_name: String,

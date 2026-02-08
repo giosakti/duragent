@@ -79,6 +79,16 @@ pub enum SessionEventPayload {
         from: SessionStatus,
         to: SessionStatus,
     },
+    /// A message stored in session history but excluded from LLM conversation.
+    ///
+    /// Used for group messages from senders with `silent` disposition.
+    /// Visible in `events.jsonl` for audit; `to_message()` returns `None`.
+    SilentMessage {
+        content: String,
+        sender_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sender_name: Option<String>,
+    },
     /// An error occurred (recoverable).
     Error { code: String, message: String },
 }
@@ -265,6 +275,50 @@ mod tests {
             },
         );
         assert!(start_event.to_message().is_none());
+    }
+
+    #[test]
+    fn silent_message_serialization_roundtrip() {
+        let event = SessionEvent::new(
+            5,
+            SessionEventPayload::SilentMessage {
+                content: "alice: hello everyone".to_string(),
+                sender_id: "12345".to_string(),
+                sender_name: Some("alice".to_string()),
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"silent_message\""));
+        assert!(json.contains("\"sender_id\":\"12345\""));
+
+        let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 5);
+        match parsed.payload {
+            SessionEventPayload::SilentMessage {
+                content,
+                sender_id,
+                sender_name,
+            } => {
+                assert_eq!(content, "alice: hello everyone");
+                assert_eq!(sender_id, "12345");
+                assert_eq!(sender_name, Some("alice".to_string()));
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn silent_message_to_message_returns_none() {
+        let event = SessionEvent::new(
+            1,
+            SessionEventPayload::SilentMessage {
+                content: "ignored content".to_string(),
+                sender_id: "123".to_string(),
+                sender_name: None,
+            },
+        );
+        assert!(event.to_message().is_none());
     }
 
     #[test]

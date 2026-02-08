@@ -122,6 +122,33 @@ impl SessionHandle {
         reply_rx.await.map_err(|_| ActorError::ActorShutdown)?
     }
 
+    /// Add a silent message to session history, excluded from LLM conversation.
+    ///
+    /// Used for group messages from senders with `silent` disposition.
+    /// Persisted in `events.jsonl` for audit but not included in `get_messages()`.
+    /// Returns the event sequence number on success.
+    pub async fn add_silent_message(
+        &self,
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SessionCommand::AddSilentMessage {
+                content,
+                sender_id,
+                sender_name,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ActorError::ActorShutdown)?;
+
+        let seq = reply_rx.await.map_err(|_| ActorError::ActorShutdown)??;
+        self.force_flush().await?;
+        Ok(seq)
+    }
+
     /// Record a tool call event.
     ///
     /// Returns the event sequence number on success.

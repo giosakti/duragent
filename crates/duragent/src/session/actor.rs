@@ -278,6 +278,17 @@ impl SessionActor {
                 let result = self.add_assistant_message(content, usage).await;
                 let _ = reply.send(result);
             }
+            SessionCommand::AddSilentMessage {
+                content,
+                sender_id,
+                sender_name,
+                reply,
+            } => {
+                let result = self
+                    .add_silent_message(content, sender_id, sender_name)
+                    .await;
+                let _ = reply.send(result);
+            }
             SessionCommand::RecordToolCall {
                 call_id,
                 tool_name,
@@ -428,6 +439,28 @@ impl SessionActor {
 
         // Roll checkpoint if pending is too large
         self.maybe_roll_checkpoint();
+
+        Ok(seq)
+    }
+
+    async fn add_silent_message(
+        &mut self,
+        content: String,
+        sender_id: String,
+        sender_name: Option<String>,
+    ) -> Result<u64, ActorError> {
+        self.updated_at = Utc::now();
+        let seq = self.next_seq();
+
+        // Queue event but do NOT add to pending_messages — excluded from LLM conversation
+        self.pending_events.push_back(SessionEvent::new(
+            seq,
+            SessionEventPayload::SilentMessage {
+                content,
+                sender_id,
+                sender_name,
+            },
+        ));
 
         Ok(seq)
     }
