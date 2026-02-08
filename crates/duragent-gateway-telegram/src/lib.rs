@@ -66,33 +66,25 @@ impl TelegramGateway {
         mut command_rx: mpsc::Receiver<GatewayCommand>,
     ) {
         // Configure HTTP client with timeout longer than polling timeout
-        let client = teloxide::net::default_reqwest_settings()
+        let client = match teloxide::net::default_reqwest_settings()
             .timeout(std::time::Duration::from_secs(60))
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("Failed to build HTTP client");
+        {
+            Ok(client) => client,
+            Err(e) => {
+                let _ = event_tx
+                    .send(GatewayEvent::Error {
+                        code: "init_failed".to_string(),
+                        message: format!("Failed to build HTTP client: {e}"),
+                        fatal: true,
+                    })
+                    .await;
+                return;
+            }
+        };
 
         let bot = Bot::with_client(&self.config.bot_token, client);
-
-        // Send ready event
-        let ready_event = GatewayEvent::Ready {
-            gateway: "telegram".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: vec![
-                capabilities::MEDIA.to_string(),
-                capabilities::EDIT.to_string(),
-                capabilities::DELETE.to_string(),
-                capabilities::TYPING.to_string(),
-                capabilities::REPLY.to_string(),
-                capabilities::INLINE_KEYBOARD.to_string(),
-            ],
-        };
-        if event_tx.send(ready_event).await.is_err() {
-            error!("Failed to send ready event");
-            return;
-        }
-
-        info!("Telegram gateway starting");
 
         // Get bot identity for mention detection
         let bot_user = match bot.get_me().await {
@@ -112,6 +104,26 @@ impl TelegramGateway {
                 None
             }
         };
+
+        // Send ready event after bot identity check
+        let ready_event = GatewayEvent::Ready {
+            gateway: "telegram".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: vec![
+                capabilities::MEDIA.to_string(),
+                capabilities::EDIT.to_string(),
+                capabilities::DELETE.to_string(),
+                capabilities::TYPING.to_string(),
+                capabilities::REPLY.to_string(),
+                capabilities::INLINE_KEYBOARD.to_string(),
+            ],
+        };
+        if event_tx.send(ready_event).await.is_err() {
+            error!("failed to send ready event");
+            return;
+        }
+
+        info!("Telegram gateway started");
 
         // Build dispatcher and get shutdown token for graceful shutdown
         let message_handler = Update::filter_message().endpoint({
@@ -292,11 +304,9 @@ impl TelegramGateway {
                     GatewayCommand::Shutdown => {
                         info!("Telegram gateway received shutdown command");
                         // Trigger graceful shutdown of the dispatcher
-                        drop(
-                            shutdown_token
-                                .shutdown()
-                                .expect("Failed to shutdown dispatcher"),
-                        );
+                        if let Err(e) = shutdown_token.shutdown() {
+                            warn!(error = ?e, "Dispatcher already shut down");
+                        }
                         let _ = event_tx_for_commands
                             .send(GatewayEvent::Shutdown {
                                 reason: "shutdown requested".to_string(),

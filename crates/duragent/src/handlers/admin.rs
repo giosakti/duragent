@@ -6,6 +6,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
+use super::api_auth;
 use crate::server::AppState;
 
 /// POST /api/admin/v1/shutdown
@@ -20,7 +21,7 @@ pub async fn shutdown(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !is_admin_authorized(&state.admin_token, &addr, &headers) {
+    if !api_auth::is_authorized(&state.admin_token, &addr, &headers) {
         return (StatusCode::FORBIDDEN, "Admin access denied").into_response();
     }
 
@@ -29,31 +30,5 @@ pub async fn shutdown(
         (StatusCode::OK, "Shutdown initiated").into_response()
     } else {
         (StatusCode::CONFLICT, "Shutdown already in progress").into_response()
-    }
-}
-
-/// Check if a request is authorized for admin access.
-///
-/// - If `admin_token` is configured: requires matching `Authorization: Bearer <token>` header
-/// - If `admin_token` is not configured: only accepts requests from loopback addresses
-fn is_admin_authorized(
-    admin_token: &Option<String>,
-    addr: &SocketAddr,
-    headers: &HeaderMap,
-) -> bool {
-    match admin_token {
-        Some(expected_token) => {
-            // Token configured: require Authorization header
-            headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(|token| token == expected_token)
-                .unwrap_or(false)
-        }
-        None => {
-            // No token configured: only allow localhost
-            addr.ip().is_loopback()
-        }
     }
 }

@@ -1,6 +1,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use serde::Deserialize;
@@ -76,6 +77,24 @@ pub fn resolve_path(config_path: &Path, path: &Path) -> PathBuf {
     config_dir.join(path)
 }
 
+/// Compute a SHA-256 hash of the canonical workspace path.
+///
+/// Used to identify which workspace a server is serving, without exposing the
+/// actual filesystem path. Both the server and launcher compute this independently
+/// to verify they agree on the workspace.
+pub fn compute_workspace_hash(config_path: &Path, config: &Config) -> String {
+    let workspace_raw = config
+        .workspace
+        .as_deref()
+        .unwrap_or(Path::new(DEFAULT_WORKSPACE));
+    let workspace = resolve_path(config_path, workspace_raw);
+    let canonical = workspace.canonicalize().unwrap_or(workspace);
+    format!(
+        "{:x}",
+        Sha256::digest(canonical.to_string_lossy().as_bytes())
+    )
+}
+
 // ============================================================================
 // Default Paths
 // ============================================================================
@@ -100,7 +119,7 @@ pub const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
 // ============================================================================
 
 fn default_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 fn default_port() -> u16 {
@@ -267,6 +286,10 @@ pub struct ServerConfig {
     /// If not set, admin endpoints only accept requests from localhost.
     #[serde(default)]
     pub admin_token: Option<String>,
+    /// Optional API token. If set, API endpoints require this token.
+    /// If not set, API endpoints only accept requests from localhost.
+    #[serde(default)]
+    pub api_token: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -278,6 +301,7 @@ impl Default for ServerConfig {
             idle_timeout_seconds: default_idle_timeout(),
             keep_alive_interval_seconds: default_keep_alive_interval(),
             admin_token: None,
+            api_token: None,
         }
     }
 }
@@ -503,7 +527,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.request_timeout_seconds, 300);
         assert_eq!(config.server.idle_timeout_seconds, 60);
@@ -520,7 +544,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let missing_path = tmp_dir.path().join("missing-config.yaml");
         let config = Config::load(missing_path.to_str().unwrap()).await.unwrap();
-        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
     }
 
@@ -566,7 +590,7 @@ server:
         .unwrap();
 
         let config = Config::load(file.path().to_str().unwrap()).await.unwrap();
-        assert_eq!(config.server.host, "0.0.0.0"); // default
+        assert_eq!(config.server.host, "127.0.0.1"); // default
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.server.request_timeout_seconds, 300); // default
         assert_eq!(config.server.idle_timeout_seconds, 60); // default

@@ -28,6 +28,7 @@ pub async fn run(
     host_override: Option<IpAddr>,
     port_override: Option<u16>,
     agents_dir_override: Option<&Path>,
+    ephemeral_idle_seconds: Option<u64>,
 ) -> Result<()> {
     super::check_workspace(config_path)?;
     let mut config = Config::load(config_path).await?;
@@ -160,6 +161,7 @@ pub async fn run(
         .unwrap_or(&sessions_path)
         .join("schedules");
     // Build shared RuntimeServices once
+    let workspace_hash = config::compute_workspace_hash(config_path_ref, &config);
     let services = RuntimeServices {
         agents: store.clone(),
         providers: providers.clone(),
@@ -170,6 +172,7 @@ pub async fn run(
         world_memory_path: world_memory_path.clone(),
         workspace_directives_path: workspace_directives_path.clone(),
         chat_session_cache: chat_session_cache.clone(),
+        workspace_hash,
     };
 
     let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));
@@ -235,11 +238,40 @@ pub async fn run(
         scheduler: Some(scheduler_handle.clone()),
         policy_locks,
         admin_token: config.server.admin_token.clone(),
+        api_token: config.server.api_token.clone(),
         idle_timeout_seconds: config.server.idle_timeout_seconds,
         keep_alive_interval_seconds: config.server.keep_alive_interval_seconds,
         background_tasks: background_tasks.clone(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
+
+    // Spawn ephemeral idle monitor if requested
+    if let Some(idle_secs) = ephemeral_idle_seconds {
+        let shutdown_tx = state.shutdown_tx.clone();
+        let registry = session_registry.clone();
+        background_tasks.spawn(async move {
+            let mut idle_since: Option<tokio::time::Instant> = Some(tokio::time::Instant::now());
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if !registry.is_empty() {
+                    idle_since = None;
+                } else if idle_since.is_none() {
+                    idle_since = Some(tokio::time::Instant::now());
+                }
+                if let Some(start) = idle_since
+                    && start.elapsed().as_secs() >= idle_secs
+                {
+                    info!("Ephemeral server idle for {}s, shutting down", idle_secs);
+                    if let Some(tx) = shutdown_tx.lock().await.take() {
+                        let _ = tx.send(());
+                    }
+                    break;
+                }
+            }
+        });
+        info!(idle_timeout_secs = idle_secs, "Ephemeral mode enabled");
+    }
 
     let app = server::build_app(state, config.server.request_timeout_seconds);
 

@@ -251,7 +251,10 @@ pub async fn execute_schedule_task(
             tz: None,
         }
     } else {
-        unreachable!()
+        return Ok(ToolResult {
+            success: false,
+            content: "Error: no timing option resolved".to_string(),
+        });
     };
 
     // Build payload
@@ -260,7 +263,10 @@ pub async fn execute_schedule_task(
     } else if let Some(task) = args.task {
         SchedulePayload::Task { task }
     } else {
-        unreachable!()
+        return Ok(ToolResult {
+            success: false,
+            content: "Error: no payload option resolved".to_string(),
+        });
     };
 
     // Build retry config if any retry parameters are provided

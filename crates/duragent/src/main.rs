@@ -114,6 +114,10 @@ enum Commands {
         /// Agents directory (overrides config file). If relative, it is resolved relative to the config file directory.
         #[arg(long, global = true)]
         agents_dir: Option<PathBuf>,
+
+        /// Auto-shutdown after N seconds with no active sessions (used by launcher)
+        #[arg(long, value_name = "SECONDS")]
+        ephemeral: Option<u64>,
     },
 }
 
@@ -176,9 +180,12 @@ async fn run() -> Result<()> {
             host,
             port,
             agents_dir,
+            ephemeral,
         } => match action {
             Some(ServeAction::Stop) => commands::serve::stop(&config, port).await,
-            None => commands::serve::run(&config, host, port, agents_dir.as_deref()).await,
+            None => {
+                commands::serve::run(&config, host, port, agents_dir.as_deref(), ephemeral).await
+            }
         },
     }
 }

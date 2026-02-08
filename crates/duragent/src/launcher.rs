@@ -14,7 +14,7 @@ use tokio::time::sleep;
 use tracing::{debug, info};
 
 use crate::client::AgentClient;
-use crate::config::Config;
+use crate::config::{self, Config};
 
 // ============================================================================
 // Public Types
@@ -40,6 +40,12 @@ pub enum LauncherError {
     /// Server health check failed after startup.
     #[error("server started but health check failed: {0}")]
     HealthCheckFailed(String),
+
+    /// Server on this port serves a different workspace.
+    #[error(
+        "server on port {port} serves a different workspace; stop it with `duragent serve stop` or use a different `--port`"
+    )]
+    WorkspaceMismatch { port: u16 },
 }
 
 /// Options for launching a server.
@@ -78,10 +84,17 @@ pub async fn ensure_server_running(opts: LaunchOptions<'_>) -> Result<AgentClien
     let local_url = format!("http://127.0.0.1:{}", port);
     let client = AgentClient::new(&local_url);
 
-    // Check if server is already running
-    if client.health().await.is_ok() {
-        debug!(url = %local_url, "Server already running");
-        return Ok(client);
+    // Check if server is already running and serves the right workspace
+    let expected_hash = config::compute_workspace_hash(opts.config_path, opts.config);
+    match client.health().await {
+        Ok(readyz) if readyz.workspace_hash == expected_hash => {
+            debug!(url = %local_url, "Server already running for this workspace");
+            return Ok(client);
+        }
+        Ok(_) => {
+            return Err(LauncherError::WorkspaceMismatch { port });
+        }
+        Err(_) => { /* server not running, proceed to spawn */ }
     }
 
     // Server not running, start it
@@ -129,7 +142,9 @@ async fn spawn_server(
         .arg("--host")
         .arg("127.0.0.1") // Always bind to localhost for security
         .arg("--port")
-        .arg(port.to_string());
+        .arg(port.to_string())
+        .arg("--ephemeral")
+        .arg("300"); // 5 minutes idle timeout
 
     // Pass agents-dir if specified
     if let Some(dir) = agents_dir {
@@ -181,7 +196,7 @@ async fn wait_for_ready(client: &AgentClient, timeout_secs: u64, log_path: &Path
         }
 
         match client.health().await {
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(e) => {
                 debug!(error = %e, interval_ms = interval_ms, "Server not ready yet, retrying");
             }
@@ -221,6 +236,10 @@ mod tests {
 
         let err = LauncherError::HealthCheckFailed("connection refused".to_string());
         assert!(err.to_string().contains("connection refused"));
+
+        let err = LauncherError::WorkspaceMismatch { port: 8080 };
+        assert!(err.to_string().contains("different workspace"));
+        assert!(err.to_string().contains("8080"));
     }
 
     #[tokio::test]

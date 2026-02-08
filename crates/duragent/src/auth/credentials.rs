@@ -57,14 +57,27 @@ impl AuthStorage {
         }
 
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, &contents)
-            .with_context(|| format!("writing auth file: {}", path.display()))?;
 
-        // Set file permissions to 0600 (owner read/write only)
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("writing auth file: {}", path.display()))?;
+            let mut writer = std::io::BufWriter::new(file);
+            writer
+                .write_all(contents.as_bytes())
+                .with_context(|| format!("writing auth file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, &contents)
+                .with_context(|| format!("writing auth file: {}", path.display()))?;
         }
 
         Ok(())

@@ -1,6 +1,7 @@
 //! HTTP request handlers.
 
 mod admin;
+pub(crate) mod api_auth;
 mod health;
 pub(crate) mod problem_details;
 pub mod v1;

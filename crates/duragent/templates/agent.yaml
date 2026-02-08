@@ -15,13 +15,13 @@ spec:
     # max_input_tokens: 200000
     # base_url: https://custom-endpoint.example.com
 
-  # Agent personality (who the agent IS) — path to a markdown file
+  # Agent personality (who the agent IS) - path to a markdown file
   soul: ./SOUL.md
 
-  # System prompt (what the agent DOES) — path to a markdown file
+  # System prompt (what the agent DOES) - path to a markdown file
   system_prompt: ./SYSTEM_PROMPT.md
 
-  # Additional runtime instructions — path to a markdown file
+  # Additional runtime instructions - path to a markdown file
   # instructions: ./INSTRUCTIONS.md
 
   session:

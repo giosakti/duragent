@@ -1,0 +1,13 @@
+[book]
+authors = ["Giovanni Sakti"]
+language = "en"
+src = "src"
+title = "Duragent Guide"
+description = "Documentation for Duragent — a durable, self-contained runtime for AI agents."
+
+[build]
+build-dir = "build"
+
+[output.html]
+git-repository-url = "https://github.com/giosakti/duragent"
+edit-url-template = "https://github.com/giosakti/duragent/edit/main/book/{path}"

@@ -34,6 +34,7 @@ pub struct RuntimeServices {
     pub world_memory_path: PathBuf,
     pub workspace_directives_path: PathBuf,
     pub chat_session_cache: ChatSessionCache,
+    pub workspace_hash: String,
 }
 
 // ============================================================================
@@ -47,6 +48,7 @@ pub struct AppState {
     pub scheduler: Option<SchedulerHandle>,
     pub policy_locks: PolicyLocks,
     pub admin_token: Option<String>,
+    pub api_token: Option<String>,
     pub idle_timeout_seconds: u64,
     pub keep_alive_interval_seconds: u64,
     pub background_tasks: BackgroundTasks,
@@ -99,17 +101,24 @@ pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
             Duration::from_secs(request_timeout_seconds),
         ));
 
-    let api_v1 = Router::new().merge(streaming_routes).merge(api_routes);
+    let api_v1 = Router::new()
+        .merge(streaming_routes)
+        .merge(api_routes)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            handlers::api_auth::require_api_token,
+        ));
 
     // Admin routes (no timeout, state required for shutdown)
     let admin_routes = Router::new()
         .route("/shutdown", post(handlers::shutdown))
-        .with_state(state);
+        .with_state(state.clone());
 
     Router::new()
         .route("/livez", get(handlers::livez))
         .route("/readyz", get(handlers::readyz))
         .route("/version", get(handlers::version))
+        .with_state(state)
         .nest("/api/v1", api_v1)
         .nest("/api/admin/v1", admin_routes)
 }

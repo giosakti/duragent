@@ -70,15 +70,9 @@ impl FileRunLogStore {
         let kept: Vec<&str> = entries[start..].to_vec();
         let new_content = kept.join("\n") + "\n";
 
-        // Write atomically via temp file
+        // Write atomically via temp file with fsync
         let temp_path = path.with_extension("jsonl.tmp");
-        fs::write(&temp_path, new_content)
-            .await
-            .map_err(|e| StorageError::file_io(&temp_path, e))?;
-
-        fs::rename(&temp_path, path)
-            .await
-            .map_err(|e| StorageError::file_io(path, e))?;
+        super::atomic_write_file(&temp_path, path, new_content.as_bytes()).await?;
 
         tracing::debug!(
             path = %path.display(),

@@ -41,7 +41,7 @@ impl ChatSessionCache {
 
     /// Build the cache key for a (gateway, chat_id, agent) tuple.
     pub fn key(gateway: &str, chat_id: &str, agent: &str) -> String {
-        format!("{}:{}:{}", gateway, chat_id, agent)
+        format!("{}\0{}\0{}", gateway, chat_id, agent)
     }
 
     /// Get the session_id for a (gateway, chat_id, agent) tuple.
@@ -278,7 +278,7 @@ mod tests {
     fn key_format() {
         assert_eq!(
             ChatSessionCache::key("telegram", "123", "agent1"),
-            "telegram:123:agent1"
+            "telegram\0123\0agent1"
         );
     }
 }

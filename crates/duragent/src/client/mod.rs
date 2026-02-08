@@ -19,6 +19,14 @@ pub use stream::ClientStreamEvent;
 use reqwest::Client;
 use serde::Deserialize;
 
+/// Response from the /readyz health check endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ReadyzResponse {
+    pub status: String,
+    #[serde(default)]
+    pub workspace_hash: String,
+}
+
 /// HTTP client for duragent server.
 #[derive(Debug, Clone)]
 pub struct AgentClient {
@@ -40,18 +48,18 @@ impl AgentClient {
 
     /// Check if the server is healthy.
     ///
-    /// Calls GET /readyz and returns Ok if status is 200.
-    pub async fn health(&self) -> Result<()> {
+    /// Calls GET /readyz and returns the readyz response with workspace hash.
+    pub async fn health(&self) -> Result<ReadyzResponse> {
         let url = format!("{}/readyz", self.base_url);
         let response = self.http.get(&url).send().await?;
 
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(ClientError::ServerUnhealthy {
+        if !response.status().is_success() {
+            return Err(ClientError::ServerUnhealthy {
                 status: response.status().as_u16(),
-            })
+            });
         }
+
+        Ok(response.json().await?)
     }
 
     // ----------------------------------------------------------------------------

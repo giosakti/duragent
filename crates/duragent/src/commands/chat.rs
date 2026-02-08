@@ -40,12 +40,22 @@ pub async fn run(
         .await
         .context("Failed to create session")?;
 
-    println!("Chat with {} (Ctrl+C or /exit to detach)", agent_name);
-    println!(
+    let w = 61; // inner width matching approval prompt
+    let model_line = format!(
         "Model: {} via {}",
         agent.spec.model.name, agent.spec.model.provider
     );
-    println!("Session: {}", session.session_id);
+    let session_line = format!("Session: {}", session.session_id);
+    let hint = "Ctrl+C or /exit to detach";
+
+    // Top border: ┌─ name ─...─┐
+    let name_part = format!("─ {} ", agent_name);
+    let remaining = w - name_part.chars().count();
+    println!("┌{}{}┐", name_part, "─".repeat(remaining));
+    println!("│ {:<width$}│", model_line, width = w - 1);
+    println!("│ {:<width$}│", session_line, width = w - 1);
+    println!("│ {:<width$}│", hint, width = w - 1);
+    println!("└{}┘", "─".repeat(w));
     println!();
 
     run_interactive_loop(&client, &session.session_id).await?;

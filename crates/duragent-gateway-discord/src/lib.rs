@@ -76,25 +76,6 @@ impl DiscordGateway {
         event_tx: mpsc::Sender<GatewayEvent>,
         mut command_rx: mpsc::Receiver<GatewayCommand>,
     ) {
-        // Send ready event
-        let ready_event = GatewayEvent::Ready {
-            gateway: "discord".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: vec![
-                capabilities::EDIT.to_string(),
-                capabilities::DELETE.to_string(),
-                capabilities::TYPING.to_string(),
-                capabilities::REPLY.to_string(),
-                capabilities::INLINE_KEYBOARD.to_string(),
-            ],
-        };
-        if event_tx.send(ready_event).await.is_err() {
-            error!("Failed to send ready event");
-            return;
-        }
-
-        info!("Discord gateway starting");
-
         let intents = GatewayIntents::GUILD_MESSAGES
             | GatewayIntents::DIRECT_MESSAGES
             | GatewayIntents::MESSAGE_CONTENT;
@@ -122,6 +103,25 @@ impl DiscordGateway {
                 return;
             }
         };
+
+        // Send ready event after client is created successfully
+        let ready_event = GatewayEvent::Ready {
+            gateway: "discord".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: vec![
+                capabilities::EDIT.to_string(),
+                capabilities::DELETE.to_string(),
+                capabilities::TYPING.to_string(),
+                capabilities::REPLY.to_string(),
+                capabilities::INLINE_KEYBOARD.to_string(),
+            ],
+        };
+        if event_tx.send(ready_event).await.is_err() {
+            error!("failed to send ready event");
+            return;
+        }
+
+        info!("Discord gateway started");
 
         // Clone http for command handler and shard_manager for shutdown
         let http = client.http.clone();
@@ -506,9 +506,8 @@ fn chunk_message(content: &str) -> Vec<&str> {
         }
 
         // Try to split at a newline within the limit
-        let split_at = remaining[..MAX_MESSAGE_LENGTH]
-            .rfind('\n')
-            .unwrap_or(MAX_MESSAGE_LENGTH);
+        let boundary = remaining.floor_char_boundary(MAX_MESSAGE_LENGTH);
+        let split_at = remaining[..boundary].rfind('\n').unwrap_or(boundary);
 
         let (chunk, rest) = remaining.split_at(split_at);
         chunks.push(chunk);

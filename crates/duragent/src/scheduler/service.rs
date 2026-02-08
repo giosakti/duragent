@@ -61,10 +61,14 @@ impl SchedulerHandle {
         self.cache.create(schedule.clone()).await?;
 
         // Notify service
-        let _ = self
+        if self
             .command_tx
             .send(SchedulerCommand::Add(Box::new(schedule)))
-            .await;
+            .await
+            .is_err()
+        {
+            warn!(schedule_id = %id, "scheduler command channel closed");
+        }
 
         Ok(id)
     }
@@ -88,10 +92,14 @@ impl SchedulerHandle {
             .await?;
 
         // Notify service
-        let _ = self
+        if self
             .command_tx
             .send(SchedulerCommand::Cancel(id.to_string()))
-            .await;
+            .await
+            .is_err()
+        {
+            warn!(schedule_id = %id, "scheduler command channel closed");
+        }
 
         Ok(())
     }
@@ -103,7 +111,14 @@ impl SchedulerHandle {
 
     /// Shutdown the scheduler.
     pub async fn shutdown(&self) {
-        let _ = self.command_tx.send(SchedulerCommand::Shutdown).await;
+        if self
+            .command_tx
+            .send(SchedulerCommand::Shutdown)
+            .await
+            .is_err()
+        {
+            warn!("scheduler command channel closed");
+        }
     }
 }
 

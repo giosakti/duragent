@@ -10,7 +10,7 @@ use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, error};
 use ulid::Ulid;
 
 use crate::agent::{AgentSpec, OnDisconnect};
@@ -89,8 +89,8 @@ pub async fn create_session(
     {
         Ok(h) => h,
         Err(e) => {
-            return problem_details::internal_error(format!("failed to create session: {}", e))
-                .into_response();
+            error!(error = %e, "failed to create session");
+            return problem_details::internal_error("failed to create session").into_response();
         }
     };
 
@@ -98,11 +98,9 @@ pub async fn create_session(
     let metadata = match handle.get_metadata().await {
         Ok(m) => m,
         Err(e) => {
-            return problem_details::internal_error(format!(
-                "failed to get session metadata: {}",
-                e
-            ))
-            .into_response();
+            error!(error = %e, "failed to get session metadata");
+            return problem_details::internal_error("failed to get session metadata")
+                .into_response();
         }
     };
 
@@ -128,11 +126,9 @@ pub async fn get_session(
     let metadata = match handle.get_metadata().await {
         Ok(m) => m,
         Err(e) => {
-            return problem_details::internal_error(format!(
-                "failed to get session metadata: {}",
-                e
-            ))
-            .into_response();
+            error!(error = %e, "failed to get session metadata");
+            return problem_details::internal_error("failed to get session metadata")
+                .into_response();
         }
     };
 
@@ -175,8 +171,8 @@ pub async fn delete_session(
         .delete(&session_id)
         .await
     {
-        return problem_details::internal_error(format!("failed to delete session: {}", e))
-            .into_response();
+        error!(error = %e, "failed to delete session");
+        return problem_details::internal_error("failed to delete session").into_response();
     }
 
     StatusCode::NO_CONTENT.into_response()
@@ -195,8 +191,8 @@ pub async fn get_messages(
     let messages = match handle.get_messages().await {
         Ok(m) => m,
         Err(e) => {
-            return problem_details::internal_error(format!("failed to get messages: {}", e))
-                .into_response();
+            error!(error = %e, "failed to get messages");
+            return problem_details::internal_error("failed to get messages").into_response();
         }
     };
 
@@ -233,8 +229,8 @@ pub async fn send_message(
     let chat_response = match ctx.provider.chat(ctx.request).await {
         Ok(resp) => resp,
         Err(e) => {
-            return problem_details::internal_error(format!("llm request failed: {}", e))
-                .into_response();
+            error!(error = %e, "llm request failed");
+            return problem_details::internal_error("llm request failed").into_response();
         }
     };
 
@@ -303,8 +299,8 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
     {
         Ok(r) => r,
         Err(e) => {
-            return problem_details::internal_error(format!("agentic loop failed: {}", e))
-                .into_response();
+            error!(error = %e, "agentic loop failed");
+            return problem_details::internal_error("agentic loop failed").into_response();
         }
     };
 
@@ -342,8 +338,8 @@ pub async fn stream_session(
     let stream = match ctx.provider.chat_stream(ctx.request).await {
         Ok(s) => s,
         Err(e) => {
-            return problem_details::internal_error(format!("llm request failed: {}", e))
-                .into_response();
+            error!(error = %e, "llm request failed");
+            return problem_details::internal_error("llm request failed").into_response();
         }
     };
 
@@ -403,11 +399,9 @@ pub async fn approve_command(
                 .into_response();
         }
         Err(e) => {
-            return problem_details::internal_error(format!(
-                "failed to load pending approval: {}",
-                e
-            ))
-            .into_response();
+            error!(error = %e, "failed to load pending approval");
+            return problem_details::internal_error("failed to load pending approval")
+                .into_response();
         }
     };
 
@@ -432,11 +426,9 @@ pub async fn approve_command(
         .record_approval_decision(req.call_id.clone(), decision)
         .await
     {
-        return problem_details::internal_error(format!(
-            "failed to persist approval decision: {}",
-            e
-        ))
-        .into_response();
+        error!(error = %e, "failed to persist approval decision");
+        return problem_details::internal_error("failed to persist approval decision")
+            .into_response();
     }
 
     // Get agent spec for tool execution
@@ -529,11 +521,7 @@ pub async fn approve_command(
         )
         .await
     else {
-        return problem_details::internal_error(format!(
-            "provider '{}' not configured",
-            agent_spec.model.provider
-        ))
-        .into_response();
+        return problem_details::internal_error("provider not configured").into_response();
     };
 
     // Create executor for resume (uses same policy loaded above)
@@ -579,8 +567,8 @@ pub async fn approve_command(
         Err(e) => {
             // Reset to Active on error
             let _ = handle.set_status(SessionStatus::Active).await;
-            return problem_details::internal_error(format!("agentic loop failed: {}", e))
-                .into_response();
+            error!(error = %e, "agentic loop failed");
+            return problem_details::internal_error("agentic loop failed").into_response();
         }
     };
 
@@ -597,8 +585,8 @@ pub async fn approve_command(
 enum SendMessageError {
     SessionNotFound,
     AgentNotFound,
-    PersistFailed(String),
-    ProviderNotConfigured(String),
+    PersistFailed,
+    ProviderNotConfigured,
 }
 
 impl IntoResponse for SendMessageError {
@@ -608,11 +596,12 @@ impl IntoResponse for SendMessageError {
             Self::AgentNotFound => {
                 problem_details::internal_error("session references non-existent agent")
             }
-            Self::PersistFailed(msg) => problem_details::internal_error(msg),
-            Self::ProviderNotConfigured(provider) => problem_details::internal_error(format!(
-                "provider '{}' not configured, check API key environment variable",
-                provider
-            )),
+            Self::PersistFailed => {
+                problem_details::internal_error("failed to persist session data")
+            }
+            Self::ProviderNotConfigured => {
+                problem_details::internal_error("provider not configured")
+            }
         }
         .into_response()
     }
@@ -649,19 +638,15 @@ async fn prepare_chat_context(
 
     // Persist user message via actor
     if let Err(e) = handle.add_user_message(user_content).await {
-        return Err(SendMessageError::PersistFailed(format!(
-            "Failed to persist user message: {}",
-            e
-        )));
+        error!(error = %e, "failed to persist user message");
+        return Err(SendMessageError::PersistFailed);
     }
 
     let history = match handle.get_messages().await {
         Ok(m) => m,
         Err(e) => {
-            return Err(SendMessageError::PersistFailed(format!(
-                "Failed to get messages: {}",
-                e
-            )));
+            error!(error = %e, "failed to get messages");
+            return Err(SendMessageError::PersistFailed);
         }
     };
 
@@ -671,9 +656,7 @@ async fn prepare_chat_context(
         .get(&agent.model.provider, agent.model.base_url.as_deref())
         .await
     else {
-        return Err(SendMessageError::ProviderNotConfigured(
-            agent.model.provider.to_string(),
-        ));
+        return Err(SendMessageError::ProviderNotConfigured);
     };
 
     // Build structured context from agent spec and history
@@ -731,11 +714,9 @@ async fn handle_agentic_result(
         AgenticResult::Complete { content, usage, .. } => {
             // Persist the final assistant message via actor
             if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                return problem_details::internal_error(format!(
-                    "failed to persist assistant message: {}",
-                    e
-                ))
-                .into_response();
+                error!(error = %e, "failed to persist assistant message");
+                return problem_details::internal_error("failed to persist assistant message")
+                    .into_response();
             }
 
             // On resume, set back to Active (was Running during execution)
@@ -767,11 +748,9 @@ async fn handle_agentic_result(
         AgenticResult::AwaitingApproval { pending, .. } => {
             // Save pending approval via actor (immediately persists for crash safety)
             if let Err(e) = handle.set_pending_approval(pending.clone()).await {
-                return problem_details::internal_error(format!(
-                    "failed to save pending approval: {}",
-                    e
-                ))
-                .into_response();
+                error!(error = %e, "failed to save pending approval");
+                return problem_details::internal_error("failed to save pending approval")
+                    .into_response();
             }
 
             // Set session to Paused

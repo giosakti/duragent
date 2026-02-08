@@ -1,110 +1,79 @@
 # Duragent
 
 [![CI](https://github.com/giosakti/duragent/actions/workflows/ci.yml/badge.svg)](https://github.com/giosakti/duragent/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-guide-blue)](https://giosakti.github.io/duragent/)
 [![Rust](https://img.shields.io/badge/rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Duragent** — Assemble your own agent runtime.
+> **Duragent** — A durable, self-contained runtime for AI agents.
 
-One binary. Modular parts. Zero dependencies.
+Sessions survive crashes. Agents are just files. One binary, zero dependencies.
 
-Everything you need is self-contained, but every part is swappable.
+Use it as a personal AI assistant, or as the foundation for agent-powered products.
 
-Build a personal assistant, a support bot, or a multi-tenant platform. Same runtime, same simplicity.
-
-### The problems we solve
-
-| Problem | Duragent |
-|---------|------|
-| Sessions lost on crash | **Durable** — attach/detach like tmux |
-| Agents locked in code | **Portable** — YAML + Markdown |
-| State hidden in databases | **Transparent** — just files you can read |
-| Heavy frameworks | **Minimal** — single binary, ~10MB, starts in milliseconds |
-| Dependency hell | **Self-contained** — no Python, no Node, no containers |
-
-### Modular by design
-
-Use the built-ins, or we'll provide mechanism later for you to build and swap in your own:
-
-| Component | Default | Swappable |
-|-----------|---------|-----------|
-| Gateways | CLI, HTTP, SSE, Telegram | Any platform via gateway plugins |
-| LLM | OpenRouter | Any provider |
-| Sandbox | Trust mode | bubblewrap, Docker *(planned)* |
-| Storage | Filesystem | Postgres, Redis, S3 *(planned)* |
-
-Swappability through clean interfaces. See [Gateway Protocol](./crates/duragent-gateway-protocol) for an example.
-
-### Work-in-Progress (to be released soon)
-
-Memory banks, tools, and orchestration.
-Built the Duragent way: simple, transparent, portable, swappable.
-
-## Installation
-
-### From Source
-
-```bash
-git clone https://github.com/giosakti/duragent.git
-cd duragent
-make build
-./target/release/duragent --version
-```
-
-### Cargo Install
-
-```bash
-cargo install --git https://github.com/giosakti/duragent.git
-```
+| What you get | How |
+|--------------|-----|
+| Sessions that survive crashes | Append-only event log, attach/detach like tmux |
+| Agents you can read and version | YAML + Markdown — no code required |
+| State you can inspect | Just files on disk — `cat`, `grep`, `git diff` |
+| Deploy anywhere | Single binary, ~10MB, no Python/Node/Docker |
+| Your choice of parts | Swap LLM providers, gateways, and storage backends or bring your own |
 
 ## Quick Start
 
-### 1. Create an agent
+### 1. Install and initialize
 
 ```bash
-mkdir -p .duragent/agents/my-assistant
+git clone https://github.com/giosakti/duragent.git
+cd duragent && make build
 
-cat > .duragent/agents/my-assistant/agent.yaml << 'EOF'
-apiVersion: duragent/v1alpha1
-kind: Agent
-metadata:
-  name: my-assistant
-spec:
-  model:
-    provider: openrouter
-    name: anthropic/claude-sonnet-4
-  system_prompt: ./SYSTEM_PROMPT.md
-  session:
-    on_disconnect: pause
-EOF
+# Or: cargo install --git https://github.com/giosakti/duragent.git
 
-cat > .duragent/agents/my-assistant/SYSTEM_PROMPT.md << 'EOF'
-You are a helpful assistant. Be concise and actionable.
-EOF
+duragent init
+# Follow the interactive setup
 ```
 
-### 2. Start the server
+### 2. Set up your API key and start the server
 
 ```bash
-export OPENROUTER_API_KEY=your-key
-duragent serve --port 8080
+export OPENROUTER_API_KEY=your-key  # or: duragent login anthropic
+duragent serve
 ```
 
 ### 3. Chat with your agent
 
 ```bash
-duragent chat --agent my-assistant
+duragent chat --agent <YOUR_AGENT_NAME>
 ```
 
 ### 4. Attach to a session later
 
 ```bash
-# List attachable sessions
-duragent attach --list
-
-# Attach to existing session
-duragent attach SESSION_ID
+duragent attach --list       # List attachable sessions
+duragent attach SESSION_ID   # Reconnect to existing session
 ```
+
+## Features
+
+- **Durable sessions** — crash, restart, reconnect; your conversation survives
+- **Portable agent format** — define agents in YAML + Markdown; inspect, version, and share them
+- **Memory** — agents recall past conversations, remember experiences, and reflect on long-term knowledge
+- **Tools** — bash execution, CLI tools, and scheduled tasks, with configurable approval policies
+- **Skills** — modular capabilities defined as Markdown files ([Agent Skills](https://agentskills.io) standard)
+- **Multiple LLM providers** — Anthropic, OpenAI, OpenRouter, Ollama
+- **Platform gateways** — Telegram and Discord via subprocess plugins
+- **HTTP API** — REST endpoints with SSE streaming
+
+## Modular by Design
+
+Use the built-ins, or swap in your own:
+
+| Component | Default | Swappable |
+|-----------|---------|-----------|
+| Gateways | CLI, HTTP, SSE, Telegram, Discord | Any platform via [gateway plugins](./crates/duragent-gateway-protocol) |
+| LLM | OpenRouter | Anthropic, OpenAI, Ollama, or any provider |
+| Sandbox | Trust mode | bubblewrap, Docker *(planned)* |
+| Storage | Filesystem | Postgres, S3 *(planned)* |
 
 ## Workspace Layout
 
@@ -112,38 +81,29 @@ duragent attach SESSION_ID
 ./.duragent/
 ├── agents/<agent-name>/
 │   ├── agent.yaml           # Agent definition (Duragent Format)
-│   ├── SYSTEM_PROMPT.md     # Agent personality
-│   └── INSTRUCTIONS.md      # Behavioral rules (optional)
-└── sessions/
-    └── <session_id>/
-        ├── events.jsonl     # Append-only event log
-        └── state.yaml       # Snapshot for fast resume
+│   ├── SOUL.md              # "Who the agent IS" (identity and personality)
+│   ├── SYSTEM_PROMPT.md     # "What the agent DOES" (core system prompt)
+│   ├── INSTRUCTIONS.md      # Additional runtime instructions (optional)
+│   ├── policy.yaml          # Tool execution policy (optional)
+│   ├── skills/              # Modular capabilities (SKILL.md files)
+│   └── memory/
+│       ├── MEMORY.md        # Curated long-term memory
+│       └── daily/           # Daily experience logs
+├── sessions/
+│   └── <session_id>/
+│       ├── events.jsonl     # Append-only event log
+│       └── state.yaml       # Snapshot for fast resume
+├── schedules/               # Scheduled tasks and run logs
+└── memory/
+    └── world/               # Shared knowledge across all agents
 ```
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Project Status](./docs/PROJECT_STATUS.md) | Roadmap and current focus |
-| [Project Charter](./docs/specs/202601111100.project-charter.md) | Vision, goals, and principles |
-| [Architecture](./docs/specs/202601111101.architecture.md) | System design and components |
-| [API Reference](./docs/specs/202601111102.api-reference.md) | HTTP API and CLI commands |
-| [Deployment](./docs/specs/202601111103.deployment.md) | Deployment modes and configuration |
-| [Duragent Format](./docs/specs/202601111200.duragent-format.md) | Agent definition specification |
-| [Example Skill](./docs/examples/skills/task-extraction/) | Sample skill implementation |
+**[Read the Duragent Guide](https://giosakti.github.io/duragent/)** for installation, configuration, and usage.
 
-## Tech Stack
-
-- Rust 2024 Edition
-- HTTP: Axum
-- Streaming: SSE
-- Config/spec: YAML (structured) + Markdown (prose)
-- LLM: OpenRouter, OpenAI, Anthropic, Ollama
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+For contributors: [CONTRIBUTING.md](CONTRIBUTING.md) | [Project Status](./docs/PROJECT_STATUS.md) | [Internal Specs](./docs/internal/)
 
 ## License
 
-[MIT LICENSE](LICENSE)
+[MIT](LICENSE)

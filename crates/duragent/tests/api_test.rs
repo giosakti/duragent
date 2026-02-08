@@ -41,7 +41,9 @@ async fn test_readyz() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(&body[..], b"ok");
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert!(json["workspace_hash"].is_string());
 }
 
 #[tokio::test]

@@ -111,17 +111,7 @@ impl ScheduleStore for FileScheduleStore {
         let content = serde_saphyr::to_string(schedule)
             .map_err(|e| StorageError::serialization(e.to_string()))?;
 
-        // Write to temp file first
-        fs::write(&temp_path, content)
-            .await
-            .map_err(|e| StorageError::file_io(&temp_path, e))?;
-
-        // Atomic rename
-        fs::rename(&temp_path, &path)
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
-
-        Ok(())
+        super::atomic_write_file(&temp_path, &path, content.as_bytes()).await
     }
 
     async fn delete(&self, id: &str) -> StorageResult<()> {

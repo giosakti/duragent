@@ -1251,7 +1251,8 @@ fn truncate_command(command: &str, max_len: usize) -> String {
     if first_line.len() <= max_len {
         first_line.to_string()
     } else {
-        format!("{}...", &first_line[..max_len])
+        let boundary = first_line.floor_char_boundary(max_len);
+        format!("{}...", &first_line[..boundary])
     }
 }
 
@@ -1339,7 +1340,7 @@ mod tests {
     fn test_chat_session_cache_key() {
         // Cache key now includes agent for routing rule changes
         let key = ChatSessionCache::key("telegram", "12345", "my-agent");
-        assert_eq!(key, "telegram:12345:my-agent");
+        assert_eq!(key, "telegram\012345\0my-agent");
     }
 
     #[test]

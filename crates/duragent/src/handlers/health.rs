@@ -1,11 +1,25 @@
+use axum::Json;
+use axum::extract::State;
 use axum::http::StatusCode;
+use serde::Serialize;
+
+use crate::server::AppState;
 
 pub async fn livez() -> (StatusCode, &'static str) {
     (StatusCode::OK, "ok")
 }
 
-pub async fn readyz() -> (StatusCode, &'static str) {
-    (StatusCode::OK, "ok")
+#[derive(Serialize)]
+pub struct ReadyzResponse {
+    pub status: String,
+    pub workspace_hash: String,
+}
+
+pub async fn readyz(State(state): State<AppState>) -> Json<ReadyzResponse> {
+    Json(ReadyzResponse {
+        status: "ok".to_string(),
+        workspace_hash: state.services.workspace_hash.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -15,13 +29,6 @@ mod tests {
     #[tokio::test]
     async fn test_livez() {
         let (status, body) = livez().await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "ok");
-    }
-
-    #[tokio::test]
-    async fn test_readyz() {
-        let (status, body) = readyz().await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "ok");
     }
