@@ -92,21 +92,33 @@ pub async fn run(
     // Get conversation history
     let messages = client.get_messages(session_id, None).await?;
 
-    println!("Attached to session {} (Ctrl+C to exit)", session_id);
-    println!(
-        "Agent: {} | Model: {} via {}",
-        session.agent, agent.spec.model.name, agent.spec.model.provider
+    let w = 61; // inner width matching approval prompt
+    let model_line = format!(
+        "Model: {} via {}",
+        agent.spec.model.name, agent.spec.model.provider
     );
-    println!(
-        "Status: {} | Messages in history: {}",
+    let session_line = format!(
+        "Session: {} ({}, {} messages)",
+        session_id,
         session.status,
         messages.len()
     );
-    println!();
+    let hint = "Ctrl+C or /exit to detach";
+
+    // Top border: ┌─ name ─...─┐
+    let name_part = format!("─ {} ", session.agent);
+    let remaining = w - name_part.chars().count();
+    println!("┌{}{}┐", name_part, "─".repeat(remaining));
+    println!("│ {:<width$}│", model_line, width = w - 1);
+    println!("│ {:<width$}│", session_line, width = w - 1);
+    println!("│ {:<width$}│", hint, width = w - 1);
 
     // Show recent conversation context
     if !messages.is_empty() {
-        println!("--- Recent conversation ---");
+        let recent_part = "─ Recent ".to_string();
+        let recent_remaining = w - recent_part.chars().count();
+        println!("├{}{}┤", recent_part, "─".repeat(recent_remaining));
+
         let show_count = messages.len().min(4);
         for msg in messages
             .iter()
@@ -118,13 +130,14 @@ pub async fn run(
                 "system" => "[sys]",
                 _ => "?",
             };
-            // Show first 100 chars of each message
             let content = truncate_str(&msg.content, 100);
-            println!("{} {}", prefix, content.replace('\n', " "));
+            let line = format!("{} {}", prefix, content.replace('\n', " "));
+            println!("│ {:<width$}│", truncate_str(&line, w - 2), width = w - 1);
         }
-        println!("---------------------------");
-        println!();
     }
+
+    println!("└{}┘", "─".repeat(w));
+    println!();
 
     run_interactive_loop(&client, session_id).await?;
 

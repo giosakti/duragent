@@ -254,19 +254,19 @@ pub async fn run(
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 interval.tick().await;
-                if registry.len() > 0 {
+                if !registry.is_empty() {
                     idle_since = None;
                 } else if idle_since.is_none() {
                     idle_since = Some(tokio::time::Instant::now());
                 }
-                if let Some(start) = idle_since {
-                    if start.elapsed().as_secs() >= idle_secs {
-                        info!("Ephemeral server idle for {}s, shutting down", idle_secs);
-                        if let Some(tx) = shutdown_tx.lock().await.take() {
-                            let _ = tx.send(());
-                        }
-                        break;
+                if let Some(start) = idle_since
+                    && start.elapsed().as_secs() >= idle_secs
+                {
+                    info!("Ephemeral server idle for {}s, shutting down", idle_secs);
+                    if let Some(tx) = shutdown_tx.lock().await.take() {
+                        let _ = tx.send(());
                     }
+                    break;
                 }
             }
         });
