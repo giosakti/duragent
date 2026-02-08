@@ -129,6 +129,7 @@ impl SessionRegistry {
     /// Spawns a new actor and makes it immediately visible in the registry.
     /// Then waits for the initial snapshot to be persisted for crash safety.
     /// If persistence fails, the session is removed and the actor is stopped.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         agent: &str,
