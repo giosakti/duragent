@@ -13,6 +13,11 @@ use super::provider::{LLMProvider, Provider};
 use crate::auth::anthropic_oauth;
 use crate::auth::credentials::{AuthCredential, AuthStorage};
 
+/// TCP connect timeout for LLM HTTP requests.
+const CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Total request timeout for LLM HTTP requests (connect + send + receive).
+const REQUEST_TIMEOUT_SECS: u64 = 300;
+
 /// Default base URLs for each provider.
 pub mod defaults {
     pub const ANTHROPIC: &str = "https://api.anthropic.com";
@@ -37,9 +42,15 @@ pub struct ProviderRegistry {
 
 impl Default for ProviderRegistry {
     fn default() -> Self {
+        let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .build()
+            .expect("failed to build HTTP client");
+
         Self {
             api_keys: HashMap::new(),
-            client: Client::new(),
+            client,
             auth_storage: Arc::new(RwLock::new(AuthStorage::default())),
         }
     }
