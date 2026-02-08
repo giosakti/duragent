@@ -1,0 +1,72 @@
+apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: {name}
+  # description: A helpful assistant
+  # version: 0.1.0
+  # labels:
+  #   domain: general
+spec:
+  model:
+    provider: {provider}
+    name: {model}
+    # temperature: 0.7
+    # max_output_tokens: 4096
+    # max_input_tokens: 200000
+    # base_url: https://custom-endpoint.example.com
+
+  # Agent personality (who the agent IS) — path to a markdown file
+  soul: ./SOUL.md
+
+  # System prompt (what the agent DOES) — path to a markdown file
+  system_prompt: ./SYSTEM_PROMPT.md
+
+  # Additional runtime instructions — path to a markdown file
+  # instructions: ./INSTRUCTIONS.md
+
+  session:
+    on_disconnect: pause         # pause | continue
+    # ttl_hours: 168             # per-agent override (0 to disable)
+    # compaction: discard        # per-agent override: discard | archive | disabled
+    # max_tool_iterations: 10
+    # context:
+    #   max_history_tokens: 20000
+    #   max_tool_result_tokens: 8000
+    #   tool_result_truncation: head   # head | tail | both
+    #   tool_result_keep_first: 2
+    #   tool_result_keep_last: 5
+
+  # Persistent memory
+  # memory:
+  #   backend: filesystem
+
+  # Access control (for gateway integrations)
+  # access:
+  #   dm:
+  #     policy: open             # open | disabled | allowlist
+  #     allowlist: []
+  #   groups:
+  #     policy: open             # open | disabled | allowlist
+  #     allowlist: []
+  #     activation: mention      # mention | always
+  #     sender_default: allow    # allow | passive | silent | block
+  #     context_buffer:
+  #       mode: silent           # silent | passive
+  #       max_messages: 100
+  #       max_age_hours: 24
+  #     queue:
+  #       mode: batch            # batch | sequential | drop
+  #       max_pending: 10
+  #       overflow: drop_old     # drop_old | drop_new | reject
+  #       debounce:
+  #         enabled: true
+  #         window_ms: 1500
+
+  # Tools
+  # tools:
+  #   - type: builtin
+  #     name: bash
+  #   - type: cli
+  #     name: my-tool
+  #     command: ./tools/my-tool.sh
+  #     description: Runs my custom tool

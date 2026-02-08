@@ -16,6 +16,7 @@ pub async fn list(
     agents_dir_override: Option<&Path>,
     server_url: Option<&str>,
 ) -> Result<()> {
+    super::check_workspace(config_path)?;
     let config = Config::load(config_path).await?;
 
     let client = ensure_server_running(LaunchOptions {
@@ -62,6 +63,7 @@ pub async fn run(
     agents_dir_override: Option<&Path>,
     server_url: Option<&str>,
 ) -> Result<()> {
+    super::check_workspace(config_path)?;
     let config = Config::load(config_path).await?;
 
     let client = ensure_server_running(LaunchOptions {

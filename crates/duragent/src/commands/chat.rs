@@ -15,6 +15,7 @@ pub async fn run(
     agents_dir_override: Option<&Path>,
     server_url: Option<&str>,
 ) -> Result<()> {
+    super::check_workspace(config_path)?;
     let config = Config::load(config_path).await?;
 
     // Get client (auto-starts server if needed)

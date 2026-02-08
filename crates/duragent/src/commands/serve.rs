@@ -29,6 +29,7 @@ pub async fn run(
     port_override: Option<u16>,
     agents_dir_override: Option<&Path>,
 ) -> Result<()> {
+    super::check_workspace(config_path)?;
     let mut config = Config::load(config_path).await?;
 
     // CLI overrides config
