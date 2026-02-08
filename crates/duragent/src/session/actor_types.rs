@@ -12,6 +12,7 @@ use tokio::sync::oneshot;
 
 use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
+use crate::config::CompactionMode;
 use crate::llm::{Message, Usage};
 use crate::store::SessionStore;
 
@@ -175,6 +176,8 @@ pub struct ActorConfig {
     pub silent_buffer_cap: usize,
     /// Maximum total messages before trimming oldest checkpointed messages.
     pub actor_message_limit: usize,
+    /// Event log compaction mode.
+    pub compaction_mode: CompactionMode,
 }
 
 /// Configuration for recovering an actor from a snapshot.
@@ -187,6 +190,8 @@ pub struct RecoverConfig {
     pub silent_buffer_cap: usize,
     /// Maximum total messages before trimming oldest checkpointed messages.
     pub actor_message_limit: usize,
+    /// Event log compaction mode.
+    pub compaction_mode: CompactionMode,
 }
 
 /// Derive actor_message_limit from max_input_tokens.

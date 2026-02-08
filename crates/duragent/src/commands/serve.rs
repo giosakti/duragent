@@ -87,7 +87,7 @@ pub async fn run(
     // Initialize session store and registry, then recover persisted sessions
     let session_store: Arc<dyn duragent::store::SessionStore> =
         Arc::new(FileSessionStore::new(&sessions_path));
-    let session_registry = SessionRegistry::new(session_store.clone());
+    let session_registry = SessionRegistry::new(session_store.clone(), config.sessions.compaction);
     let recovery = session_registry.recover().await?;
     if recovery.recovered > 0 {
         info!(
@@ -130,6 +130,29 @@ pub async fn run(
         .rebuild_from_sessions(&session_store, &recovered_session_ids)
         .await;
 
+    // Spawn session TTL expiry loop
+    if config.sessions.ttl_hours > 0 {
+        let expiry_registry = session_registry.clone();
+        let expiry_cache = chat_session_cache.clone();
+        let expiry_agents = store.clone();
+        let ttl_hours = config.sessions.ttl_hours;
+        tokio::spawn(async move {
+            let ttl = chrono::Duration::hours(ttl_hours as i64);
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // skip immediate tick
+            loop {
+                interval.tick().await;
+                expiry_registry
+                    .expire_inactive_sessions(ttl, &expiry_cache, &expiry_agents)
+                    .await;
+            }
+        });
+        info!(
+            ttl_hours = config.sessions.ttl_hours,
+            "Session TTL expiry enabled"
+        );
+    }
+
     // Initialize scheduler service (before gateway handler so it can be passed in)
     let schedules_path = sessions_path
         .parent()
@@ -145,6 +168,7 @@ pub async fn run(
         policy_store: policy_store.clone(),
         world_memory_path: world_memory_path.clone(),
         workspace_directives_path: workspace_directives_path.clone(),
+        chat_session_cache: chat_session_cache.clone(),
     };
 
     let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));

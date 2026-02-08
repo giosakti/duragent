@@ -29,6 +29,8 @@ pub struct Config {
     pub routes: Vec<RouteConfig>,
     #[serde(default)]
     pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub sessions: SessionsConfig,
 }
 
 #[derive(Debug, Error)]
@@ -437,6 +439,47 @@ impl Default for SandboxConfig {
             mode: "trust".to_string(),
         }
     }
+}
+
+// ============================================================================
+// SessionsConfig
+// ============================================================================
+
+fn default_ttl_hours() -> u64 {
+    168 // 7 days
+}
+
+/// Session lifecycle configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionsConfig {
+    /// Hours of inactivity before a session is expired. 0 disables auto-expiry.
+    #[serde(default = "default_ttl_hours")]
+    pub ttl_hours: u64,
+    /// Event log compaction mode after snapshots.
+    #[serde(default)]
+    pub compaction: CompactionMode,
+}
+
+impl Default for SessionsConfig {
+    fn default() -> Self {
+        Self {
+            ttl_hours: default_ttl_hours(),
+            compaction: CompactionMode::default(),
+        }
+    }
+}
+
+/// How old events are handled after a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionMode {
+    /// Remove old events (default — keeps things simple).
+    #[default]
+    Discard,
+    /// Move old events to events.archive.jsonl before truncating.
+    Archive,
+    /// No compaction (events.jsonl grows unbounded, existing behavior).
+    Disabled,
 }
 
 // ============================================================================

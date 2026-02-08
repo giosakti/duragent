@@ -18,6 +18,7 @@ use tracing::{debug, warn};
 
 use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
+use crate::config::CompactionMode;
 use crate::llm::{Message, Role, Usage};
 use crate::store::SessionStore;
 
@@ -70,6 +71,7 @@ pub struct SessionActor {
     gateway: Option<String>,
     gateway_chat_id: Option<String>,
     actor_message_limit: usize,
+    compaction_mode: CompactionMode,
 
     // Persistence
     store: Arc<dyn SessionStore>,
@@ -112,6 +114,7 @@ impl SessionActor {
             gateway: config.gateway,
             gateway_chat_id: config.gateway_chat_id,
             actor_message_limit: config.actor_message_limit,
+            compaction_mode: config.compaction_mode,
             store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
@@ -155,6 +158,7 @@ impl SessionActor {
             gateway: snapshot.config.gateway,
             gateway_chat_id: snapshot.config.gateway_chat_id,
             actor_message_limit: config.actor_message_limit,
+            compaction_mode: config.compaction_mode,
             store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
@@ -771,6 +775,23 @@ impl SessionActor {
             })?;
 
         self.last_snapshot_seq = self.last_flushed_seq;
+
+        // Compact old events after successful snapshot
+        if self.checkpoint_seq > 0 && self.compaction_mode != CompactionMode::Disabled {
+            let archive = self.compaction_mode == CompactionMode::Archive;
+            if let Err(e) = self
+                .store
+                .compact_events(&self.id, self.checkpoint_seq, archive)
+                .await
+            {
+                debug!(
+                    session_id = %self.id,
+                    error = %e,
+                    "Event compaction failed (non-fatal)"
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -812,6 +833,7 @@ mod tests {
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
             actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+            compaction_mode: CompactionMode::Disabled,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         (tx, shutdown_tx, task_handle)
@@ -1019,6 +1041,17 @@ mod tests {
         ) -> StorageResult<()> {
             self.inner.save_snapshot(session_id, snapshot).await
         }
+
+        async fn compact_events(
+            &self,
+            session_id: &str,
+            up_to_seq: u64,
+            archive: bool,
+        ) -> StorageResult<()> {
+            self.inner
+                .compact_events(session_id, up_to_seq, archive)
+                .await
+        }
     }
 
     #[tokio::test]
@@ -1041,6 +1074,7 @@ mod tests {
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
             actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+            compaction_mode: CompactionMode::Disabled,
         };
 
         let (tx, _task_handle) = SessionActor::spawn(config, shutdown_rx);

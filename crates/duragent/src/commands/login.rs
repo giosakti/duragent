@@ -24,7 +24,7 @@ async fn login_anthropic() -> Result<()> {
     // Generate PKCE
     let (verifier, challenge) = anthropic_oauth::generate_pkce();
 
-    // Use the full verifier as the state parameter (same as pi-mono)
+    // Use the full verifier as the state parameter
     let url = anthropic_oauth::build_authorize_url(&challenge, &verifier);
 
     println!("Open this URL in your browser to authorize:");

@@ -610,6 +610,7 @@ async fn execute_task_payload(
         &schedule.destination.gateway,
         &schedule.destination.chat_id,
         &schedule.agent,
+        agent.session.compaction,
     )
     .await?;
 
@@ -718,6 +719,7 @@ async fn get_or_create_session(
     gateway: &str,
     chat_id: &str,
     agent: &str,
+    compaction_override: Option<crate::config::CompactionMode>,
 ) -> Result<SessionHandle> {
     let registry = config.services.session_registry.clone();
     let registry_for_create = config.services.session_registry.clone();
@@ -751,6 +753,7 @@ async fn get_or_create_session(
                             Some(chat_id.clone()),
                             crate::session::DEFAULT_SILENT_BUFFER_CAP,
                             crate::session::DEFAULT_ACTOR_MESSAGE_LIMIT,
+                            compaction_override,
                         )
                         .await?;
                     let session_id = handle.id().to_string();

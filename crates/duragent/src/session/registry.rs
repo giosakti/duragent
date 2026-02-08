@@ -17,6 +17,7 @@ use ulid::Ulid;
 
 use crate::agent::OnDisconnect;
 use crate::api::{SESSION_ID_PREFIX, SessionStatus};
+use crate::config::CompactionMode;
 use crate::store::SessionStore;
 
 use super::actor::SessionActor;
@@ -42,6 +43,8 @@ pub struct SessionRegistry {
     task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     /// Session store for persistence.
     store: Arc<dyn SessionStore>,
+    /// Event log compaction mode.
+    compaction_mode: CompactionMode,
     /// Shutdown signal sender.
     shutdown_tx: Arc<watch::Sender<bool>>,
     /// Shutdown signal receiver (cloned for each actor).
@@ -76,13 +79,14 @@ impl SessionRegistry {
     // ------------------------------------------------------------------------
 
     /// Create a new session registry.
-    pub fn new(store: Arc<dyn SessionStore>) -> Self {
+    pub fn new(store: Arc<dyn SessionStore>, compaction_mode: CompactionMode) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         Self {
             handles: Arc::new(DashMap::new()),
             task_handles: Arc::new(Mutex::new(Vec::new())),
             store,
+            compaction_mode,
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
         }
@@ -125,6 +129,7 @@ impl SessionRegistry {
     /// Spawns a new actor and makes it immediately visible in the registry.
     /// Then waits for the initial snapshot to be persisted for crash safety.
     /// If persistence fails, the session is removed and the actor is stopped.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         agent: &str,
@@ -133,6 +138,7 @@ impl SessionRegistry {
         gateway_chat_id: Option<String>,
         silent_buffer_cap: usize,
         actor_message_limit: usize,
+        compaction_override: Option<CompactionMode>,
     ) -> Result<SessionHandle, ActorError> {
         let id = format!("{}{}", SESSION_ID_PREFIX, Ulid::new());
 
@@ -145,6 +151,7 @@ impl SessionRegistry {
             gateway_chat_id,
             silent_buffer_cap,
             actor_message_limit,
+            compaction_mode: compaction_override.unwrap_or(self.compaction_mode),
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -203,6 +210,19 @@ impl SessionRegistry {
             .filter_map(|result| async move { result.ok() })
             .collect()
             .await
+    }
+
+    /// Remove a session handle from the registry.
+    ///
+    /// Returns true if a session was removed.
+    /// When all clones of the handle are dropped, the actor shuts down naturally.
+    pub fn remove(&self, id: &str) -> bool {
+        self.handles.remove(id).is_some()
+    }
+
+    /// Get a reference to the session store.
+    pub fn store(&self) -> &Arc<dyn SessionStore> {
+        &self.store
     }
 
     /// Get the number of active sessions.
@@ -386,6 +406,7 @@ impl SessionRegistry {
             pending_messages,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
             actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+            compaction_mode: self.compaction_mode,
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
@@ -403,6 +424,74 @@ impl SessionRegistry {
         );
 
         Ok(true)
+    }
+
+    // ------------------------------------------------------------------------
+    // TTL / Expiry
+    // ------------------------------------------------------------------------
+
+    /// Expire sessions that have been inactive beyond the given TTL.
+    ///
+    /// Checks per-agent TTL override via `agents`. Falls back to `global_ttl`.
+    /// Skips sessions already in `Completed` status.
+    /// Returns the number of sessions expired.
+    pub async fn expire_inactive_sessions(
+        &self,
+        global_ttl: chrono::Duration,
+        chat_session_cache: &super::ChatSessionCache,
+        agents: &crate::agent::AgentStore,
+    ) -> usize {
+        let now = chrono::Utc::now();
+
+        // Collect handles to avoid holding DashMap ref across await
+        let handles: Vec<SessionHandle> = self
+            .handles
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+
+        let mut expired_count = 0;
+
+        for handle in handles {
+            let Ok(metadata) = handle.get_metadata().await else {
+                continue;
+            };
+
+            // Skip already completed sessions
+            if metadata.status == SessionStatus::Completed {
+                continue;
+            }
+
+            // Determine TTL: per-agent override or global
+            let ttl = agents
+                .get(&metadata.agent)
+                .and_then(|agent| agent.session.ttl_hours)
+                .map(|h| chrono::Duration::hours(h as i64))
+                .unwrap_or(global_ttl);
+
+            let inactive_duration = now - metadata.updated_at;
+            if inactive_duration < ttl {
+                continue;
+            }
+
+            info!(
+                session_id = %metadata.id,
+                agent = %metadata.agent,
+                inactive_hours = inactive_duration.num_hours(),
+                "Expiring inactive session"
+            );
+
+            let _ = handle.set_status(SessionStatus::Completed).await;
+            chat_session_cache.remove_by_session_id(&metadata.id).await;
+            self.handles.remove(&metadata.id);
+            expired_count += 1;
+        }
+
+        if expired_count > 0 {
+            info!(expired = expired_count, "Session expiry sweep complete");
+        }
+
+        expired_count
     }
 
     // ------------------------------------------------------------------------
@@ -426,7 +515,7 @@ mod tests {
 
     fn create_test_registry(temp_dir: &TempDir) -> (SessionRegistry, Arc<FileSessionStore>) {
         let store = Arc::new(FileSessionStore::new(temp_dir.path()));
-        let registry = SessionRegistry::new(store.clone());
+        let registry = SessionRegistry::new(store.clone(), CompactionMode::Disabled);
         (registry, store)
     }
 
@@ -468,6 +557,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -504,6 +594,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -515,6 +606,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -541,6 +633,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
@@ -564,12 +657,40 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();
 
         assert!(registry.contains(handle.id()));
         assert!(!registry.contains("session_unknown"));
+
+        registry.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn remove_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let (registry, _store) = create_test_registry(&temp_dir);
+
+        let handle = registry
+            .create(
+                "test-agent",
+                OnDisconnect::Pause,
+                None,
+                None,
+                DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
+            )
+            .await
+            .unwrap();
+        let id = handle.id().to_string();
+
+        assert!(registry.contains(&id));
+        assert!(registry.remove(&id));
+        assert!(!registry.contains(&id));
+        assert!(!registry.remove(&id)); // second remove returns false
 
         registry.shutdown().await;
     }
@@ -680,6 +801,7 @@ mod tests {
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
                 DEFAULT_ACTOR_MESSAGE_LIMIT,
+                None,
             )
             .await
             .unwrap();

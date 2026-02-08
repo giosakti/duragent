@@ -94,6 +94,10 @@ pub struct GatewayMessageHandler {
     scheduler: Option<SchedulerHandle>,
 }
 
+// ============================================================================
+// Public API
+// ============================================================================
+
 impl GatewayMessageHandler {
     /// Create a new gateway message handler.
     pub fn new(config: GatewayHandlerConfig) -> Self {
@@ -113,578 +117,17 @@ impl GatewayMessageHandler {
         }
     }
 
-    /// Get or create a session for a gateway chat.
-    ///
-    /// Uses the shared `ChatSessionCache` to atomically look up or create sessions by
-    /// (gateway, chat_id, agent) tuple. This enables long-lived sessions
-    /// that persist across gateway messages and scheduled tasks.
-    ///
-    /// The atomic get-or-insert pattern prevents race conditions where two concurrent
-    /// callers could both miss the cache and create duplicate sessions.
-    async fn get_or_create_session(
-        &self,
-        gateway: &str,
-        routing: &RoutingContext,
-    ) -> Option<SessionHandle> {
-        // Resolve agent first - we need it for the cache key
-        let agent_name = self.resolve_agent(gateway, routing)?;
-
-        // Get the agent spec for session creation (needed if we create a new session)
-        let agent = self.services.agents.get(&agent_name)?;
-
-        // Clone values needed in closures
-        let registry = self.services.session_registry.clone();
-        let agent_name_clone = agent_name.clone();
-        let gateway_clone = gateway.to_string();
-        let chat_id_clone = routing.chat_id.clone();
-        let on_disconnect = agent.session.on_disconnect;
-        let silent_buffer_cap = agent
-            .access
-            .as_ref()
-            .map(|a| a.groups.context_buffer.max_messages)
-            .unwrap_or(crate::session::DEFAULT_SILENT_BUFFER_CAP);
-        let msg_limit =
-            crate::session::actor_message_limit(agent.model.effective_max_input_tokens());
-
-        // Use atomic get-or-insert to prevent race conditions
-        let session_id = match self
-            .chat_session_cache
-            .get_or_insert_with(
-                gateway,
-                &routing.chat_id,
-                &agent_name,
-                // Validator: check if the cached session still exists
-                |session_id| {
-                    let registry = registry.clone();
-                    async move { registry.contains(&session_id) }
-                },
-                // Creator: create a new session if needed
-                || {
-                    let registry = registry.clone();
-                    let agent_name = agent_name_clone.clone();
-                    let gateway = gateway_clone.clone();
-                    let chat_id = chat_id_clone.clone();
-                    async move {
-                        let handle = registry
-                            .create(
-                                &agent_name,
-                                on_disconnect,
-                                Some(gateway.clone()),
-                                Some(chat_id.clone()),
-                                silent_buffer_cap,
-                                msg_limit,
-                            )
-                            .await?;
-
-                        let session_id = handle.id().to_string();
-
-                        debug!(
-                            gateway = %gateway,
-                            chat_id = %chat_id,
-                            session_id = %session_id,
-                            agent = %agent_name,
-                            "Created new session for gateway chat"
-                        );
-
-                        Ok::<_, crate::session::ActorError>(session_id)
-                    }
-                },
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(
-                    gateway = %gateway,
-                    chat_id = %routing.chat_id,
-                    error = %e,
-                    "Failed to create session for gateway chat"
-                );
-                return None;
-            }
-        };
-
-        // Get handle from registry
-        self.services.session_registry.get(&session_id)
-    }
-
     /// Get the shared chat session cache.
     ///
     /// This is used by the scheduler to look up and share sessions.
     pub fn chat_session_cache(&self) -> &ChatSessionCache {
         &self.chat_session_cache
     }
-
-    /// Resolve the agent to use for new sessions based on routing rules.
-    ///
-    /// Rules are evaluated in order; first match wins.
-    /// A rule with empty match conditions acts as a catch-all.
-    fn resolve_agent(&self, gateway: &str, routing: &RoutingContext) -> Option<String> {
-        // Check routing rules in order (first match wins)
-        for rule in &self.routing_config.rules {
-            if matches_rule(&rule.match_conditions, gateway, routing) {
-                if self.services.agents.get(&rule.agent).is_some() {
-                    return Some(rule.agent.clone());
-                }
-                warn!(agent = %rule.agent, "Routing rule agent not found");
-            }
-        }
-
-        // No matching rule - fail closed
-        warn!(
-            gateway = %gateway,
-            channel = %routing.channel,
-            chat_id = %routing.chat_id,
-            "No matching route found, message dropped"
-        );
-        None
-    }
-
-    /// Find an existing session for a gateway chat.
-    ///
-    /// Used by callback queries where we know the gateway and chat_id but not
-    /// which agent was routed to. Tries each agent in the routing rules until
-    /// we find a cached session.
-    async fn find_session_for_chat(&self, gateway: &str, chat_id: &str) -> Option<SessionHandle> {
-        // Check each agent that could have been routed to this chat
-        for rule in &self.routing_config.rules {
-            if let Some(session_id) = self
-                .chat_session_cache
-                .get(gateway, chat_id, &rule.agent)
-                .await
-            {
-                // Verify session still exists and return handle
-                if let Some(handle) = self.services.session_registry.get(&session_id) {
-                    return Some(handle);
-                }
-            }
-        }
-        None
-    }
-
-    /// Build a context buffer system block from recent silent messages.
-    ///
-    /// Returns None if there are no recent silent messages.
-    async fn build_context_buffer_block(
-        &self,
-        handle: &SessionHandle,
-        config: &ContextBufferConfig,
-    ) -> Option<SystemBlock> {
-        let max_age = chrono::Duration::hours(config.max_age_hours as i64);
-        let entries = handle
-            .get_recent_silent_messages(config.max_messages, max_age)
-            .await
-            .ok()?;
-
-        if entries.is_empty() {
-            return None;
-        }
-
-        let mut buffer = String::from("Recent group conversation before you were mentioned:\n\n");
-        for entry in &entries {
-            buffer.push_str(&entry.content);
-            buffer.push('\n');
-        }
-
-        Some(SystemBlock {
-            content: buffer,
-            label: "group_context".to_string(),
-            source: BlockSource::Session,
-            priority: priority::SESSION,
-        })
-    }
-
-    /// Check if context buffer injection should apply for this routing context.
-    ///
-    /// Returns `None` for passive mode since those messages are already in conversation history.
-    fn should_inject_context_buffer<'a>(
-        &self,
-        agent: &'a crate::agent::AgentSpec,
-        routing: &RoutingContext,
-    ) -> Option<&'a ContextBufferConfig> {
-        if !is_group_chat(&routing.chat_type) {
-            return None;
-        }
-        let access = agent.access.as_ref()?;
-        if access.groups.activation != ActivationMode::Mention {
-            return None;
-        }
-        if access.groups.context_buffer.mode == ContextBufferMode::Passive {
-            return None;
-        }
-        Some(&access.groups.context_buffer)
-    }
-
-    /// Resolve the queue config for a message based on chat type.
-    ///
-    /// Group chats use the agent's configured queue settings.
-    /// DMs use default config (effectively a simple mutex).
-    fn resolve_queue_config(
-        &self,
-        handle: &SessionHandle,
-        routing: &RoutingContext,
-    ) -> QueueConfig {
-        if is_group_chat(&routing.chat_type)
-            && let Some(agent) = self.services.agents.get(handle.agent())
-            && let Some(ref access) = agent.access
-        {
-            return access.groups.queue.clone();
-        }
-        QueueConfig::default()
-    }
-
-    /// Process a queued message and return the response text.
-    ///
-    /// This handles the actual message processing (typing indicator, text extraction,
-    /// LLM call) for a single message, whether it's the initial message or a drained one.
-    async fn process_queued_message(
-        &self,
-        queued: &QueuedMessage,
-        handle: &SessionHandle,
-    ) -> Option<String> {
-        let routing = &queued.data.routing;
-        let content = &queued.data.content;
-        let sender = &queued.data.sender;
-        let gateway = &queued.gateway;
-
-        // Show typing indicator
-        let _ = self
-            .services
-            .gateways
-            .send_typing(gateway, &routing.chat_id)
-            .await;
-
-        let should_prefix = is_group_chat(&routing.chat_type);
-
-        match content {
-            MessageContent::Text { text } => {
-                let text = if should_prefix {
-                    format!("{}: {}", resolve_sender_label(sender), text)
-                } else {
-                    text.clone()
-                };
-                self.process_text_message(gateway, &routing.chat_id, handle, &text, sender, routing)
-                    .await
-            }
-            MessageContent::Media { caption, .. } => {
-                if let Some(caption) = caption
-                    && !caption.is_empty()
-                {
-                    let text = if should_prefix {
-                        format!("{}: {}", resolve_sender_label(sender), caption)
-                    } else {
-                        caption.clone()
-                    };
-                    self.process_text_message(
-                        gateway,
-                        &routing.chat_id,
-                        handle,
-                        &text,
-                        sender,
-                        routing,
-                    )
-                    .await
-                } else {
-                    None
-                }
-            }
-            _ => {
-                debug!(
-                    gateway = %gateway,
-                    content_type = ?content,
-                    "Ignoring non-text message content"
-                );
-                None
-            }
-        }
-    }
-
-    /// Run the drain loop after processing a message.
-    ///
-    /// Keeps draining the queue and processing/sending responses until the queue
-    /// is empty. Responses from drained messages are sent directly via the gateway.
-    async fn drain_loop(&self, handle: &SessionHandle, config: &QueueConfig) {
-        let queue = self.session_queues.get(handle.id());
-
-        loop {
-            let drain_result = queue.drain(config).await;
-
-            match drain_result {
-                DrainResult::Idle => break,
-                DrainResult::Batched(messages) => {
-                    let combined = combine_messages(messages);
-                    if let Some(response) = self.process_queued_message(&combined, handle).await {
-                        let _ = self
-                            .services
-                            .gateways
-                            .send_message(
-                                &combined.gateway,
-                                &combined.data.routing.chat_id,
-                                &response,
-                                None,
-                            )
-                            .await;
-                    }
-                }
-                DrainResult::Sequential(msg) => {
-                    if let Some(response) = self.process_queued_message(&msg, handle).await {
-                        let _ = self
-                            .services
-                            .gateways
-                            .send_message(&msg.gateway, &msg.data.routing.chat_id, &response, None)
-                            .await;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Process a text message and return the response.
-    async fn process_text_message(
-        &self,
-        gateway: &str,
-        chat_id: &str,
-        handle: &SessionHandle,
-        text: &str,
-        sender: &Sender,
-        routing: &RoutingContext,
-    ) -> Option<String> {
-        let agent = self.services.agents.get(handle.agent())?;
-
-        // Persist user message via actor (with sender attribution for gateway messages)
-        if let Err(e) = handle
-            .add_user_message_with_sender(
-                text.to_string(),
-                Some(sender.id.clone()),
-                Some(resolve_sender_label(sender)),
-            )
-            .await
-        {
-            error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
-            return None;
-        }
-
-        // Route to agentic loop if agent has tools configured
-        if !agent.tools.is_empty() {
-            return self
-                .process_text_message_agentic(gateway, chat_id, handle, text, routing)
-                .await;
-        }
-
-        // Simple single-turn for agents without tools
-        let provider = self
-            .services
-            .providers
-            .get(&agent.model.provider, agent.model.base_url.as_deref())
-            .await?;
-
-        let history = match handle.get_messages().await {
-            Ok(msgs) => msgs,
-            Err(e) => {
-                error!(error = %e, "Failed to get messages");
-                return None;
-            }
-        };
-
-        // Build structured context and render to ChatRequest
-        let directives =
-            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
-        let mut builder = ContextBuilder::new()
-            .from_agent_spec(agent)
-            .with_messages(history)
-            .with_directives(directives);
-
-        // Inject context buffer for mention-activated group chats
-        if let Some(config) = self.should_inject_context_buffer(agent, routing)
-            && let Some(block) = self.build_context_buffer_block(handle, config).await
-        {
-            builder = builder.add_block(block);
-        }
-
-        let budget = TokenBudget {
-            max_input_tokens: agent.model.effective_max_input_tokens(),
-            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
-            max_history_tokens: agent.session.context.max_history_tokens,
-        };
-        let chat_request = builder.build().render_with_budget(
-            &agent.model.name,
-            agent.model.temperature,
-            agent.model.max_output_tokens,
-            vec![],
-            &budget,
-        );
-
-        let response = match provider.chat(chat_request).await {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!(error = %e, "LLM request failed");
-                return None;
-            }
-        };
-
-        let assistant_content = response
-            .choices
-            .first()
-            .and_then(|c| c.message.content.clone())
-            .unwrap_or_default();
-
-        if let Err(e) = handle
-            .add_assistant_message(assistant_content.clone(), response.usage)
-            .await
-        {
-            error!(error = %e, "Failed to persist assistant message");
-        }
-
-        Some(assistant_content)
-    }
-
-    /// Process a text message using the agentic loop with tool support.
-    async fn process_text_message_agentic(
-        &self,
-        gateway: &str,
-        chat_id: &str,
-        handle: &SessionHandle,
-        _text: &str,
-        routing: &RoutingContext,
-    ) -> Option<String> {
-        let agent = self.services.agents.get(handle.agent())?;
-
-        let provider = self
-            .services
-            .providers
-            .get(&agent.model.provider, agent.model.base_url.as_deref())
-            .await?;
-
-        // Load policy from store (picks up runtime changes from AllowAlways)
-        let policy = self.services.policy_store.load(handle.agent()).await;
-
-        // Create tool executor with execution context for schedule tools
-        let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
-            gateway: Some(gateway.to_string()),
-            chat_id: Some(chat_id.to_string()),
-            agent: handle.agent().to_string(),
-            session_id: handle.id().to_string(),
-        });
-        let deps = ToolDependencies {
-            sandbox: self.services.sandbox.clone(),
-            agent_dir: agent.agent_dir.clone(),
-            scheduler: self.scheduler.clone(),
-            execution_context,
-        };
-        let executor = build_executor(
-            agent,
-            handle.agent(),
-            handle.id(),
-            policy,
-            deps,
-            &self.services.world_memory_path,
-        );
-
-        // Build initial messages from history using StructuredContext
-        let history = match handle.get_messages().await {
-            Ok(msgs) => msgs,
-            Err(e) => {
-                error!(error = %e, "Failed to get messages");
-                return Some(format!("Error: {}", e));
-            }
-        };
-        let directives =
-            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
-        let mut builder = ContextBuilder::new()
-            .from_agent_spec(agent)
-            .with_messages(history)
-            .with_directives(directives);
-
-        // Inject context buffer for mention-activated group chats
-        if let Some(config) = self.should_inject_context_buffer(agent, routing)
-            && let Some(block) = self.build_context_buffer_block(handle, config).await
-        {
-            builder = builder.add_block(block);
-        }
-
-        let budget = TokenBudget {
-            max_input_tokens: agent.model.effective_max_input_tokens(),
-            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
-            max_history_tokens: agent.session.context.max_history_tokens,
-        };
-        let messages = builder
-            .build()
-            .render_with_budget(
-                &agent.model.name,
-                agent.model.temperature,
-                agent.model.max_output_tokens,
-                vec![],
-                &budget,
-            )
-            .messages;
-
-        // Run agentic loop
-        let result =
-            match run_agentic_loop(provider, &executor, agent, messages, handle, None).await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(error = %e, "Agentic loop failed");
-                    return Some(format!("Error processing request: {}", e));
-                }
-            };
-
-        match result {
-            AgenticResult::Complete {
-                content,
-                usage,
-                iterations: _,
-                tool_calls_made: _,
-            } => {
-                // Persist final assistant message via actor
-                if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                    error!(error = %e, "Failed to persist assistant message");
-                }
-                Some(content)
-            }
-            AgenticResult::AwaitingApproval {
-                pending,
-                partial_content: _,
-                usage: _,
-                iterations: _,
-                tool_calls_made: _,
-            } => {
-                // Persist pending approval via actor
-                if let Err(e) = handle.set_pending_approval(pending.clone()).await {
-                    error!(error = %e, "Failed to persist pending approval");
-                    return Some("Error: Failed to save approval request".to_string());
-                }
-
-                // Set session status to Paused via actor
-                if let Err(e) = handle.set_status(SessionStatus::Paused).await {
-                    debug!(error = %e, "Failed to set session status to Paused");
-                }
-
-                // Build and send approval keyboard
-                let keyboard = build_approval_keyboard();
-                let approval_msg =
-                    format!("Command requires approval:\n```\n{}\n```", pending.command);
-
-                if let Err(e) = self
-                    .services
-                    .gateways
-                    .send_message_with_keyboard(
-                        gateway,
-                        chat_id,
-                        &approval_msg,
-                        None,
-                        Some(keyboard),
-                    )
-                    .await
-                {
-                    error!(error = %e, "Failed to send approval keyboard");
-                }
-
-                // Return None since we sent the message with keyboard directly
-                None
-            }
-        }
-    }
 }
+
+// ============================================================================
+// MessageHandler Trait Implementation
+// ============================================================================
 
 #[async_trait]
 impl MessageHandler for GatewayMessageHandler {
@@ -692,6 +135,16 @@ impl MessageHandler for GatewayMessageHandler {
         let routing = &data.routing;
         let content = &data.content;
         let sender = &data.sender;
+
+        // Check for slash commands before routing
+        if let Some(text) = extract_text(content)
+            && let Some(command) = text.trim().strip_prefix('/')
+            && let Some(response) = self
+                .handle_command(command, gateway, &routing.chat_id)
+                .await
+        {
+            return Some(response);
+        }
 
         // Get or create session for this chat
         let handle = self.get_or_create_session(gateway, routing).await?;
@@ -1152,6 +605,619 @@ impl MessageHandler for GatewayMessageHandler {
 
                 // Return toast to confirm the approval (next command needs approval too)
                 Some(toast)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Private Helpers
+// ============================================================================
+
+impl GatewayMessageHandler {
+    /// Get or create a session for a gateway chat.
+    ///
+    /// Uses the shared `ChatSessionCache` to atomically look up or create sessions by
+    /// (gateway, chat_id, agent) tuple. This enables long-lived sessions
+    /// that persist across gateway messages and scheduled tasks.
+    ///
+    /// The atomic get-or-insert pattern prevents race conditions where two concurrent
+    /// callers could both miss the cache and create duplicate sessions.
+    async fn get_or_create_session(
+        &self,
+        gateway: &str,
+        routing: &RoutingContext,
+    ) -> Option<SessionHandle> {
+        // Resolve agent first - we need it for the cache key
+        let agent_name = self.resolve_agent(gateway, routing)?;
+
+        // Get the agent spec for session creation (needed if we create a new session)
+        let agent = self.services.agents.get(&agent_name)?;
+
+        // Clone values needed in closures
+        let registry = self.services.session_registry.clone();
+        let agent_name_clone = agent_name.clone();
+        let gateway_clone = gateway.to_string();
+        let chat_id_clone = routing.chat_id.clone();
+        let on_disconnect = agent.session.on_disconnect;
+        let silent_buffer_cap = agent
+            .access
+            .as_ref()
+            .map(|a| a.groups.context_buffer.max_messages)
+            .unwrap_or(crate::session::DEFAULT_SILENT_BUFFER_CAP);
+        let msg_limit =
+            crate::session::actor_message_limit(agent.model.effective_max_input_tokens());
+        let compaction_override = agent.session.compaction;
+
+        // Use atomic get-or-insert to prevent race conditions
+        let session_id = match self
+            .chat_session_cache
+            .get_or_insert_with(
+                gateway,
+                &routing.chat_id,
+                &agent_name,
+                // Validator: check if the cached session still exists
+                |session_id| {
+                    let registry = registry.clone();
+                    async move { registry.contains(&session_id) }
+                },
+                // Creator: create a new session if needed
+                || {
+                    let registry = registry.clone();
+                    let agent_name = agent_name_clone.clone();
+                    let gateway = gateway_clone.clone();
+                    let chat_id = chat_id_clone.clone();
+                    async move {
+                        let handle = registry
+                            .create(
+                                &agent_name,
+                                on_disconnect,
+                                Some(gateway.clone()),
+                                Some(chat_id.clone()),
+                                silent_buffer_cap,
+                                msg_limit,
+                                compaction_override,
+                            )
+                            .await?;
+
+                        let session_id = handle.id().to_string();
+
+                        debug!(
+                            gateway = %gateway,
+                            chat_id = %chat_id,
+                            session_id = %session_id,
+                            agent = %agent_name,
+                            "Created new session for gateway chat"
+                        );
+
+                        Ok::<_, crate::session::ActorError>(session_id)
+                    }
+                },
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    gateway = %gateway,
+                    chat_id = %routing.chat_id,
+                    error = %e,
+                    "Failed to create session for gateway chat"
+                );
+                return None;
+            }
+        };
+
+        // Get handle from registry
+        self.services.session_registry.get(&session_id)
+    }
+
+    /// Resolve the agent to use for new sessions based on routing rules.
+    ///
+    /// Rules are evaluated in order; first match wins.
+    /// A rule with empty match conditions acts as a catch-all.
+    fn resolve_agent(&self, gateway: &str, routing: &RoutingContext) -> Option<String> {
+        // Check routing rules in order (first match wins)
+        for rule in &self.routing_config.rules {
+            if matches_rule(&rule.match_conditions, gateway, routing) {
+                if self.services.agents.get(&rule.agent).is_some() {
+                    return Some(rule.agent.clone());
+                }
+                warn!(agent = %rule.agent, "Routing rule agent not found");
+            }
+        }
+
+        // No matching rule - fail closed
+        warn!(
+            gateway = %gateway,
+            channel = %routing.channel,
+            chat_id = %routing.chat_id,
+            "No matching route found, message dropped"
+        );
+        None
+    }
+
+    /// Find an existing session for a gateway chat.
+    ///
+    /// Used by callback queries where we know the gateway and chat_id but not
+    /// which agent was routed to. Tries each agent in the routing rules until
+    /// we find a cached session.
+    async fn find_session_for_chat(&self, gateway: &str, chat_id: &str) -> Option<SessionHandle> {
+        // Check each agent that could have been routed to this chat
+        for rule in &self.routing_config.rules {
+            if let Some(session_id) = self
+                .chat_session_cache
+                .get(gateway, chat_id, &rule.agent)
+                .await
+            {
+                // Verify session still exists and return handle
+                if let Some(handle) = self.services.session_registry.get(&session_id) {
+                    return Some(handle);
+                }
+            }
+        }
+        None
+    }
+
+    /// Dispatch a slash command from a gateway chat.
+    ///
+    /// Returns Some(response) if the command was handled, None if unknown
+    /// (unknown commands fall through to regular message processing).
+    async fn handle_command(&self, command: &str, gateway: &str, chat_id: &str) -> Option<String> {
+        match command {
+            "reset" => Some(self.handle_reset_command(gateway, chat_id).await),
+            "status" => Some(self.handle_status_command(gateway, chat_id).await),
+            _ => None,
+        }
+    }
+
+    async fn handle_reset_command(&self, gateway: &str, chat_id: &str) -> String {
+        let Some(handle) = self.find_session_for_chat(gateway, chat_id).await else {
+            return "No active session to reset.".to_string();
+        };
+        let _ = handle.set_status(SessionStatus::Completed).await;
+        self.chat_session_cache
+            .remove_by_session_id(handle.id())
+            .await;
+        self.services.session_registry.remove(handle.id());
+        "Session reset. Send a message to start a new conversation.".to_string()
+    }
+
+    async fn handle_status_command(&self, gateway: &str, chat_id: &str) -> String {
+        let Some(handle) = self.find_session_for_chat(gateway, chat_id).await else {
+            return "No active session.".to_string();
+        };
+        let Ok(metadata) = handle.get_metadata().await else {
+            return "Failed to get session status.".to_string();
+        };
+        format!(
+            "Session: {}\nAgent: {}\nStatus: {:?}\nCreated: {}",
+            metadata.id,
+            metadata.agent,
+            metadata.status,
+            metadata.created_at.format("%Y-%m-%d %H:%M UTC"),
+        )
+    }
+
+    /// Build a context buffer system block from recent silent messages.
+    ///
+    /// Returns None if there are no recent silent messages.
+    async fn build_context_buffer_block(
+        &self,
+        handle: &SessionHandle,
+        config: &ContextBufferConfig,
+    ) -> Option<SystemBlock> {
+        let max_age = chrono::Duration::hours(config.max_age_hours as i64);
+        let entries = handle
+            .get_recent_silent_messages(config.max_messages, max_age)
+            .await
+            .ok()?;
+
+        if entries.is_empty() {
+            return None;
+        }
+
+        let mut buffer = String::from("Recent group conversation before you were mentioned:\n\n");
+        for entry in &entries {
+            buffer.push_str(&entry.content);
+            buffer.push('\n');
+        }
+
+        Some(SystemBlock {
+            content: buffer,
+            label: "group_context".to_string(),
+            source: BlockSource::Session,
+            priority: priority::SESSION,
+        })
+    }
+
+    /// Check if context buffer injection should apply for this routing context.
+    ///
+    /// Returns `None` for passive mode since those messages are already in conversation history.
+    fn should_inject_context_buffer<'a>(
+        &self,
+        agent: &'a crate::agent::AgentSpec,
+        routing: &RoutingContext,
+    ) -> Option<&'a ContextBufferConfig> {
+        if !is_group_chat(&routing.chat_type) {
+            return None;
+        }
+        let access = agent.access.as_ref()?;
+        if access.groups.activation != ActivationMode::Mention {
+            return None;
+        }
+        if access.groups.context_buffer.mode == ContextBufferMode::Passive {
+            return None;
+        }
+        Some(&access.groups.context_buffer)
+    }
+
+    /// Resolve the queue config for a message based on chat type.
+    ///
+    /// Group chats use the agent's configured queue settings.
+    /// DMs use default config (effectively a simple mutex).
+    fn resolve_queue_config(
+        &self,
+        handle: &SessionHandle,
+        routing: &RoutingContext,
+    ) -> QueueConfig {
+        if is_group_chat(&routing.chat_type)
+            && let Some(agent) = self.services.agents.get(handle.agent())
+            && let Some(ref access) = agent.access
+        {
+            return access.groups.queue.clone();
+        }
+        QueueConfig::default()
+    }
+
+    /// Process a queued message and return the response text.
+    ///
+    /// This handles the actual message processing (typing indicator, text extraction,
+    /// LLM call) for a single message, whether it's the initial message or a drained one.
+    async fn process_queued_message(
+        &self,
+        queued: &QueuedMessage,
+        handle: &SessionHandle,
+    ) -> Option<String> {
+        let routing = &queued.data.routing;
+        let content = &queued.data.content;
+        let sender = &queued.data.sender;
+        let gateway = &queued.gateway;
+
+        // Show typing indicator
+        let _ = self
+            .services
+            .gateways
+            .send_typing(gateway, &routing.chat_id)
+            .await;
+
+        let should_prefix = is_group_chat(&routing.chat_type);
+
+        match content {
+            MessageContent::Text { text } => {
+                let text = if should_prefix {
+                    format!("{}: {}", resolve_sender_label(sender), text)
+                } else {
+                    text.clone()
+                };
+                self.process_text_message(gateway, &routing.chat_id, handle, &text, sender, routing)
+                    .await
+            }
+            MessageContent::Media { caption, .. } => {
+                if let Some(caption) = caption
+                    && !caption.is_empty()
+                {
+                    let text = if should_prefix {
+                        format!("{}: {}", resolve_sender_label(sender), caption)
+                    } else {
+                        caption.clone()
+                    };
+                    self.process_text_message(
+                        gateway,
+                        &routing.chat_id,
+                        handle,
+                        &text,
+                        sender,
+                        routing,
+                    )
+                    .await
+                } else {
+                    None
+                }
+            }
+            _ => {
+                debug!(
+                    gateway = %gateway,
+                    content_type = ?content,
+                    "Ignoring non-text message content"
+                );
+                None
+            }
+        }
+    }
+
+    /// Run the drain loop after processing a message.
+    ///
+    /// Keeps draining the queue and processing/sending responses until the queue
+    /// is empty. Responses from drained messages are sent directly via the gateway.
+    async fn drain_loop(&self, handle: &SessionHandle, config: &QueueConfig) {
+        let queue = self.session_queues.get(handle.id());
+
+        loop {
+            let drain_result = queue.drain(config).await;
+
+            match drain_result {
+                DrainResult::Idle => break,
+                DrainResult::Batched(messages) => {
+                    let combined = combine_messages(messages);
+                    if let Some(response) = self.process_queued_message(&combined, handle).await {
+                        let _ = self
+                            .services
+                            .gateways
+                            .send_message(
+                                &combined.gateway,
+                                &combined.data.routing.chat_id,
+                                &response,
+                                None,
+                            )
+                            .await;
+                    }
+                }
+                DrainResult::Sequential(msg) => {
+                    if let Some(response) = self.process_queued_message(&msg, handle).await {
+                        let _ = self
+                            .services
+                            .gateways
+                            .send_message(&msg.gateway, &msg.data.routing.chat_id, &response, None)
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Process a text message and return the response.
+    async fn process_text_message(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        handle: &SessionHandle,
+        text: &str,
+        sender: &Sender,
+        routing: &RoutingContext,
+    ) -> Option<String> {
+        let agent = self.services.agents.get(handle.agent())?;
+
+        // Persist user message via actor (with sender attribution for gateway messages)
+        if let Err(e) = handle
+            .add_user_message_with_sender(
+                text.to_string(),
+                Some(sender.id.clone()),
+                Some(resolve_sender_label(sender)),
+            )
+            .await
+        {
+            error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
+            return None;
+        }
+
+        // Route to agentic loop if agent has tools configured
+        if !agent.tools.is_empty() {
+            return self
+                .process_text_message_agentic(gateway, chat_id, handle, text, routing)
+                .await;
+        }
+
+        // Simple single-turn for agents without tools
+        let provider = self
+            .services
+            .providers
+            .get(&agent.model.provider, agent.model.base_url.as_deref())
+            .await?;
+
+        let history = match handle.get_messages().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!(error = %e, "Failed to get messages");
+                return None;
+            }
+        };
+
+        // Build structured context and render to ChatRequest
+        let directives =
+            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
+        let mut builder = ContextBuilder::new()
+            .from_agent_spec(agent)
+            .with_messages(history)
+            .with_directives(directives);
+
+        // Inject context buffer for mention-activated group chats
+        if let Some(config) = self.should_inject_context_buffer(agent, routing)
+            && let Some(block) = self.build_context_buffer_block(handle, config).await
+        {
+            builder = builder.add_block(block);
+        }
+
+        let budget = TokenBudget {
+            max_input_tokens: agent.model.effective_max_input_tokens(),
+            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+            max_history_tokens: agent.session.context.max_history_tokens,
+        };
+        let chat_request = builder.build().render_with_budget(
+            &agent.model.name,
+            agent.model.temperature,
+            agent.model.max_output_tokens,
+            vec![],
+            &budget,
+        );
+
+        let response = match provider.chat(chat_request).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!(error = %e, "LLM request failed");
+                return None;
+            }
+        };
+
+        let assistant_content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        if let Err(e) = handle
+            .add_assistant_message(assistant_content.clone(), response.usage)
+            .await
+        {
+            error!(error = %e, "Failed to persist assistant message");
+        }
+
+        Some(assistant_content)
+    }
+
+    /// Process a text message using the agentic loop with tool support.
+    async fn process_text_message_agentic(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        handle: &SessionHandle,
+        _text: &str,
+        routing: &RoutingContext,
+    ) -> Option<String> {
+        let agent = self.services.agents.get(handle.agent())?;
+
+        let provider = self
+            .services
+            .providers
+            .get(&agent.model.provider, agent.model.base_url.as_deref())
+            .await?;
+
+        // Load policy from store (picks up runtime changes from AllowAlways)
+        let policy = self.services.policy_store.load(handle.agent()).await;
+
+        // Create tool executor with execution context for schedule tools
+        let execution_context = self.scheduler.as_ref().map(|_| ToolExecutionContext {
+            gateway: Some(gateway.to_string()),
+            chat_id: Some(chat_id.to_string()),
+            agent: handle.agent().to_string(),
+            session_id: handle.id().to_string(),
+        });
+        let deps = ToolDependencies {
+            sandbox: self.services.sandbox.clone(),
+            agent_dir: agent.agent_dir.clone(),
+            scheduler: self.scheduler.clone(),
+            execution_context,
+        };
+        let executor = build_executor(
+            agent,
+            handle.agent(),
+            handle.id(),
+            policy,
+            deps,
+            &self.services.world_memory_path,
+        );
+
+        // Build initial messages from history using StructuredContext
+        let history = match handle.get_messages().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!(error = %e, "Failed to get messages");
+                return Some(format!("Error: {}", e));
+            }
+        };
+        let directives =
+            load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
+        let mut builder = ContextBuilder::new()
+            .from_agent_spec(agent)
+            .with_messages(history)
+            .with_directives(directives);
+
+        // Inject context buffer for mention-activated group chats
+        if let Some(config) = self.should_inject_context_buffer(agent, routing)
+            && let Some(block) = self.build_context_buffer_block(handle, config).await
+        {
+            builder = builder.add_block(block);
+        }
+
+        let budget = TokenBudget {
+            max_input_tokens: agent.model.effective_max_input_tokens(),
+            max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+            max_history_tokens: agent.session.context.max_history_tokens,
+        };
+        let messages = builder
+            .build()
+            .render_with_budget(
+                &agent.model.name,
+                agent.model.temperature,
+                agent.model.max_output_tokens,
+                vec![],
+                &budget,
+            )
+            .messages;
+
+        // Run agentic loop
+        let result =
+            match run_agentic_loop(provider, &executor, agent, messages, handle, None).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(error = %e, "Agentic loop failed");
+                    return Some(format!("Error processing request: {}", e));
+                }
+            };
+
+        match result {
+            AgenticResult::Complete {
+                content,
+                usage,
+                iterations: _,
+                tool_calls_made: _,
+            } => {
+                // Persist final assistant message via actor
+                if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
+                    error!(error = %e, "Failed to persist assistant message");
+                }
+                Some(content)
+            }
+            AgenticResult::AwaitingApproval {
+                pending,
+                partial_content: _,
+                usage: _,
+                iterations: _,
+                tool_calls_made: _,
+            } => {
+                // Persist pending approval via actor
+                if let Err(e) = handle.set_pending_approval(pending.clone()).await {
+                    error!(error = %e, "Failed to persist pending approval");
+                    return Some("Error: Failed to save approval request".to_string());
+                }
+
+                // Set session status to Paused via actor
+                if let Err(e) = handle.set_status(SessionStatus::Paused).await {
+                    debug!(error = %e, "Failed to set session status to Paused");
+                }
+
+                // Build and send approval keyboard
+                let keyboard = build_approval_keyboard();
+                let approval_msg =
+                    format!("Command requires approval:\n```\n{}\n```", pending.command);
+
+                if let Err(e) = self
+                    .services
+                    .gateways
+                    .send_message_with_keyboard(
+                        gateway,
+                        chat_id,
+                        &approval_msg,
+                        None,
+                        Some(keyboard),
+                    )
+                    .await
+                {
+                    error!(error = %e, "Failed to send approval keyboard");
+                }
+
+                // Return None since we sent the message with keyboard directly
+                None
             }
         }
     }

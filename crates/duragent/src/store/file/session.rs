@@ -240,6 +240,88 @@ impl SessionStore for FileSessionStore {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Compaction
+    // ========================================================================
+
+    async fn compact_events(
+        &self,
+        session_id: &str,
+        up_to_seq: u64,
+        archive: bool,
+    ) -> StorageResult<()> {
+        let path = self.events_path(session_id);
+
+        let contents = match fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(StorageError::file_io(&path, e)),
+        };
+
+        let mut old_lines = Vec::new();
+        let mut retained_lines = Vec::new();
+
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Try to parse seq; keep unparseable lines in retained (safe default)
+            match serde_json::from_str::<SessionEvent>(trimmed) {
+                Ok(event) if event.seq <= up_to_seq => {
+                    old_lines.push(line);
+                }
+                _ => {
+                    retained_lines.push(line);
+                }
+            }
+        }
+
+        if old_lines.is_empty() {
+            return Ok(());
+        }
+
+        // Archive old events if requested
+        if archive {
+            let archive_path = self.session_dir(session_id).join("events.archive.jsonl");
+            let mut archive_buf = String::new();
+            for line in &old_lines {
+                archive_buf.push_str(line);
+                archive_buf.push('\n');
+            }
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&archive_path)
+                .await
+                .map_err(|e| StorageError::file_io(&archive_path, e))?;
+            file.write_all(archive_buf.as_bytes())
+                .await
+                .map_err(|e| StorageError::file_io(&archive_path, e))?;
+            file.sync_all()
+                .await
+                .map_err(|e| StorageError::file_io(&archive_path, e))?;
+        }
+
+        // Write retained lines to temp file, then atomic rename
+        let temp_path = self.session_dir(session_id).join("events.jsonl.tmp");
+        let mut retained_buf = String::new();
+        for line in &retained_lines {
+            retained_buf.push_str(line);
+            retained_buf.push('\n');
+        }
+
+        fs::write(&temp_path, retained_buf.as_bytes())
+            .await
+            .map_err(|e| StorageError::file_io(&temp_path, e))?;
+        fs::rename(&temp_path, &path)
+            .await
+            .map_err(|e| StorageError::file_io(&path, e))?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -427,5 +509,92 @@ mod tests {
 
         let snapshot = store.load_snapshot("nonexistent").await.unwrap();
         assert!(snapshot.is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_events_discard_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_store(&temp_dir);
+
+        let events: Vec<_> = (1..=5)
+            .map(|i| create_test_event(i, &format!("msg{}", i)))
+            .collect();
+        store.append_events("session1", &events).await.unwrap();
+
+        // Compact events up to seq 3 (discard mode, archive=false)
+        store.compact_events("session1", 3, false).await.unwrap();
+
+        // Only events 4 and 5 should remain
+        let remaining = store.load_events("session1", 0).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].seq, 4);
+        assert_eq!(remaining[1].seq, 5);
+
+        // No archive file should exist
+        let archive_path = temp_dir
+            .path()
+            .join("sessions")
+            .join("session1")
+            .join("events.archive.jsonl");
+        assert!(!archive_path.exists());
+    }
+
+    #[tokio::test]
+    async fn compact_events_archive_mode() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_store(&temp_dir);
+
+        let events: Vec<_> = (1..=5)
+            .map(|i| create_test_event(i, &format!("msg{}", i)))
+            .collect();
+        store.append_events("session1", &events).await.unwrap();
+
+        // Compact events up to seq 3 (archive mode)
+        store.compact_events("session1", 3, true).await.unwrap();
+
+        // Only events 4 and 5 should remain in events.jsonl
+        let remaining = store.load_events("session1", 0).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].seq, 4);
+
+        // Archive file should contain events 1-3
+        let archive_path = temp_dir
+            .path()
+            .join("sessions")
+            .join("session1")
+            .join("events.archive.jsonl");
+        assert!(archive_path.exists());
+        let archive_contents = tokio::fs::read_to_string(&archive_path).await.unwrap();
+        let archive_lines: Vec<_> = archive_contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(archive_lines.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn compact_events_nonexistent_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_store(&temp_dir);
+
+        // Should not error
+        store
+            .compact_events("nonexistent", 10, false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn compact_events_noop_when_nothing_to_compact() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = create_store(&temp_dir);
+
+        let events: Vec<_> = (5..=8)
+            .map(|i| create_test_event(i, &format!("msg{}", i)))
+            .collect();
+        store.append_events("session1", &events).await.unwrap();
+
+        // Compact up to seq 2 — nothing qualifies
+        store.compact_events("session1", 2, false).await.unwrap();
+
+        let remaining = store.load_events("session1", 0).await.unwrap();
+        assert_eq!(remaining.len(), 4);
     }
 }

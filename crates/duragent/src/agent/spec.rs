@@ -95,6 +95,12 @@ pub struct AgentSessionConfig {
     /// Context window management configuration.
     #[serde(default)]
     pub context: ContextConfig,
+    /// Per-agent TTL override (hours). Overrides global `sessions.ttl_hours`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_hours: Option<u64>,
+    /// Per-agent compaction mode override. Overrides global `sessions.compaction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<crate::config::CompactionMode>,
 }
 
 fn default_max_tool_iterations() -> u32 {
