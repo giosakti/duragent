@@ -66,11 +66,23 @@ impl TelegramGateway {
         mut command_rx: mpsc::Receiver<GatewayCommand>,
     ) {
         // Configure HTTP client with timeout longer than polling timeout
-        let client = teloxide::net::default_reqwest_settings()
+        let client = match teloxide::net::default_reqwest_settings()
             .timeout(std::time::Duration::from_secs(60))
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("Failed to build HTTP client");
+        {
+            Ok(client) => client,
+            Err(e) => {
+                let _ = event_tx
+                    .send(GatewayEvent::Error {
+                        code: "init_failed".to_string(),
+                        message: format!("Failed to build HTTP client: {e}"),
+                        fatal: true,
+                    })
+                    .await;
+                return;
+            }
+        };
 
         let bot = Bot::with_client(&self.config.bot_token, client);
 
@@ -292,11 +304,9 @@ impl TelegramGateway {
                     GatewayCommand::Shutdown => {
                         info!("Telegram gateway received shutdown command");
                         // Trigger graceful shutdown of the dispatcher
-                        drop(
-                            shutdown_token
-                                .shutdown()
-                                .expect("Failed to shutdown dispatcher"),
-                        );
+                        if let Err(e) = shutdown_token.shutdown() {
+                            warn!(error = ?e, "Dispatcher already shut down");
+                        }
                         let _ = event_tx_for_commands
                             .send(GatewayEvent::Shutdown {
                                 reason: "shutdown requested".to_string(),
