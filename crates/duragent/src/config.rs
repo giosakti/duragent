@@ -100,7 +100,7 @@ pub const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
 // ============================================================================
 
 fn default_host() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
 }
 
 fn default_port() -> u16 {
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.request_timeout_seconds, 300);
         assert_eq!(config.server.idle_timeout_seconds, 60);
@@ -520,7 +520,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let missing_path = tmp_dir.path().join("missing-config.yaml");
         let config = Config::load(missing_path.to_str().unwrap()).await.unwrap();
-        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 8080);
     }
 
@@ -566,7 +566,7 @@ server:
         .unwrap();
 
         let config = Config::load(file.path().to_str().unwrap()).await.unwrap();
-        assert_eq!(config.server.host, "0.0.0.0"); // default
+        assert_eq!(config.server.host, "127.0.0.1"); // default
         assert_eq!(config.server.port, 9000);
         assert_eq!(config.server.request_timeout_seconds, 300); // default
         assert_eq!(config.server.idle_timeout_seconds, 60); // default
