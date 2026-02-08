@@ -173,6 +173,8 @@ pub struct ActorConfig {
     pub gateway_chat_id: Option<String>,
     /// Maximum entries in the ephemeral silent message buffer.
     pub silent_buffer_cap: usize,
+    /// Maximum total messages before trimming oldest checkpointed messages.
+    pub actor_message_limit: usize,
 }
 
 /// Configuration for recovering an actor from a snapshot.
@@ -183,7 +185,20 @@ pub struct RecoverConfig {
     pub pending_messages: Vec<Message>,
     /// Maximum entries in the ephemeral silent message buffer.
     pub silent_buffer_cap: usize,
+    /// Maximum total messages before trimming oldest checkpointed messages.
+    pub actor_message_limit: usize,
 }
+
+/// Derive actor_message_limit from max_input_tokens.
+///
+/// Heuristic: `(max_input_tokens / 200) * 2`, clamped to [100, 2000].
+/// ~200 tokens per message pair × 2 for user+assistant.
+pub fn actor_message_limit(max_input_tokens: u32) -> usize {
+    (((max_input_tokens / 200) * 2) as usize).clamp(100, 2000)
+}
+
+/// Default actor message limit when agent spec isn't available (e.g., recovery).
+pub const DEFAULT_ACTOR_MESSAGE_LIMIT: usize = 1000;
 
 // ============================================================================
 // Constants

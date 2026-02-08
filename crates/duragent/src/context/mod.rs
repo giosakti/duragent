@@ -7,9 +7,13 @@
 
 mod builder;
 mod directives;
+mod tokens;
+mod truncation;
 
 pub use builder::ContextBuilder;
 pub use directives::{ensure_memory_directive, load_all_directives};
+pub use tokens::*;
+pub use truncation::*;
 
 use std::collections::HashSet;
 
@@ -97,6 +101,17 @@ pub enum Scope {
     Global,
 }
 
+/// Token budget for render-time truncation.
+#[derive(Debug, Clone)]
+pub struct TokenBudget {
+    /// Maximum input tokens for the model.
+    pub max_input_tokens: u32,
+    /// Maximum output tokens reserved.
+    pub max_output_tokens: u32,
+    /// Maximum tokens for conversation history (0 = no cap).
+    pub max_history_tokens: u32,
+}
+
 // ============================================================================
 // Rendering
 // ============================================================================
@@ -181,6 +196,98 @@ impl StructuredContext {
         }
     }
 
+    /// Render to a final ChatRequest with token budget enforcement.
+    ///
+    /// Like `render()`, but applies a token budget to conversation history:
+    /// 1. Compute available budget: max_input - system - tools - output_reserve - 10% safety
+    /// 2. Apply max_history_tokens cap if > 0
+    /// 3. Fill messages from newest to oldest within budget
+    /// 4. Inject truncation notice when messages are omitted
+    pub fn render_with_budget(
+        &self,
+        model: &str,
+        temperature: Option<f32>,
+        max_tokens: Option<u32>,
+        tools: Vec<crate::llm::ToolDefinition>,
+        budget: &TokenBudget,
+    ) -> ChatRequest {
+        let system_message = self.render_system_message();
+        let mut messages = Vec::new();
+
+        // Calculate system message tokens
+        let system_tokens = system_message
+            .as_ref()
+            .map(|s| estimate_tokens(s))
+            .unwrap_or(0);
+
+        // Calculate tool definition tokens
+        let tool_tokens = estimate_tool_definitions_tokens(&tools);
+
+        // Safety margin: 10% of max_input_tokens
+        let safety_margin = budget.max_input_tokens / 10;
+
+        // Available budget for history
+        let reserved = system_tokens + tool_tokens + budget.max_output_tokens + safety_margin;
+        let available = budget.max_input_tokens.saturating_sub(reserved);
+
+        // Apply max_history_tokens cap (0 = no cap)
+        let history_budget = if budget.max_history_tokens > 0 {
+            available.min(budget.max_history_tokens)
+        } else {
+            available
+        };
+
+        // Add system message
+        if let Some(content) = system_message {
+            messages.push(Message::text(Role::System, content));
+        }
+
+        // Fill messages from newest to oldest within budget
+        let mut used_tokens = 0u32;
+        let mut included_from = self.messages.len();
+
+        for (i, msg) in self.messages.iter().enumerate().rev() {
+            let msg_tokens = estimate_message_tokens(msg);
+            if used_tokens + msg_tokens > history_budget {
+                break;
+            }
+            used_tokens += msg_tokens;
+            included_from = i;
+        }
+
+        // Inject truncation notice if messages were omitted
+        let omitted = included_from;
+        if omitted > 0 {
+            messages.push(Message::text(
+                Role::System,
+                format!(
+                    "[conversation truncated — {} older messages omitted]",
+                    omitted
+                ),
+            ));
+        }
+
+        messages.extend(self.messages[included_from..].iter().cloned());
+
+        ChatRequest {
+            model: model.to_string(),
+            messages,
+            temperature,
+            max_tokens,
+            tools: if tools.is_empty() { None } else { Some(tools) },
+        }
+    }
+
+    /// Get a summary of the context (for minimal payloads).
+    pub fn summary(&self) -> ContextSummary {
+        ContextSummary {
+            block_count: self.system_blocks.len(),
+            directive_count: self.directives.len(),
+            tool_ref_count: self.tool_refs.as_ref().map(|r| r.len()),
+            message_count: self.messages.len(),
+        }
+    }
+
     /// Render just the system message (for inspection/debugging).
     pub fn render_system_message(&self) -> Option<String> {
         if self.system_blocks.is_empty() && self.directives.is_empty() {
@@ -215,16 +322,6 @@ impl StructuredContext {
             None
         } else {
             Some(output)
-        }
-    }
-
-    /// Get a summary of the context (for minimal payloads).
-    pub fn summary(&self) -> ContextSummary {
-        ContextSummary {
-            block_count: self.system_blocks.len(),
-            directive_count: self.directives.len(),
-            tool_ref_count: self.tool_refs.as_ref().map(|r| r.len()),
-            message_count: self.messages.len(),
         }
     }
 }
@@ -429,5 +526,103 @@ mod tests {
                 name: "deploy-skill".to_string()
             }
         );
+    }
+
+    // ------------------------------------------------------------------------
+    // render_with_budget tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn render_with_budget_no_truncation() {
+        let mut ctx = StructuredContext::new();
+        ctx.set_messages(vec![
+            Message::text(Role::User, "Hello"),
+            Message::text(Role::Assistant, "Hi"),
+        ]);
+
+        let budget = TokenBudget {
+            max_input_tokens: 200_000,
+            max_output_tokens: 4096,
+            max_history_tokens: 0, // no cap
+        };
+
+        let request = ctx.render_with_budget("gpt-4", None, None, vec![], &budget);
+        // No system message, no truncation notice, just 2 messages
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.messages[1].role, Role::Assistant);
+    }
+
+    #[test]
+    fn render_with_budget_truncates_old_messages() {
+        let mut ctx = StructuredContext::new();
+        // Create many messages that will exceed a small budget
+        for i in 0..20 {
+            ctx.messages
+                .push(Message::text(Role::User, format!("Message {}", i)));
+        }
+
+        let budget = TokenBudget {
+            max_input_tokens: 100, // Very small
+            max_output_tokens: 10,
+            max_history_tokens: 0, // no cap, use available
+        };
+
+        let request = ctx.render_with_budget("gpt-4", None, None, vec![], &budget);
+        // Should have fewer than 20 messages + truncation notice
+        assert!(request.messages.len() < 21);
+        // First message should be the truncation notice
+        assert!(
+            request.messages[0]
+                .content_str()
+                .contains("conversation truncated")
+        );
+    }
+
+    #[test]
+    fn render_with_budget_max_history_tokens_caps() {
+        let mut ctx = StructuredContext::new();
+        for i in 0..50 {
+            ctx.messages
+                .push(Message::text(Role::User, format!("Message {}", i)));
+        }
+
+        let budget = TokenBudget {
+            max_input_tokens: 200_000,
+            max_output_tokens: 4096,
+            max_history_tokens: 20, // Very small cap
+        };
+
+        let request = ctx.render_with_budget("gpt-4", None, None, vec![], &budget);
+        // Should be truncated due to max_history_tokens cap
+        assert!(request.messages.len() < 51);
+        assert!(
+            request.messages[0]
+                .content_str()
+                .contains("conversation truncated")
+        );
+    }
+
+    #[test]
+    fn render_with_budget_includes_system_message() {
+        let mut ctx = StructuredContext::new();
+        ctx.add_block(SystemBlock {
+            content: "You are helpful.".to_string(),
+            label: "system_prompt".to_string(),
+            source: BlockSource::AgentSpec,
+            priority: priority::SYSTEM_PROMPT,
+        });
+        ctx.set_messages(vec![Message::text(Role::User, "Hello")]);
+
+        let budget = TokenBudget {
+            max_input_tokens: 200_000,
+            max_output_tokens: 4096,
+            max_history_tokens: 0,
+        };
+
+        let request = ctx.render_with_budget("gpt-4", None, None, vec![], &budget);
+        assert_eq!(request.messages[0].role, Role::System);
+        assert_eq!(request.messages[0].content_str(), "You are helpful.");
+        assert_eq!(request.messages[1].role, Role::User);
     }
 }

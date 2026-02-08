@@ -464,7 +464,9 @@ mod tests {
     use super::*;
     use crate::agent::OnDisconnect;
     use crate::session::actor::SessionActor;
-    use crate::session::actor_types::{ActorConfig, DEFAULT_SILENT_BUFFER_CAP};
+    use crate::session::actor_types::{
+        ActorConfig, DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP,
+    };
     use crate::store::file::FileSessionStore;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -487,6 +489,7 @@ mod tests {
             gateway: None,
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+            actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         let handle = SessionHandle::new(tx, "session_test".to_string(), "test-agent".to_string());

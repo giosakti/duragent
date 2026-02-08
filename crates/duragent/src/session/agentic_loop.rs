@@ -16,7 +16,8 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tracing::{debug, warn};
 
-use crate::agent::AgentSpec;
+use crate::agent::{AgentSpec, ContextConfig};
+use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::handle::SessionHandle;
 use crate::session::snapshot::PendingApproval;
@@ -102,11 +103,19 @@ pub async fn run_agentic_loop(
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
     let tool_definitions = executor.tool_definitions(tool_filter);
+    let context_config = &agent_spec.session.context;
 
     let mut messages = initial_messages;
+    let conversation_end_idx = messages.len();
     let mut total_usage: Option<Usage> = None;
     let mut iterations = 0u32;
     let mut tool_calls_made = 0u32;
+
+    // Compute loop budget for iteration group dropping (Layer 3c)
+    let max_input = agent_spec.model.effective_max_input_tokens();
+    let output_reserve = agent_spec.model.max_output_tokens.unwrap_or(4096);
+    let safety_margin = max_input / 10;
+    let loop_token_budget = max_input.saturating_sub(output_reserve + safety_margin);
 
     loop {
         iterations += 1;
@@ -114,6 +123,19 @@ pub async fn run_agentic_loop(
         if iterations > max_iterations {
             return Err(AgenticError::MaxIterationsExceeded(max_iterations));
         }
+
+        // Layer 3b: Mask old tool results (after first iteration)
+        if iterations > 1 {
+            mask_tool_results(
+                &mut messages,
+                conversation_end_idx,
+                context_config.tool_result_keep_first,
+                context_config.tool_result_keep_last,
+            );
+        }
+
+        // Layer 3c: Drop oldest iteration groups if over budget
+        drop_oldest_iterations(&mut messages, conversation_end_idx, loop_token_budget);
 
         debug!(
             iteration = iterations,
@@ -181,7 +203,15 @@ pub async fn run_agentic_loop(
         for tool_call in &tool_calls {
             tool_calls_made += 1;
 
-            let outcome = execute_tool_call(executor, handle, tool_call, &messages, &content).await;
+            let outcome = execute_tool_call(
+                executor,
+                handle,
+                tool_call,
+                &messages,
+                &content,
+                context_config,
+            )
+            .await;
 
             match outcome {
                 ToolCallOutcome::Executed(tool_result_msg) => {
@@ -266,6 +296,7 @@ async fn execute_tool_call(
     tool_call: &ToolCall,
     messages: &[Message],
     content: &str,
+    context_config: &ContextConfig,
 ) -> ToolCallOutcome {
     // Parse arguments
     let arguments: serde_json::Value =
@@ -308,16 +339,27 @@ async fn execute_tool_call(
         },
     };
 
-    // Record tool result event
+    // Layer 3a: Truncate tool result if over budget
+    let truncated_content = truncate_tool_result(
+        &result.content,
+        context_config.max_tool_result_tokens,
+        context_config.tool_result_truncation,
+    );
+
+    // Record tool result event (with truncated content)
     if let Err(e) = handle
-        .enqueue_tool_result(tool_call.id.clone(), result.success, result.content.clone())
+        .enqueue_tool_result(
+            tool_call.id.clone(),
+            result.success,
+            truncated_content.clone(),
+        )
         .await
     {
         warn!(error = %e, "Failed to enqueue tool result event");
     }
 
-    // Return the tool result message
-    let tool_result_msg = Message::tool_result(&tool_call.id, result.content);
+    // Return the tool result message (with truncated content)
+    let tool_result_msg = Message::tool_result(&tool_call.id, truncated_content);
     ToolCallOutcome::Executed(tool_result_msg)
 }
 

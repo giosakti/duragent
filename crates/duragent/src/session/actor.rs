@@ -21,12 +21,12 @@ use crate::api::SessionStatus;
 use crate::llm::{Message, Role, Usage};
 use crate::store::SessionStore;
 
-#[cfg(test)]
-use super::actor_types::DEFAULT_SILENT_BUFFER_CAP;
 use super::actor_types::{
     ActorConfig, ActorError, BATCH_SIZE, CHANNEL_CAPACITY, CHECKPOINT_THRESHOLD, FLUSH_INTERVAL,
     RecoverConfig, SNAPSHOT_INTERVAL, SessionCommand, SessionMetadata, SilentMessageEntry,
 };
+#[cfg(test)]
+use super::actor_types::{DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP};
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
 use super::snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
 
@@ -69,6 +69,7 @@ pub struct SessionActor {
     on_disconnect: OnDisconnect,
     gateway: Option<String>,
     gateway_chat_id: Option<String>,
+    actor_message_limit: usize,
 
     // Persistence
     store: Arc<dyn SessionStore>,
@@ -110,6 +111,7 @@ impl SessionActor {
             on_disconnect: config.on_disconnect,
             gateway: config.gateway,
             gateway_chat_id: config.gateway_chat_id,
+            actor_message_limit: config.actor_message_limit,
             store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
@@ -152,6 +154,7 @@ impl SessionActor {
             on_disconnect: snapshot.config.on_disconnect,
             gateway: snapshot.config.gateway,
             gateway_chat_id: snapshot.config.gateway_chat_id,
+            actor_message_limit: config.actor_message_limit,
             store: config.store,
             pending_events: VecDeque::new(),
             command_rx: rx,
@@ -429,6 +432,7 @@ impl SessionActor {
 
         // Roll checkpoint if pending is too large
         self.maybe_roll_checkpoint();
+        self.maybe_trim_history();
 
         Ok(seq)
     }
@@ -457,6 +461,7 @@ impl SessionActor {
 
         // Roll checkpoint if pending is too large
         self.maybe_roll_checkpoint();
+        self.maybe_trim_history();
 
         Ok(seq)
     }
@@ -655,6 +660,19 @@ impl SessionActor {
         }
     }
 
+    /// Trim oldest checkpointed messages when total exceeds actor_message_limit.
+    ///
+    /// Only drains from checkpointed messages (never pending), preserving
+    /// crash-safety guarantees.
+    fn maybe_trim_history(&mut self) {
+        let total = self.checkpointed_messages.len() + self.pending_messages.len();
+        if total > self.actor_message_limit && !self.checkpointed_messages.is_empty() {
+            let excess = total - self.actor_message_limit;
+            let drain_count = excess.min(self.checkpointed_messages.len());
+            self.checkpointed_messages.drain(..drain_count);
+        }
+    }
+
     // ------------------------------------------------------------------------
     // Silent Buffer Helpers
     // ------------------------------------------------------------------------
@@ -793,6 +811,7 @@ mod tests {
             gateway: None,
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+            actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
         };
         let (tx, task_handle) = SessionActor::spawn(config, shutdown_rx);
         (tx, shutdown_tx, task_handle)
@@ -1021,6 +1040,7 @@ mod tests {
             gateway: None,
             gateway_chat_id: None,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+            actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
         };
 
         let (tx, _task_handle) = SessionActor::spawn(config, shutdown_rx);

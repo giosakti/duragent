@@ -20,7 +20,7 @@ use crate::api::{
     PendingApprovalResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
     SessionSummary,
 };
-use crate::context::{ContextBuilder, load_all_directives};
+use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
 use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider};
 use crate::server::AppState;
@@ -82,6 +82,7 @@ pub async fn create_session(
             None,
             None,
             crate::session::DEFAULT_SILENT_BUFFER_CAP,
+            crate::session::actor_message_limit(agent_spec.model.effective_max_input_tokens()),
         )
         .await
     {
@@ -641,12 +642,18 @@ async fn prepare_chat_context(
         .with_directives(directives)
         .build();
 
-    // Render to ChatRequest (tools handled separately by agentic loop via executor)
-    let chat_request = structured_context.render(
+    // Render to ChatRequest with budget (tools handled separately by agentic loop via executor)
+    let budget = TokenBudget {
+        max_input_tokens: agent.model.effective_max_input_tokens(),
+        max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
+        max_history_tokens: agent.session.context.max_history_tokens,
+    };
+    let chat_request = structured_context.render_with_budget(
         &agent.model.name,
         agent.model.temperature,
         agent.model.max_output_tokens,
         vec![], // Tools come from ToolExecutor in agentic loop
+        &budget,
     );
 
     let agent_dir = agent.agent_dir.clone();

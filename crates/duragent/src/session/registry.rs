@@ -21,7 +21,8 @@ use crate::store::SessionStore;
 
 use super::actor::SessionActor;
 use super::actor_types::{
-    ActorConfig, ActorError, DEFAULT_SILENT_BUFFER_CAP, RecoverConfig, SessionMetadata,
+    ActorConfig, ActorError, DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP, RecoverConfig,
+    SessionMetadata,
 };
 use super::handle::SessionHandle;
 
@@ -131,6 +132,7 @@ impl SessionRegistry {
         gateway: Option<String>,
         gateway_chat_id: Option<String>,
         silent_buffer_cap: usize,
+        actor_message_limit: usize,
     ) -> Result<SessionHandle, ActorError> {
         let id = format!("{}{}", SESSION_ID_PREFIX, Ulid::new());
 
@@ -142,6 +144,7 @@ impl SessionRegistry {
             gateway,
             gateway_chat_id,
             silent_buffer_cap,
+            actor_message_limit,
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -382,6 +385,7 @@ impl SessionRegistry {
             store: self.store.clone(),
             pending_messages,
             silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+            actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
         };
 
         let (tx, task_handle) = SessionActor::spawn_recovered(config, self.shutdown_rx.clone());
@@ -463,6 +467,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();
@@ -498,6 +503,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();
@@ -508,6 +514,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();
@@ -533,6 +540,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();
@@ -555,6 +563,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();
@@ -670,6 +679,7 @@ mod tests {
                 None,
                 None,
                 DEFAULT_SILENT_BUFFER_CAP,
+                DEFAULT_ACTOR_MESSAGE_LIMIT,
             )
             .await
             .unwrap();

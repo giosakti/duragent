@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::error::AgentLoadError;
 use super::policy::ToolPolicy;
 use super::{API_VERSION_V1ALPHA1, KIND_AGENT};
+use crate::context::default_context_window;
 use crate::llm::Provider;
 
 /// Default maximum tool iterations for agentic loops.
@@ -74,6 +75,14 @@ pub struct ModelConfig {
     pub base_url: Option<String>,
 }
 
+impl ModelConfig {
+    /// Returns max_input_tokens if set, otherwise the default for the model.
+    pub fn effective_max_input_tokens(&self) -> u32 {
+        self.max_input_tokens
+            .unwrap_or_else(|| default_context_window(&self.name))
+    }
+}
+
 /// Session behavior configuration for an agent.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AgentSessionConfig {
@@ -83,6 +92,9 @@ pub struct AgentSessionConfig {
     /// Maximum number of tool iterations before stopping.
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: u32,
+    /// Context window management configuration.
+    #[serde(default)]
+    pub context: ContextConfig,
 }
 
 fn default_max_tool_iterations() -> u32 {
@@ -98,6 +110,68 @@ pub enum OnDisconnect {
     Pause,
     /// Continue executing in the background.
     Continue,
+}
+
+/// Context window management configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ContextConfig {
+    /// Maximum tokens for conversation history at render time.
+    /// 0 means no cap (use full available budget).
+    #[serde(default = "default_max_history_tokens")]
+    pub max_history_tokens: u32,
+    /// Maximum tokens per individual tool result before truncation.
+    #[serde(default = "default_max_tool_result_tokens")]
+    pub max_tool_result_tokens: u32,
+    /// Truncation strategy for tool results that exceed max_tool_result_tokens.
+    #[serde(default)]
+    pub tool_result_truncation: ToolResultTruncation,
+    /// Number of earliest tool results to keep unmasked in the agentic loop.
+    #[serde(default = "default_tool_result_keep_first")]
+    pub tool_result_keep_first: u32,
+    /// Number of latest tool results to keep unmasked in the agentic loop.
+    #[serde(default = "default_tool_result_keep_last")]
+    pub tool_result_keep_last: u32,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            max_history_tokens: default_max_history_tokens(),
+            max_tool_result_tokens: default_max_tool_result_tokens(),
+            tool_result_truncation: ToolResultTruncation::default(),
+            tool_result_keep_first: default_tool_result_keep_first(),
+            tool_result_keep_last: default_tool_result_keep_last(),
+        }
+    }
+}
+
+fn default_max_history_tokens() -> u32 {
+    20_000
+}
+
+fn default_max_tool_result_tokens() -> u32 {
+    8_000
+}
+
+fn default_tool_result_keep_first() -> u32 {
+    2
+}
+
+fn default_tool_result_keep_last() -> u32 {
+    5
+}
+
+/// Truncation strategy for tool results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultTruncation {
+    /// Keep the beginning of the output (default).
+    #[default]
+    Head,
+    /// Keep the end of the output.
+    Tail,
+    /// Keep both the beginning and end.
+    Both,
 }
 
 /// Access control configuration for an agent.
@@ -215,17 +289,6 @@ pub enum ActivationMode {
     Always,
 }
 
-/// How non-triggering messages from `Allow` senders are stored in mention mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextBufferMode {
-    /// Ephemeral buffer: stored as SilentMessage, injected as a system block on trigger.
-    #[default]
-    Silent,
-    /// Durable: stored as UserMessage in conversation history (no injection needed).
-    Passive,
-}
-
 /// Configuration for the context buffer (messages from non-triggering senders).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContextBufferConfig {
@@ -256,6 +319,53 @@ fn default_max_messages() -> usize {
 
 fn default_max_age_hours() -> u64 {
     24
+}
+
+/// How non-triggering messages from `Allow` senders are stored in mention mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextBufferMode {
+    /// Ephemeral buffer: stored as SilentMessage, injected as a system block on trigger.
+    #[default]
+    Silent,
+    /// Durable: stored as UserMessage in conversation history (no injection needed).
+    Passive,
+}
+
+/// Queue configuration for group message handling.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QueueConfig {
+    /// How pending messages are processed when the session becomes idle.
+    #[serde(default)]
+    pub mode: QueueMode,
+    /// Maximum number of pending messages in the queue.
+    #[serde(default = "default_max_pending")]
+    pub max_pending: usize,
+    /// What happens when the queue is full.
+    #[serde(default)]
+    pub overflow: OverflowStrategy,
+    /// Message sent back to the user when a message is rejected.
+    #[serde(default)]
+    pub reject_message: Option<String>,
+    /// Debounce settings for batching rapid messages.
+    #[serde(default)]
+    pub debounce: DebounceConfig,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            mode: QueueMode::default(),
+            max_pending: default_max_pending(),
+            overflow: OverflowStrategy::default(),
+            reject_message: None,
+            debounce: DebounceConfig::default(),
+        }
+    }
+}
+
+fn default_max_pending() -> usize {
+    10
 }
 
 /// Queue mode for group message handling.
@@ -310,42 +420,6 @@ fn default_true() -> bool {
 
 fn default_debounce_window_ms() -> u64 {
     1500
-}
-
-/// Queue configuration for group message handling.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct QueueConfig {
-    /// How pending messages are processed when the session becomes idle.
-    #[serde(default)]
-    pub mode: QueueMode,
-    /// Maximum number of pending messages in the queue.
-    #[serde(default = "default_max_pending")]
-    pub max_pending: usize,
-    /// What happens when the queue is full.
-    #[serde(default)]
-    pub overflow: OverflowStrategy,
-    /// Message sent back to the user when a message is rejected.
-    #[serde(default)]
-    pub reject_message: Option<String>,
-    /// Debounce settings for batching rapid messages.
-    #[serde(default)]
-    pub debounce: DebounceConfig,
-}
-
-impl Default for QueueConfig {
-    fn default() -> Self {
-        Self {
-            mode: QueueMode::default(),
-            max_pending: default_max_pending(),
-            overflow: OverflowStrategy::default(),
-            reject_message: None,
-            debounce: DebounceConfig::default(),
-        }
-    }
-}
-
-fn default_max_pending() -> usize {
-    10
 }
 
 /// Memory configuration for an agent.
@@ -431,6 +505,13 @@ impl AgentSpec {
                 "unsupported kind '{}', expected '{KIND_AGENT}'",
                 raw.kind
             )));
+        }
+
+        // Validate context config
+        if raw.spec.session.context.max_tool_result_tokens == 0 {
+            return Err(AgentLoadError::Validation(
+                "session.context.max_tool_result_tokens must be > 0".to_string(),
+            ));
         }
 
         Ok(AgentSpec {
@@ -1200,5 +1281,171 @@ spec:
         assert!(access.groups.queue.reject_message.is_none());
         assert!(access.groups.queue.debounce.enabled);
         assert_eq!(access.groups.queue.debounce.window_ms, 1500);
+    }
+
+    // ------------------------------------------------------------------------
+    // Context config
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn context_config_defaults() {
+        let config = ContextConfig::default();
+        assert_eq!(config.max_history_tokens, 20_000);
+        assert_eq!(config.max_tool_result_tokens, 8_000);
+        assert_eq!(config.tool_result_truncation, ToolResultTruncation::Head);
+        assert_eq!(config.tool_result_keep_first, 2);
+        assert_eq!(config.tool_result_keep_last, 5);
+    }
+
+    #[test]
+    fn context_config_default_deserialization() {
+        // Deserializing an empty session config should produce defaults for context
+        let yaml = r#"
+on_disconnect: pause
+max_tool_iterations: 10
+"#;
+        let config: AgentSessionConfig = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(config.context.max_history_tokens, 20_000);
+        assert_eq!(config.context.max_tool_result_tokens, 8_000);
+    }
+
+    #[test]
+    fn context_config_explicit_values() {
+        let yaml = r#"
+on_disconnect: pause
+context:
+  max_history_tokens: 50000
+  max_tool_result_tokens: 16000
+  tool_result_truncation: tail
+  tool_result_keep_first: 3
+  tool_result_keep_last: 10
+"#;
+        let config: AgentSessionConfig = serde_saphyr::from_str(yaml).unwrap();
+        assert_eq!(config.context.max_history_tokens, 50_000);
+        assert_eq!(config.context.max_tool_result_tokens, 16_000);
+        assert_eq!(
+            config.context.tool_result_truncation,
+            ToolResultTruncation::Tail
+        );
+        assert_eq!(config.context.tool_result_keep_first, 3);
+        assert_eq!(config.context.tool_result_keep_last, 10);
+    }
+
+    #[test]
+    fn tool_result_truncation_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ToolResultTruncation::Head).unwrap(),
+            "\"head\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolResultTruncation::Tail).unwrap(),
+            "\"tail\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolResultTruncation::Both).unwrap(),
+            "\"both\""
+        );
+    }
+
+    #[tokio::test]
+    async fn load_agent_with_context_config() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("context-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: context-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+  session:
+    on_disconnect: pause
+    context:
+      max_history_tokens: 30000
+      max_tool_result_tokens: 4000
+      tool_result_truncation: both
+      tool_result_keep_first: 1
+      tool_result_keep_last: 3
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "context-agent").await.unwrap();
+        assert_eq!(agent.session.context.max_history_tokens, 30_000);
+        assert_eq!(agent.session.context.max_tool_result_tokens, 4_000);
+        assert_eq!(
+            agent.session.context.tool_result_truncation,
+            ToolResultTruncation::Both
+        );
+        assert_eq!(agent.session.context.tool_result_keep_first, 1);
+        assert_eq!(agent.session.context.tool_result_keep_last, 3);
+    }
+
+    #[tokio::test]
+    async fn load_agent_context_config_defaults_when_omitted() {
+        let tmp = TempDir::new().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir(&agents_dir).unwrap();
+
+        let agent_dir = agents_dir.join("no-context-agent");
+        std::fs::create_dir(&agent_dir).unwrap();
+
+        write_yaml(
+            &agent_dir,
+            r#"apiVersion: duragent/v1alpha1
+kind: Agent
+metadata:
+  name: no-context-agent
+spec:
+  model:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4
+"#,
+        );
+
+        let agent = load_agent(&agents_dir, "no-context-agent").await.unwrap();
+        assert_eq!(agent.session.context.max_history_tokens, 20_000);
+        assert_eq!(agent.session.context.max_tool_result_tokens, 8_000);
+        assert_eq!(
+            agent.session.context.tool_result_truncation,
+            ToolResultTruncation::Head
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // ModelConfig
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn effective_max_input_tokens_with_explicit_value() {
+        let config = ModelConfig {
+            provider: Provider::OpenRouter,
+            name: "anthropic/claude-sonnet-4".to_string(),
+            temperature: None,
+            max_input_tokens: Some(100_000),
+            max_output_tokens: None,
+            base_url: None,
+        };
+        assert_eq!(config.effective_max_input_tokens(), 100_000);
+    }
+
+    #[test]
+    fn effective_max_input_tokens_defaults_from_model_name() {
+        let config = ModelConfig {
+            provider: Provider::OpenRouter,
+            name: "anthropic/claude-sonnet-4".to_string(),
+            temperature: None,
+            max_input_tokens: None,
+            max_output_tokens: None,
+            base_url: None,
+        };
+        assert_eq!(config.effective_max_input_tokens(), 200_000);
     }
 }
