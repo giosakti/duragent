@@ -397,29 +397,22 @@ fn detect_bot_trigger(msg: &Message, bot_identity: Option<&BotIdentity>) -> (boo
         return (false, false);
     };
 
-    // Check @mentions in message entities
-    let mentions_bot = if let MessageKind::Common(common) = &msg.kind {
-        if let MediaKind::Text(text) = &common.media_kind {
-            text.entities.iter().any(|entity| {
-                if let teloxide::types::MessageEntityKind::Mention = entity.kind {
-                    // Extract @username from text, compare case-insensitive
-                    let mention = &text.text[entity.offset..entity.offset + entity.length];
-                    let mention = mention.strip_prefix('@').unwrap_or(mention);
+    // Check @mentions in message entities (using MessageEntityRef for safe UTF-16 → UTF-8 conversion)
+    let mentions_bot = msg
+        .parse_entities()
+        .map(|entities| {
+            entities.iter().any(|entity| match entity.kind() {
+                teloxide::types::MessageEntityKind::Mention => {
+                    let mention = entity.text().strip_prefix('@').unwrap_or(entity.text());
                     mention.eq_ignore_ascii_case(&identity.username)
-                } else if let teloxide::types::MessageEntityKind::TextMention { user } =
-                    &entity.kind
-                {
-                    user.id.0 == identity.user_id
-                } else {
-                    false
                 }
+                teloxide::types::MessageEntityKind::TextMention { user } => {
+                    user.id.0 == identity.user_id
+                }
+                _ => false,
             })
-        } else {
-            false
-        }
-    } else {
-        false
-    };
+        })
+        .unwrap_or(false);
 
     // Check if this is a reply to a bot message
     let reply_to_bot = msg
