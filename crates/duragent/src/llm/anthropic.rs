@@ -191,16 +191,22 @@ enum ContentBlock {
 #[derive(serde::Deserialize)]
 struct Response {
     id: String,
-    content: Vec<Content>,
+    content: Vec<ResponseContent>,
     stop_reason: Option<String>,
     usage: Option<ResponseUsage>,
 }
 
 #[derive(serde::Deserialize)]
-struct Content {
-    #[serde(rename = "type")]
-    content_type: String,
-    text: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponseContent {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -374,19 +380,36 @@ fn to_request(request: &ChatRequest, stream: Option<bool>, oauth: bool) -> Reque
 }
 
 fn from_response(response: Response) -> ChatResponse {
-    let content = response
-        .content
-        .into_iter()
-        .filter(|c| c.content_type == "text")
-        .map(|c| c.text)
-        .collect::<Vec<_>>()
-        .join("");
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for block in response.content {
+        match block {
+            ResponseContent::Text { text } => text_parts.push(text),
+            ResponseContent::ToolUse { id, name, input } => {
+                tool_calls.push(ToolCall {
+                    id,
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name,
+                        arguments: input.to_string(),
+                    },
+                });
+            }
+        }
+    }
+
+    let content = text_parts.join("");
+    let mut message = Message::text(Role::Assistant, content);
+    if !tool_calls.is_empty() {
+        message.tool_calls = Some(tool_calls);
+    }
 
     ChatResponse {
         id: response.id,
         choices: vec![Choice {
             index: 0,
-            message: Message::text(Role::Assistant, content),
+            message,
             finish_reason: response.stop_reason,
         }],
         usage: response.usage.map(|u| Usage {
