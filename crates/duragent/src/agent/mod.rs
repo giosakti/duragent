@@ -9,6 +9,7 @@ pub const KIND_AGENT: &str = "Agent";
 pub mod access;
 mod error;
 mod policy;
+pub mod skill;
 mod spec;
 mod store;
 
@@ -16,6 +17,7 @@ pub use error::{AgentLoadError, AgentLoadWarning};
 pub use policy::{
     Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
 };
+pub use skill::{SkillMetadata, SkillParseError};
 pub use spec::{
     AccessConfig, ActivationMode, AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec,
     ContextBufferConfig, ContextBufferMode, ContextConfig, DEFAULT_MAX_TOOL_ITERATIONS,

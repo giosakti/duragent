@@ -297,7 +297,7 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
         &ctx.agent_spec,
         ctx.request.messages,
         &ctx.handle,
-        None, // TODO: pass context.tool_refs when skills are implemented
+        ctx.tool_refs.as_ref(),
     )
     .await
     {
@@ -557,6 +557,12 @@ pub async fn approve_command(
         debug!(error = %e, "Failed to set session status to Running");
     }
 
+    // Extract tool_refs from agent spec (consistent with run path)
+    let tool_refs = ContextBuilder::new()
+        .from_agent_spec(agent_spec)
+        .build()
+        .tool_refs;
+
     // Resume the agentic loop with SessionHandle
     let result = match resume_agentic_loop(
         provider,
@@ -565,7 +571,7 @@ pub async fn approve_command(
         pending,
         tool_result,
         &handle,
-        None, // TODO: pass context.tool_refs when skills are implemented
+        tool_refs.as_ref(),
     )
     .await
     {
@@ -620,6 +626,7 @@ struct ChatContext {
     agent_spec: Arc<AgentSpec>,
     agent_dir: std::path::PathBuf,
     handle: SessionHandle,
+    tool_refs: Option<std::collections::HashSet<String>>,
 }
 
 /// Prepare chat context for LLM request.
@@ -678,6 +685,9 @@ async fn prepare_chat_context(
         .with_directives(directives)
         .build();
 
+    // Capture tool_refs before rendering (for passing to agentic loop)
+    let tool_refs = structured_context.tool_refs.clone();
+
     // Render to ChatRequest with budget (tools handled separately by agentic loop via executor)
     let budget = TokenBudget {
         max_input_tokens: agent.model.effective_max_input_tokens(),
@@ -702,6 +712,7 @@ async fn prepare_chat_context(
         agent_spec,
         agent_dir,
         handle,
+        tool_refs,
     })
 }
 

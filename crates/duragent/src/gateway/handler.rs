@@ -519,6 +519,12 @@ impl MessageHandler for GatewayMessageHandler {
             &self.services.world_memory_path,
         );
 
+        // Extract tool_refs from agent spec (consistent with run path)
+        let tool_refs = ContextBuilder::new()
+            .from_agent_spec(agent)
+            .build()
+            .tool_refs;
+
         // Resume the agentic loop
         let result = match resume_agentic_loop(
             provider,
@@ -527,7 +533,7 @@ impl MessageHandler for GatewayMessageHandler {
             pending,
             tool_result,
             &handle,
-            None,
+            tool_refs.as_ref(),
         )
         .await
         {
@@ -1144,8 +1150,9 @@ impl GatewayMessageHandler {
             max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),
             max_history_tokens: agent.session.context.max_history_tokens,
         };
-        let messages = builder
-            .build()
+        let built_context = builder.build();
+        let tool_refs = built_context.tool_refs.clone();
+        let messages = built_context
             .render_with_budget(
                 &agent.model.name,
                 agent.model.temperature,
@@ -1156,14 +1163,22 @@ impl GatewayMessageHandler {
             .messages;
 
         // Run agentic loop
-        let result =
-            match run_agentic_loop(provider, &executor, agent, messages, handle, None).await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(error = %e, "Agentic loop failed");
-                    return Some(format!("Error processing request: {}", e));
-                }
-            };
+        let result = match run_agentic_loop(
+            provider,
+            &executor,
+            agent,
+            messages,
+            handle,
+            tool_refs.as_ref(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = %e, "Agentic loop failed");
+                return Some(format!("Error processing request: {}", e));
+            }
+        };
 
         match result {
             AgenticResult::Complete {
