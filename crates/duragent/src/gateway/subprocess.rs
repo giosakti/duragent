@@ -3,10 +3,11 @@
 //! This module handles spawning external gateway processes and supervising them
 //! with restart policies, backoff, and proper cleanup when the parent dies.
 
+use std::pin::Pin;
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -141,7 +142,7 @@ impl SubprocessGateway {
         let stdout = child.stdout.take().expect("stdout should be piped");
 
         let mut stdin = stdin;
-        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stdout_reader = BufReader::new(stdout);
 
         let mut got_ready = false;
         let gateway_name = self.config.name.clone();
@@ -149,7 +150,7 @@ impl SubprocessGateway {
         loop {
             tokio::select! {
                 // Read events from subprocess stdout
-                line = stdout_reader.next_line() => {
+                line = read_bounded_line(&mut stdout_reader) => {
                     match line {
                         Ok(Some(line)) => {
                             match serde_json::from_str::<GatewayEvent>(&line) {
@@ -182,6 +183,14 @@ impl SubprocessGateway {
                             break;
                         }
                         Err(e) => {
+                            if e.kind() == std::io::ErrorKind::InvalidData {
+                                warn!(
+                                    gateway = %gateway_name,
+                                    error = %e,
+                                    "Skipping oversized line from subprocess"
+                                );
+                                continue;
+                            }
                             error!(gateway = %gateway_name, error = %e, "Error reading stdout");
                             break;
                         }
@@ -286,6 +295,85 @@ impl SubprocessGateway {
     }
 }
 
+/// Maximum size of a single JSON line from a gateway subprocess (1 MB).
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// Read a newline-terminated line from an async buffered reader, bounded to `MAX_LINE_BYTES`.
+///
+/// Returns `Ok(None)` on EOF, `Ok(Some(line))` on success.
+/// Lines exceeding the limit are drained and return `ErrorKind::InvalidData`.
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::with_capacity(4096);
+
+    loop {
+        let (found_newline, consume_n) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                return Ok(if buf.is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(&buf).into_owned())
+                });
+            }
+
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    buf.extend_from_slice(&available[..pos]);
+                    (true, pos + 1)
+                }
+                None => {
+                    buf.extend_from_slice(available);
+                    (false, available.len())
+                }
+            }
+        };
+
+        Pin::new(&mut *reader).consume(consume_n);
+
+        if buf.len() > MAX_LINE_BYTES {
+            if !found_newline {
+                drain_line(reader).await;
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("gateway line exceeds {} byte limit", MAX_LINE_BYTES),
+            ));
+        }
+
+        if found_newline {
+            // Strip trailing \r (Windows line endings)
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+    }
+}
+
+/// Drain bytes from the reader until a newline is found or EOF.
+async fn drain_line<R: AsyncBufRead + Unpin>(reader: &mut R) {
+    loop {
+        let (consume_n, done) = {
+            let Ok(available) = reader.fill_buf().await else {
+                return;
+            };
+            if available.is_empty() {
+                return;
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => (pos + 1, true),
+                None => (available.len(), false),
+            }
+        };
+        Pin::new(&mut *reader).consume(consume_n);
+        if done {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +410,74 @@ mod tests {
         assert!(!gateway.should_restart(1, 5, true)); // Success = no restart
         assert!(gateway.should_restart(1, 5, false)); // Failure = restart
         assert!(!gateway.should_restart(5, 5, false)); // Max attempts
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reads_normal_line() {
+        let data = b"hello world\n";
+        let mut reader = BufReader::new(&data[..]);
+        let line = read_bounded_line(&mut reader).await.unwrap();
+        assert_eq!(line, Some("hello world".to_string()));
+    }
+
+    #[tokio::test]
+    async fn bounded_line_returns_none_on_eof() {
+        let data = b"";
+        let mut reader = BufReader::new(&data[..]);
+        let line = read_bounded_line(&mut reader).await.unwrap();
+        assert_eq!(line, None);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_reads_multiple_lines() {
+        let data = b"line1\nline2\nline3\n";
+        let mut reader = BufReader::new(&data[..]);
+
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap(),
+            Some("line1".to_string())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap(),
+            Some("line2".to_string())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader).await.unwrap(),
+            Some("line3".to_string())
+        );
+        assert_eq!(read_bounded_line(&mut reader).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_line_strips_carriage_return() {
+        let data = b"hello\r\n";
+        let mut reader = BufReader::new(&data[..]);
+        let line = read_bounded_line(&mut reader).await.unwrap();
+        assert_eq!(line, Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn bounded_line_returns_unterminated_line_at_eof() {
+        let data = b"no newline";
+        let mut reader = BufReader::new(&data[..]);
+        let line = read_bounded_line(&mut reader).await.unwrap();
+        assert_eq!(line, Some("no newline".to_string()));
+    }
+
+    #[tokio::test]
+    async fn bounded_line_rejects_oversized_line() {
+        // Create a line that exceeds MAX_LINE_BYTES
+        let mut data = vec![b'x'; MAX_LINE_BYTES + 100];
+        data.push(b'\n');
+        data.extend_from_slice(b"next line\n");
+
+        let mut reader = BufReader::new(&data[..]);
+
+        let err = read_bounded_line(&mut reader).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // The oversized line was drained — next read gets the following line
+        let line = read_bounded_line(&mut reader).await.unwrap();
+        assert_eq!(line, Some("next line".to_string()));
     }
 }
