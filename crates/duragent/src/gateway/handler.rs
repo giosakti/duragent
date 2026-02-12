@@ -368,6 +368,18 @@ impl MessageHandler for GatewayMessageHandler {
             }
         };
 
+        // Verify the approver matches the original requester (group chat safety)
+        if let Some(ref requester_id) = pending.requester_id {
+            if data.sender.id != *requester_id {
+                debug!(
+                    sender = %data.sender.id,
+                    requester = %requester_id,
+                    "Approval rejected: sender is not the original requester"
+                );
+                return Some("Only the original requester can approve this command".to_string());
+            }
+        }
+
         // Map decision string to event type
         let decision_type = match decision {
             "allow_once" => ApprovalDecisionType::AllowOnce,
@@ -575,12 +587,15 @@ impl MessageHandler for GatewayMessageHandler {
                 Some(toast)
             }
             AgenticResult::AwaitingApproval {
-                pending: new_pending,
+                pending: mut new_pending,
                 partial_content: _,
                 usage: _,
                 iterations: _,
                 tool_calls_made: _,
             } => {
+                // Tag with the same requester who approved the previous command
+                new_pending.requester_id = Some(data.sender.id.clone());
+
                 // Persist new pending approval via actor
                 if let Err(e) = handle.set_pending_approval(new_pending.clone()).await {
                     error!(error = %e, "Failed to persist pending approval");
@@ -1010,7 +1025,7 @@ impl GatewayMessageHandler {
         // Route to agentic loop if agent has tools configured
         if !agent.tools.is_empty() {
             return self
-                .process_text_message_agentic(gateway, chat_id, handle, text, routing)
+                .process_text_message_agentic(gateway, chat_id, handle, text, &sender.id, routing)
                 .await;
         }
 
@@ -1088,6 +1103,7 @@ impl GatewayMessageHandler {
         chat_id: &str,
         handle: &SessionHandle,
         _text: &str,
+        sender_id: &str,
         routing: &RoutingContext,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
@@ -1194,12 +1210,15 @@ impl GatewayMessageHandler {
                 Some(content)
             }
             AgenticResult::AwaitingApproval {
-                pending,
+                mut pending,
                 partial_content: _,
                 usage: _,
                 iterations: _,
                 tool_calls_made: _,
             } => {
+                // Tag with requester so only they can approve in group chats
+                pending.requester_id = Some(sender_id.to_string());
+
                 // Persist pending approval via actor
                 if let Err(e) = handle.set_pending_approval(pending.clone()).await {
                     error!(error = %e, "Failed to persist pending approval");

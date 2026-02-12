@@ -27,10 +27,12 @@ pub use events::{
 };
 pub use handle::SessionHandle;
 pub use registry::{RecoveryResult, SessionRegistry};
-pub use snapshot::{PendingApproval, SessionConfig, SessionSnapshot};
+pub use snapshot::{SessionConfig, SessionSnapshot};
 
 // Streaming
 pub use sse_stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop
-pub use agentic_loop::{AgenticError, AgenticResult, resume_agentic_loop, run_agentic_loop};
+pub use agentic_loop::{
+    AgenticError, AgenticResult, PendingApproval, resume_agentic_loop, run_agentic_loop,
+};

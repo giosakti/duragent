@@ -17,11 +17,12 @@ use std::time::Duration;
 use futures::StreamExt;
 use tracing::{debug, warn};
 
+use serde::{Deserialize, Serialize};
+
 use crate::agent::{AgentSpec, ContextConfig};
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMError, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::handle::SessionHandle;
-use crate::session::snapshot::PendingApproval;
 use crate::tools::{ToolError, ToolExecutor, ToolResult};
 
 // ============================================================================
@@ -71,6 +72,48 @@ pub enum AgenticError {
 
     #[error("llm call timed out after {0} seconds")]
     LlmTimeout(u64),
+}
+
+/// A pending approval waiting for user decision.
+///
+/// Approvals have no timeout — they wait indefinitely until the user
+/// approves, denies, or sends a new message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApproval {
+    /// The tool call ID that needs approval.
+    pub call_id: String,
+    /// The tool name (e.g., "bash").
+    pub tool_name: String,
+    /// The tool call arguments.
+    pub arguments: serde_json::Value,
+    /// The command being approved (for display).
+    pub command: String,
+    /// Accumulated messages to restore when resuming the loop.
+    pub messages: Vec<Message>,
+    /// Platform sender ID of the user who triggered this approval.
+    /// Used in group chats to ensure only the requester can approve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_id: Option<String>,
+}
+
+impl PendingApproval {
+    /// Create a new pending approval.
+    pub fn new(
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        command: String,
+        messages: Vec<Message>,
+    ) -> Self {
+        Self {
+            call_id,
+            tool_name,
+            arguments,
+            command,
+            messages,
+            requester_id: None,
+        }
+    }
 }
 
 /// Outcome of executing a single tool call.

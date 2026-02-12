@@ -16,8 +16,8 @@ use crate::config::CompactionMode;
 use crate::llm::{Message, Usage};
 use crate::store::SessionStore;
 
+use super::agentic_loop::PendingApproval;
 use super::events::ApprovalDecisionType;
-use super::snapshot::PendingApproval;
 
 // ============================================================================
 // Session Command

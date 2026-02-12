@@ -11,42 +11,7 @@ use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
 use crate::llm::Message;
 
-/// A pending approval waiting for user decision.
-///
-/// Approvals have no timeout — they wait indefinitely until the user
-/// approves, denies, or sends a new message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingApproval {
-    /// The tool call ID that needs approval.
-    pub call_id: String,
-    /// The tool name (e.g., "bash").
-    pub tool_name: String,
-    /// The tool call arguments.
-    pub arguments: serde_json::Value,
-    /// The command being approved (for display).
-    pub command: String,
-    /// Accumulated messages to restore when resuming the loop.
-    pub messages: Vec<Message>,
-}
-
-impl PendingApproval {
-    /// Create a new pending approval.
-    pub fn new(
-        call_id: String,
-        tool_name: String,
-        arguments: serde_json::Value,
-        command: String,
-        messages: Vec<Message>,
-    ) -> Self {
-        Self {
-            call_id,
-            tool_name,
-            arguments,
-            command,
-            messages,
-        }
-    }
-}
+use super::agentic_loop::PendingApproval;
 
 /// A snapshot of session state for fast resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]

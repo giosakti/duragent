@@ -11,8 +11,8 @@ use crate::api::SessionStatus;
 use crate::llm::{Message, Usage};
 
 use super::actor_types::{ActorError, SessionCommand, SessionMetadata, SilentMessageEntry};
+use super::agentic_loop::PendingApproval;
 use super::events::ApprovalDecisionType;
-use super::snapshot::PendingApproval;
 
 /// Defensive timeout for actor request-reply (30 seconds).
 const ACTOR_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
