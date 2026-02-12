@@ -71,9 +71,10 @@ impl Tool for RecallTool {
             days: default_days(),
         });
 
-        let content = self
-            .memory
-            .recall(args.days)
+        let memory = self.memory.clone();
+        let content = tokio::task::spawn_blocking(move || memory.recall(args.days))
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         if content.is_empty() {
@@ -149,9 +150,11 @@ impl Tool for RememberTool {
             ));
         }
 
-        let path = self
-            .memory
-            .append_daily(&args.content)
+        let memory = self.memory.clone();
+        let content = args.content;
+        let path = tokio::task::spawn_blocking(move || memory.append_daily(&content))
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         Ok(ToolResult {
@@ -218,12 +221,13 @@ impl Tool for ReflectTool {
             }
         });
 
+        let memory = self.memory.clone();
         match args.content {
             // Read phase: return current MEMORY.md
             None => {
-                let current = self
-                    .memory
-                    .read_memory()
+                let current = tokio::task::spawn_blocking(move || memory.read_memory())
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
                     .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
                 if current.is_empty() {
@@ -241,9 +245,9 @@ impl Tool for ReflectTool {
             }
             // Write phase: update MEMORY.md
             Some(content) => {
-                let path = self
-                    .memory
-                    .write_memory(&content)
+                let path = tokio::task::spawn_blocking(move || memory.write_memory(&content))
+                    .await
+                    .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
                     .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
                 Ok(ToolResult {
@@ -310,9 +314,12 @@ impl Tool for UpdateWorldTool {
         let args: UpdateWorldArgs = serde_json::from_str(arguments)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = self
-            .memory
-            .write_world(&args.topic, &args.content)
+        let memory = self.memory.clone();
+        let topic = args.topic;
+        let content = args.content;
+        let path = tokio::task::spawn_blocking(move || memory.write_world(&topic, &content))
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         Ok(ToolResult {
