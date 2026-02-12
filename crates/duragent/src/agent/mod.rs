@@ -13,16 +13,19 @@ pub mod skill;
 mod spec;
 mod store;
 
+pub use access::{
+    AccessConfig, ActivationMode, ContextBufferConfig, ContextBufferMode, DebounceConfig,
+    DmAccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy, OverflowStrategy, QueueConfig,
+    QueueMode, SenderDisposition,
+};
 pub use error::{AgentLoadError, AgentLoadWarning};
 pub use policy::{
     Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
 };
 pub use skill::{SkillMetadata, SkillParseError};
 pub use spec::{
-    AccessConfig, ActivationMode, AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec,
-    ContextBufferConfig, ContextBufferMode, ContextConfig, DEFAULT_MAX_TOOL_ITERATIONS,
-    DebounceConfig, DmAccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy, LoadedAgentFiles,
-    ModelConfig, OnDisconnect, OverflowStrategy, QueueConfig, QueueMode, SenderDisposition,
-    ToolConfig, ToolResultTruncation,
+    AgentFileRefs, AgentMetadata, AgentSessionConfig, AgentSpec, ContextConfig,
+    DEFAULT_MAX_TOOL_ITERATIONS, LoadedAgentFiles, ModelConfig, OnDisconnect, ToolConfig,
+    ToolResultTruncation,
 };
 pub use store::{AgentStore, log_scan_warnings};

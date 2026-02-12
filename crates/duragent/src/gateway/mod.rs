@@ -40,9 +40,12 @@
 //!
 //! For external gateways, these are serialized as JSON Lines (newline-delimited JSON).
 
+mod approval;
+mod commands;
 pub mod handler;
 pub mod manager;
 pub mod queue;
+mod routing;
 pub mod subprocess;
 
 // Re-export protocol types from the protocol crate
@@ -51,10 +54,11 @@ pub use duragent_gateway_protocol::{
     RoutingContext, Sender, capabilities, error_codes,
 };
 
-pub use handler::{GatewayHandlerConfig, GatewayMessageHandler, RoutingConfig};
+pub use handler::{GatewayHandlerConfig, GatewayMessageHandler};
 pub use manager::{
     GatewayHandle, GatewayManager, MessageHandler, SendError, build_approval_keyboard,
 };
+pub use routing::RoutingConfig;
 pub use subprocess::SubprocessGateway;
 
 // Re-export Discord gateway from the discord crate
