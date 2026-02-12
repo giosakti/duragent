@@ -2,7 +2,6 @@ use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 use anyhow::Result;
-use rand::Rng;
 use tokio::fs;
 
 use duragent::config::{
@@ -40,7 +39,7 @@ pub async fn run(
 ) -> Result<()> {
     let agent_name = match agent_name {
         Some(name) => name,
-        None if no_interactive => generate_random_name(),
+        None if no_interactive => DEFAULT_AGENT_NAME.to_string(),
         None => prompt_with_default("Agent name", DEFAULT_AGENT_NAME)?,
     };
 
@@ -166,21 +165,6 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
     }
 }
 
-/// Generates a random agent name in the format `agent-{adjective}-{noun}`.
-fn generate_random_name() -> String {
-    const ADJECTIVES: &[&str] = &[
-        "swift", "bright", "calm", "keen", "bold", "warm", "crisp", "sharp", "quick", "steady",
-    ];
-    const NOUNS: &[&str] = &[
-        "falcon", "river", "oak", "flame", "wave", "frost", "spark", "panda", "bloom", "ridge",
-    ];
-
-    let mut rng = rand::rng();
-    let adj = ADJECTIVES[rng.random_range(0..ADJECTIVES.len())];
-    let noun = NOUNS[rng.random_range(0..NOUNS.len())];
-    format!("agent-{adj}-{noun}")
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -285,24 +269,5 @@ mod tests {
             std::fs::read_to_string(root.join(".duragent/agents/my-bot/agent.yaml")).unwrap();
         assert!(agent.contains("provider: anthropic"));
         assert!(agent.contains("name: claude-sonnet-4-20250514"));
-    }
-
-    #[test]
-    fn test_generate_random_name() {
-        let name = generate_random_name();
-        assert!(
-            name.starts_with("agent-"),
-            "name should start with 'agent-': {name}"
-        );
-
-        let parts: Vec<&str> = name.splitn(3, '-').collect();
-        assert_eq!(
-            parts.len(),
-            3,
-            "name should have format agent-adj-noun: {name}"
-        );
-        assert_eq!(parts[0], "agent");
-        assert!(!parts[1].is_empty());
-        assert!(!parts[2].is_empty());
     }
 }
