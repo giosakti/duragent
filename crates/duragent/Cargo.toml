@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 default = ["server"]
-server = ["dep:axum", "dep:tower-http", "dep:duragent-gateway-protocol"]
+server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:duragent-gateway-protocol"]
 gateway-discord = ["server", "dep:duragent-gateway-discord"]
 gateway-telegram = ["server", "dep:duragent-gateway-telegram"]
 
@@ -40,6 +40,7 @@ thiserror = { workspace = true }
 
 # HTTP server
 axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 
 # HTTP client
