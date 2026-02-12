@@ -111,7 +111,7 @@ pub async fn create_session(
         created_at: metadata.created_at.to_rfc3339(),
     };
 
-    (StatusCode::OK, Json(response)).into_response()
+    (StatusCode::CREATED, Json(response)).into_response()
 }
 
 /// GET /api/v1/sessions/{session_id}

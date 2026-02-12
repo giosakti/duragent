@@ -33,7 +33,13 @@ pub struct AuthStorage {
 impl AuthStorage {
     /// Default path for the auth credentials file.
     pub fn default_path() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::warn!("HOME not set, using /tmp for auth credentials");
+                "/tmp".to_string()
+            }
+        };
         PathBuf::from(home).join(".duragent").join("auth.json")
     }
 
