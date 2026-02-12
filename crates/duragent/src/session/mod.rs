@@ -1,10 +1,33 @@
 //! Session management for Duragent.
 //!
-//! v0.1.0: In-memory session store.
-//! v0.2.0: Persistent storage with JSONL event log + YAML snapshots.
-//! v0.4.0: Agentic loop for tool-using agents.
-//!         Per-session actor architecture for lock-free concurrency.
-//!         Refactored persistence into store/ module with trait-based interfaces.
+//! # Architecture
+//!
+//! ```text
+//!  ┌─────────────────┐        ┌───────────────┐
+//!  │ SessionRegistry │──owns──▶ SessionActor  │  (one per session, runs in a tokio task)
+//!  │  (ID → Handle)  │        │  owns state,  │
+//!  └────────┬────────┘        │  serializes   │
+//!           │                 │  mutations    │
+//!           │ clone           └───────▲───────┘
+//!           ▼                         │ mpsc messages
+//!  ┌─────────────────┐                │
+//!  │  SessionHandle  │────────────────┘  (cheap cloneable sender)
+//!  └─────────────────┘
+//!
+//!  ┌───────────────────┐
+//!  │ ChatSessionCache  │  Maps (gateway, chat_id, agent) → session_id.
+//!  │                   │  Used by gateway routing to find/create sessions.
+//!  └───────────────────┘
+//! ```
+//!
+//! - **SessionActor** — owns mutable session state; processes messages sequentially
+//!   via an mpsc channel so no locks are held across await points.
+//! - **SessionHandle** — cloneable reference that sends messages to an actor.
+//!   All external code interacts with sessions through handles.
+//! - **SessionRegistry** — maps session IDs to handles; manages actor lifecycle
+//!   (create, recover, destroy).
+//! - **ChatSessionCache** — maps (gateway, chat_id, agent) tuples to session IDs
+//!   so gateway messages route to the correct long-lived session.
 
 mod actor;
 mod actor_types;
