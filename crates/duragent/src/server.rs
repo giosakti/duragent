@@ -12,7 +12,6 @@ use tower_http::timeout::TimeoutLayer;
 
 use crate::agent::{AgentStore, PolicyLocks};
 use crate::background::BackgroundTasks;
-use crate::gateway::GatewayManager;
 use crate::handlers;
 use crate::llm::ProviderRegistry;
 use crate::sandbox::Sandbox;
@@ -30,13 +29,10 @@ pub struct RuntimeServices {
     pub agents: AgentStore,
     pub providers: ProviderRegistry,
     pub session_registry: SessionRegistry,
-    pub gateways: GatewayManager,
     pub sandbox: Arc<dyn Sandbox>,
     pub policy_store: Arc<dyn PolicyStore>,
     pub world_memory_path: PathBuf,
     pub workspace_directives_path: PathBuf,
-    pub chat_session_cache: ChatSessionCache,
-    pub workspace_hash: String,
 }
 
 // ============================================================================
@@ -56,6 +52,8 @@ pub struct AppState {
     pub max_connections: usize,
     pub background_tasks: BackgroundTasks,
     pub shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    pub workspace_hash: String,
+    pub chat_session_cache: ChatSessionCache,
 }
 
 // ============================================================================

@@ -158,7 +158,6 @@ pub async fn delete_session(
     // Remove from registry and cache
     state.services.session_registry.remove(&session_id);
     state
-        .services
         .chat_session_cache
         .remove_by_session_id(&session_id)
         .await;

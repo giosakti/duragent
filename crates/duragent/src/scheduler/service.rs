@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
+use crate::gateway::GatewaySender;
 use crate::server::RuntimeServices;
 use crate::session::{AgenticResult, ChatSessionCache, SessionHandle, run_agentic_loop};
 use crate::store::{RunLogStore, ScheduleStore as ScheduleStoreTrait};
@@ -125,6 +126,7 @@ impl SchedulerHandle {
 /// Configuration for the scheduler service.
 pub struct SchedulerConfig {
     pub services: RuntimeServices,
+    pub gateway_sender: GatewaySender,
     /// Storage backend for schedule persistence.
     pub schedule_store: Arc<dyn ScheduleStoreTrait>,
     /// Storage backend for run log persistence.
@@ -263,6 +265,7 @@ impl SchedulerService {
         let semaphore = self.execution_semaphore.clone();
         let config = SchedulerConfigRef {
             services: self.config.services.clone(),
+            gateway_sender: self.config.gateway_sender.clone(),
             chat_session_cache: self.config.chat_session_cache.clone(),
         };
 
@@ -347,6 +350,7 @@ enum SchedulerCommand {
 #[derive(Clone)]
 struct SchedulerConfigRef {
     services: RuntimeServices,
+    gateway_sender: GatewaySender,
     chat_session_cache: ChatSessionCache,
 }
 
@@ -582,8 +586,7 @@ async fn execute_message_payload(
     message: &str,
 ) -> Result<()> {
     config
-        .services
-        .gateways
+        .gateway_sender
         .send_message(
             &schedule.destination.gateway,
             &schedule.destination.chat_id,
@@ -707,8 +710,7 @@ async fn execute_task_payload(
 
     // Send response via gateway
     config
-        .services
-        .gateways
+        .gateway_sender
         .send_message(
             &schedule.destination.gateway,
             &schedule.destination.chat_id,

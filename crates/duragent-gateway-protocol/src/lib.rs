@@ -33,6 +33,12 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Protocol version for gateway communication.
+///
+/// Uses Kubernetes-style versioning: `v{major}{stability}{revision}`.
+/// The manager checks the major part (e.g., `v1`) on Ready and warns on mismatch.
+pub const PROTOCOL_VERSION: &str = "v1alpha1";
+
 // ============================================================================
 // Commands (Duragent → Gateway)
 // ============================================================================
@@ -214,6 +220,13 @@ pub enum GatewayEvent {
 
     /// Authentication successful.
     AuthSuccess,
+
+    /// Unknown event type from a newer gateway version.
+    ///
+    /// Deserializes any unrecognized `"type"` value, preventing failures
+    /// when a newer gateway sends event types this version doesn't know about.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Data for a callback query event (inline keyboard button press).
@@ -486,5 +499,24 @@ mod tests {
             longitude: 0.0,
         };
         assert_eq!(location.as_text(), None);
+    }
+
+    #[test]
+    fn protocol_version_is_set() {
+        assert_eq!(PROTOCOL_VERSION, "v1alpha1");
+    }
+
+    #[test]
+    fn unknown_event_type_deserializes() {
+        let json = r#"{"type": "new_future_event", "data": "something"}"#;
+        let event: GatewayEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, GatewayEvent::Unknown));
+    }
+
+    #[test]
+    fn known_event_still_deserializes_correctly() {
+        let json = r#"{"type": "auth_success"}"#;
+        let event: GatewayEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, GatewayEvent::AuthSuccess));
     }
 }
