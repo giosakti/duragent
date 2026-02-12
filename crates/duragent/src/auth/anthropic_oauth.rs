@@ -31,29 +31,36 @@ pub struct OAuthTokens {
 // Public API
 // ============================================================================
 
-/// Generate a PKCE code verifier and challenge.
+/// Generate a PKCE code verifier, challenge, and OAuth state parameter.
 ///
-/// Returns `(verifier, challenge)` where:
+/// Returns `(verifier, challenge, state)` where:
 /// - `verifier` is 32 random bytes encoded as base64url
 /// - `challenge` is SHA-256 of verifier encoded as base64url
-pub fn generate_pkce() -> (String, String) {
+/// - `state` is a separate 32 random bytes encoded as base64url (CSRF protection)
+pub fn generate_pkce() -> (String, String, String) {
     use rand::Rng;
 
-    let mut bytes = [0u8; 32];
-    rand::rng().fill(&mut bytes);
-    let verifier = URL_SAFE_NO_PAD.encode(bytes);
+    let mut rng = rand::rng();
+
+    let mut verifier_bytes = [0u8; 32];
+    rng.fill(&mut verifier_bytes);
+    let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
 
     let mut hasher = Sha256::new();
     hasher.update(verifier.as_bytes());
     let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
 
-    (verifier, challenge)
+    let mut state_bytes = [0u8; 32];
+    rng.fill(&mut state_bytes);
+    let state = URL_SAFE_NO_PAD.encode(state_bytes);
+
+    (verifier, challenge, state)
 }
 
 /// Build the authorization URL for the browser.
 ///
-/// Uses the PKCE verifier as the state parameter.
-pub fn build_authorize_url(challenge: &str, verifier: &str) -> String {
+/// Uses a separate state parameter for CSRF protection (not the PKCE verifier).
+pub fn build_authorize_url(challenge: &str, state: &str) -> String {
     let mut url = url::Url::parse(AUTHORIZE_URL).expect("valid authorize URL");
     url.query_pairs_mut()
         .append_pair("code", "true")
@@ -63,7 +70,7 @@ pub fn build_authorize_url(challenge: &str, verifier: &str) -> String {
         .append_pair("scope", SCOPES)
         .append_pair("code_challenge", challenge)
         .append_pair("code_challenge_method", "S256")
-        .append_pair("state", verifier);
+        .append_pair("state", state);
     url.to_string()
 }
 
@@ -127,6 +134,14 @@ pub async fn refresh_token(client: &reqwest::Client, refresh: &str) -> Result<OA
 // Private helpers
 // ============================================================================
 
+/// Validate that the returned state matches the expected state.
+pub fn validate_state(returned: &str, expected: &str) -> Result<()> {
+    if returned != expected {
+        bail!("OAuth state mismatch (possible CSRF attack)");
+    }
+    Ok(())
+}
+
 async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokens> {
     let body: serde_json::Value = response.json().await.context("parsing token response")?;
 
@@ -147,4 +162,34 @@ async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokens
         refresh_token,
         expires_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_pkce_state_differs_from_verifier() {
+        let (verifier, _challenge, state) = generate_pkce();
+        assert_ne!(verifier, state, "state must be independent of verifier");
+    }
+
+    #[test]
+    fn authorize_url_does_not_leak_verifier() {
+        let (verifier, challenge, state) = generate_pkce();
+        let url = build_authorize_url(&challenge, &state);
+        assert!(!url.contains(&verifier), "URL must not contain verifier");
+        assert!(url.contains(&state), "URL must contain state");
+        assert!(url.contains(&challenge), "URL must contain challenge");
+    }
+
+    #[test]
+    fn validate_state_rejects_mismatch() {
+        assert!(validate_state("abc", "xyz").is_err());
+    }
+
+    #[test]
+    fn validate_state_accepts_match() {
+        assert!(validate_state("abc", "abc").is_ok());
+    }
 }

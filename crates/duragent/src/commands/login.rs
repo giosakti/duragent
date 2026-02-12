@@ -21,11 +21,10 @@ async fn login_anthropic() -> Result<()> {
     println!("Authenticating with Anthropic...");
     println!();
 
-    // Generate PKCE
-    let (verifier, challenge) = anthropic_oauth::generate_pkce();
+    // Generate PKCE with separate state for CSRF protection
+    let (verifier, challenge, expected_state) = anthropic_oauth::generate_pkce();
 
-    // Use the full verifier as the state parameter
-    let url = anthropic_oauth::build_authorize_url(&challenge, &verifier);
+    let url = anthropic_oauth::build_authorize_url(&challenge, &expected_state);
 
     println!("Open this URL in your browser to authorize:");
     println!();
@@ -57,6 +56,9 @@ async fn login_anthropic() -> Result<()> {
     } else {
         (input.as_str(), "")
     };
+
+    // Validate state matches to prevent CSRF
+    anthropic_oauth::validate_state(state, &expected_state)?;
 
     println!();
     println!("Exchanging code for tokens...");
