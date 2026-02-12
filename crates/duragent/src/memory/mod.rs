@@ -135,6 +135,8 @@ impl Memory {
 
     /// Append to today's daily log.
     pub fn append_daily(&self, content: &str) -> Result<PathBuf> {
+        use std::io::{Seek, Write};
+
         let daily_dir = self.agent_memory_dir.join("daily");
         std::fs::create_dir_all(&daily_dir)?;
 
@@ -142,18 +144,19 @@ impl Memory {
         let filename = format!("{}.md", today.format("%Y-%m-%d"));
         let path = daily_dir.join(&filename);
 
-        let timestamp = today.format("%H:%M");
-        let entry = format!("\n## {}\n\n{}\n", timestamp, content);
+        // Open in append+create mode atomically, then check if we just created it.
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
 
-        // Create file with header if it doesn't exist
-        if !path.exists() {
+        if file.stream_position()? == 0 {
             let header = format!("# {}\n", today.format("%Y-%m-%d"));
-            std::fs::write(&path, header)?;
+            file.write_all(header.as_bytes())?;
         }
 
-        // Append entry
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
+        let timestamp = today.format("%H:%M");
+        let entry = format!("\n## {}\n\n{}\n", timestamp, content);
         file.write_all(entry.as_bytes())?;
 
         Ok(path)
