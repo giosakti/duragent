@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use tracing::{debug, warn};
@@ -67,6 +68,9 @@ pub enum AgenticError {
 
     #[error("max iterations ({0}) exceeded")]
     MaxIterationsExceeded(u32),
+
+    #[error("llm call timed out after {0} seconds")]
+    LlmTimeout(u64),
 }
 
 /// Outcome of executing a single tool call.
@@ -102,6 +106,7 @@ pub async fn run_agentic_loop(
     tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
+    let llm_timeout = Duration::from_secs(agent_spec.session.llm_timeout_seconds);
     let tool_definitions = executor.tool_definitions(tool_filter);
     let context_config = &agent_spec.session.context;
 
@@ -153,45 +158,52 @@ pub async fn run_agentic_loop(
             tool_definitions.clone(),
         );
 
-        // Call LLM with streaming (retry on rate limit)
-        let mut stream = {
-            const MAX_RETRIES: u32 = 3;
-            let mut attempt = 0;
-            loop {
-                match provider.chat_stream(request.clone()).await {
-                    Ok(s) => break s,
-                    Err(LLMError::RateLimit { retry_after }) if attempt < MAX_RETRIES => {
-                        attempt += 1;
-                        let delay = retry_after.unwrap_or(2u64.pow(attempt));
-                        warn!(attempt, delay_secs = delay, "Rate limited, retrying");
-                        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        // Call LLM with streaming (retry on rate limit) + consume stream,
+        // all under a single timeout covering the full LLM round-trip.
+        let llm_timeout_secs = agent_spec.session.llm_timeout_seconds;
+        let (content, tool_calls, usage) = tokio::time::timeout(llm_timeout, async {
+            let mut stream = {
+                const MAX_RETRIES: u32 = 3;
+                let mut attempt = 0;
+                loop {
+                    match provider.chat_stream(request.clone()).await {
+                        Ok(s) => break s,
+                        Err(LLMError::RateLimit { retry_after }) if attempt < MAX_RETRIES => {
+                            attempt += 1;
+                            let delay = retry_after.unwrap_or(2u64.pow(attempt));
+                            warn!(attempt, delay_secs = delay, "Rate limited, retrying");
+                            tokio::time::sleep(Duration::from_secs(delay)).await;
+                        }
+                        Err(e) => return Err(AgenticError::from(e)),
                     }
-                    Err(e) => return Err(e.into()),
+                }
+            };
+
+            let mut content = String::new();
+            let mut tool_calls: Vec<ToolCall> = Vec::new();
+            let mut usage: Option<Usage> = None;
+
+            while let Some(event) = stream.next().await {
+                match event? {
+                    StreamEvent::Token(token) => {
+                        content.push_str(&token);
+                    }
+                    StreamEvent::ToolCalls(calls) => {
+                        tool_calls = calls;
+                    }
+                    StreamEvent::Done { usage: u } => {
+                        usage = u;
+                    }
+                    StreamEvent::Cancelled => {
+                        break;
+                    }
                 }
             }
-        };
 
-        let mut content = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut usage: Option<Usage> = None;
-
-        // Consume stream
-        while let Some(event) = stream.next().await {
-            match event? {
-                StreamEvent::Token(token) => {
-                    content.push_str(&token);
-                }
-                StreamEvent::ToolCalls(calls) => {
-                    tool_calls = calls;
-                }
-                StreamEvent::Done { usage: u } => {
-                    usage = u;
-                }
-                StreamEvent::Cancelled => {
-                    break;
-                }
-            }
-        }
+            Ok((content, tool_calls, usage))
+        })
+        .await
+        .map_err(|_| AgenticError::LlmTimeout(llm_timeout_secs))??;
 
         // Accumulate usage
         total_usage = accumulate_usage(total_usage, usage);

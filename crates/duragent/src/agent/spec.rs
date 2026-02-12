@@ -15,6 +15,9 @@ use crate::llm::Provider;
 /// Default maximum tool iterations for agentic loops.
 pub const DEFAULT_MAX_TOOL_ITERATIONS: u32 = 10;
 
+/// Default timeout for a single LLM call (connect + stream), in seconds.
+pub const DEFAULT_LLM_TIMEOUT_SECONDS: u64 = 300;
+
 // ============================================================================
 // Public Types
 // ============================================================================
@@ -95,6 +98,10 @@ pub struct AgentSessionConfig {
     /// Maximum number of tool iterations before stopping.
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: u32,
+    /// Timeout for a single LLM call (connect + full stream consumption), in seconds.
+    /// Applies per-iteration in the agentic loop, not to the entire loop.
+    #[serde(default = "default_llm_timeout_seconds")]
+    pub llm_timeout_seconds: u64,
     /// Context window management configuration.
     #[serde(default)]
     pub context: ContextConfig,
@@ -108,6 +115,10 @@ pub struct AgentSessionConfig {
 
 fn default_max_tool_iterations() -> u32 {
     DEFAULT_MAX_TOOL_ITERATIONS
+}
+
+fn default_llm_timeout_seconds() -> u64 {
+    DEFAULT_LLM_TIMEOUT_SECONDS
 }
 
 /// Behavior when client disconnects from a session.
