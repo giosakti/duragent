@@ -163,6 +163,16 @@ pub fn log_scan_warnings(warnings: &[AgentScanWarning]) {
                     "Invalid skill in agent"
                 );
             }
+            AgentScanWarning::AgentWarning(AgentLoadWarning::UnknownBuiltinTool {
+                agent,
+                tool_name,
+            }) => {
+                warn!(
+                    agent = %agent,
+                    tool = %tool_name,
+                    "Unknown builtin tool in agent config"
+                );
+            }
         }
     }
 }

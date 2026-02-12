@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::access::AccessConfig;
-use super::error::AgentLoadError;
+use super::error::{AgentLoadError, AgentLoadWarning};
 use super::policy::ToolPolicy;
 use super::skill::SkillMetadata;
 use super::{API_VERSION_V1ALPHA1, KIND_AGENT};
@@ -223,6 +223,26 @@ pub enum ToolConfig {
         #[serde(default)]
         description: Option<String>,
     },
+}
+
+/// Check all `ToolConfig::Builtin` entries against `KNOWN_BUILTIN_TOOLS`.
+///
+/// Returns warnings for any unrecognized builtin tool names (e.g. typos).
+pub fn validate_builtin_tools(agent_name: &str, tools: &[ToolConfig]) -> Vec<AgentLoadWarning> {
+    tools
+        .iter()
+        .filter_map(|t| match t {
+            ToolConfig::Builtin { name }
+                if !crate::tools::KNOWN_BUILTIN_TOOLS.contains(&name.as_str()) =>
+            {
+                Some(AgentLoadWarning::UnknownBuiltinTool {
+                    agent: agent_name.to_string(),
+                    tool_name: name.clone(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Loaded file contents for optional agent files.
@@ -1230,5 +1250,54 @@ spec:
             base_url: None,
         };
         assert_eq!(config.effective_max_input_tokens(), 200_000);
+    }
+
+    // ------------------------------------------------------------------------
+    // validate_builtin_tools
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn validate_builtin_tools_accepts_known_tools() {
+        let tools = vec![
+            ToolConfig::Builtin {
+                name: "bash".to_string(),
+            },
+            ToolConfig::Builtin {
+                name: "schedule_task".to_string(),
+            },
+        ];
+        let warnings = validate_builtin_tools("test-agent", &tools);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_builtin_tools_warns_on_unknown() {
+        let tools = vec![
+            ToolConfig::Builtin {
+                name: "bash".to_string(),
+            },
+            ToolConfig::Builtin {
+                name: "bassh".to_string(),
+            },
+        ];
+        let warnings = validate_builtin_tools("test-agent", &tools);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            AgentLoadWarning::UnknownBuiltinTool { agent, tool_name }
+                if agent == "test-agent" && tool_name == "bassh"
+        ));
+    }
+
+    #[test]
+    fn validate_builtin_tools_ignores_cli_tools() {
+        let tools = vec![ToolConfig::Cli {
+            name: "anything".to_string(),
+            command: "./tool.sh".to_string(),
+            readme: None,
+            description: None,
+        }];
+        let warnings = validate_builtin_tools("test-agent", &tools);
+        assert!(warnings.is_empty());
     }
 }

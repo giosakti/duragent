@@ -31,4 +31,6 @@ pub enum AgentLoadWarning {
         skill_dir: String,
         error: String,
     },
+    /// A builtin tool name was not recognized.
+    UnknownBuiltinTool { agent: String, tool_name: String },
 }

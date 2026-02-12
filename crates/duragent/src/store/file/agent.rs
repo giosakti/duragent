@@ -109,6 +109,12 @@ impl AgentCatalog for FileAgentCatalog {
                                     resource: format!("skill '{}': {}", skill_dir, error),
                                 });
                             }
+                            AgentLoadWarning::UnknownBuiltinTool { agent, tool_name } => {
+                                warnings.push(ScanWarning::MissingResource {
+                                    agent,
+                                    resource: format!("unknown builtin tool '{}'", tool_name),
+                                });
+                            }
                         }
                     }
                 }
@@ -203,6 +209,11 @@ async fn load_agent_from_dir(
         policy,
         agent_dir.to_path_buf(),
     )?;
+
+    warnings.extend(crate::agent::validate_builtin_tools(
+        agent_name,
+        &agent.tools,
+    ));
 
     Ok((agent, warnings))
 }

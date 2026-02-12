@@ -20,6 +20,12 @@ use super::schedule::{
 };
 use super::tool::SharedTool;
 
+/// All recognized builtin tool names.
+///
+/// Used at agent load time to warn about typos or unknown tool names.
+pub const KNOWN_BUILTIN_TOOLS: &[&str] =
+    &["bash", "schedule_task", "list_schedules", "cancel_schedule"];
+
 /// Dependencies needed for creating tools.
 pub struct ToolDependencies {
     /// Sandbox for executing commands.
@@ -247,6 +253,17 @@ mod tests {
         let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"deploy"));
+    }
+
+    #[test]
+    fn known_builtin_tools_matches_factory() {
+        // Every tool in KNOWN_BUILTIN_TOOLS should be handled by create_builtin_tool.
+        // "bash" is the only one that doesn't need scheduler deps.
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"bash"));
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"schedule_task"));
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"list_schedules"));
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"cancel_schedule"));
+        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 4);
     }
 
     #[test]
