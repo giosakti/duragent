@@ -13,12 +13,14 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 use crate::server::AppState;
 
 /// Check if a request is authorized against an optional token.
 ///
-/// - If token is `Some`: requires matching `Authorization: Bearer <token>` header (constant-time via SHA-256)
+/// - If token is `Some`: requires matching `Authorization: Bearer <token>` header
+///   (constant-time comparison on SHA-256 digests)
 /// - If token is `None`: only allows requests from loopback addresses
 pub fn is_authorized(token: &Option<String>, addr: &SocketAddr, headers: &HeaderMap) -> bool {
     match token {
@@ -29,7 +31,7 @@ pub fn is_authorized(token: &Option<String>, addr: &SocketAddr, headers: &Header
             .is_some_and(|provided| {
                 let a = Sha256::digest(provided.as_bytes());
                 let b = Sha256::digest(expected.as_bytes());
-                a == b
+                a.ct_eq(&b).into()
             }),
         None => addr.ip().is_loopback(),
     }

@@ -32,6 +32,7 @@ clap = { workspace = true }
 # Crypto / encoding
 base64 = { workspace = true }
 sha2 = { workspace = true }
+subtle = { workspace = true }
 url = { workspace = true }
 
 # Error handling

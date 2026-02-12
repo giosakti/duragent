@@ -33,6 +33,7 @@ clap = { version = "4", features = ["derive"] }
 # Crypto / encoding
 base64 = "0.22"
 sha2 = "0.10"
+subtle = "2"
 url = "2"
 
 # Error handling
