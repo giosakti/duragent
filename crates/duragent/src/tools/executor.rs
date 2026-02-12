@@ -16,6 +16,12 @@ use crate::sandbox::ExecResult;
 // Types
 // ============================================================================
 
+/// Maximum bytes of tool output to keep before truncating.
+/// This prevents OOM from tools that dump enormous output (e.g., `cat /dev/urandom`).
+/// The downstream token-based truncation in the agentic loop handles LLM context fitting;
+/// this limit prevents the large string from ever entering memory.
+const MAX_OUTPUT_BYTES: usize = 256 * 1024; // 256 KB
+
 /// Result of a tool execution.
 #[derive(Debug, Clone)]
 pub struct ToolResult {
@@ -41,6 +47,16 @@ impl ToolResult {
         }
         if content.is_empty() {
             content = format!("Command completed with exit code {}", result.exit_code);
+        }
+
+        if content.len() > MAX_OUTPUT_BYTES {
+            // Truncate at a char boundary
+            let mut end = MAX_OUTPUT_BYTES;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            content.truncate(end);
+            content.push_str("\n\n[output truncated at 256 KB]");
         }
 
         Self {
