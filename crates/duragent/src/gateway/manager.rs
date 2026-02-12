@@ -67,6 +67,122 @@ impl GatewayManager {
         }
     }
 
+    /// Create a `GatewaySender` that shares this manager's gateway registry.
+    ///
+    /// `GatewaySender` exposes only the send methods, suitable for components
+    /// that need to send messages but not manage gateway lifecycle.
+    pub fn sender(&self) -> GatewaySender {
+        GatewaySender {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+// ============================================================================
+// Gateway Sender
+// ============================================================================
+
+/// Send-only handle for gateway communication.
+///
+/// Shares the gateway registry with `GatewayManager` but only exposes
+/// message-sending methods. Use this when a component needs to send
+/// messages without managing gateway lifecycle.
+#[derive(Clone)]
+pub struct GatewaySender {
+    inner: Arc<RwLock<GatewayManagerInner>>,
+}
+
+impl GatewaySender {
+    /// Send a message through a gateway.
+    pub async fn send_message(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+    ) -> Result<(), SendError> {
+        self.send_message_with_keyboard(gateway, chat_id, content, reply_to, None)
+            .await
+    }
+
+    /// Send a message through a gateway with an optional inline keyboard.
+    pub async fn send_message_with_keyboard(
+        &self,
+        gateway: &str,
+        chat_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+        inline_keyboard: Option<InlineKeyboard>,
+    ) -> Result<(), SendError> {
+        let handle = {
+            let inner = self.inner.read().await;
+            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
+        };
+
+        let Some(tx) = handle else {
+            warn!(gateway = %gateway, "Gateway not found");
+            return Err(SendError::ChannelClosed);
+        };
+
+        let request_id = ulid::Ulid::new().to_string();
+        let command = GatewayCommand::SendMessage {
+            request_id,
+            chat_id: chat_id.to_string(),
+            content: content.to_string(),
+            reply_to,
+            inline_keyboard,
+        };
+
+        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+    }
+
+    /// Send typing indicator through a gateway.
+    pub async fn send_typing(&self, gateway: &str, chat_id: &str) -> Result<(), SendError> {
+        let handle = {
+            let inner = self.inner.read().await;
+            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
+        };
+
+        let Some(tx) = handle else {
+            return Err(SendError::ChannelClosed);
+        };
+
+        let command = GatewayCommand::SendTyping {
+            chat_id: chat_id.to_string(),
+            duration: 5,
+        };
+
+        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+    }
+
+    /// Answer a callback query with an optional notification text.
+    pub async fn answer_callback_query(
+        &self,
+        gateway: &str,
+        callback_query_id: &str,
+        text: Option<String>,
+    ) -> Result<(), SendError> {
+        let handle = {
+            let inner = self.inner.read().await;
+            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
+        };
+
+        let Some(tx) = handle else {
+            return Err(SendError::ChannelClosed);
+        };
+
+        let request_id = ulid::Ulid::new().to_string();
+        let command = GatewayCommand::AnswerCallbackQuery {
+            request_id,
+            callback_query_id: callback_query_id.to_string(),
+            text,
+        };
+
+        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+    }
+}
+
+impl GatewayManager {
     /// Set the message handler for incoming gateway messages.
     pub async fn set_handler(&self, handler: Arc<dyn MessageHandler>) {
         let mut inner = self.inner.write().await;
@@ -146,7 +262,8 @@ impl GatewayManager {
         content: &str,
         reply_to: Option<String>,
     ) -> Result<(), SendError> {
-        self.send_message_with_keyboard(gateway, chat_id, content, reply_to, None)
+        self.sender()
+            .send_message(gateway, chat_id, content, reply_to)
             .await
     }
 
@@ -159,74 +276,26 @@ impl GatewayManager {
         reply_to: Option<String>,
         inline_keyboard: Option<InlineKeyboard>,
     ) -> Result<(), SendError> {
-        let handle = {
-            let inner = self.inner.read().await;
-            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
-        };
-
-        let Some(tx) = handle else {
-            warn!(gateway = %gateway, "Gateway not found");
-            return Err(SendError::ChannelClosed);
-        };
-
-        let request_id = ulid::Ulid::new().to_string();
-        let command = GatewayCommand::SendMessage {
-            request_id,
-            chat_id: chat_id.to_string(),
-            content: content.to_string(),
-            reply_to,
-            inline_keyboard,
-        };
-
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        self.sender()
+            .send_message_with_keyboard(gateway, chat_id, content, reply_to, inline_keyboard)
+            .await
     }
 
     /// Send typing indicator through a gateway.
     pub async fn send_typing(&self, gateway: &str, chat_id: &str) -> Result<(), SendError> {
-        let handle = {
-            let inner = self.inner.read().await;
-            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
-        };
-
-        let Some(tx) = handle else {
-            return Err(SendError::ChannelClosed);
-        };
-
-        let command = GatewayCommand::SendTyping {
-            chat_id: chat_id.to_string(),
-            duration: 5,
-        };
-
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        self.sender().send_typing(gateway, chat_id).await
     }
 
     /// Answer a callback query with an optional notification text.
-    ///
-    /// This dismisses the loading indicator on the button and optionally
-    /// shows a toast notification to the user.
     pub async fn answer_callback_query(
         &self,
         gateway: &str,
         callback_query_id: &str,
         text: Option<String>,
     ) -> Result<(), SendError> {
-        let handle = {
-            let inner = self.inner.read().await;
-            inner.gateways.get(gateway).map(|h| h.command_tx.clone())
-        };
-
-        let Some(tx) = handle else {
-            return Err(SendError::ChannelClosed);
-        };
-
-        let request_id = ulid::Ulid::new().to_string();
-        let command = GatewayCommand::AnswerCallbackQuery {
-            request_id,
-            callback_query_id: callback_query_id.to_string(),
-            text,
-        };
-
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        self.sender()
+            .answer_callback_query(gateway, callback_query_id, text)
+            .await
     }
 
     /// Shutdown all gateways gracefully.
@@ -276,6 +345,17 @@ impl GatewayManager {
                         capabilities = ?capabilities,
                         "Gateway ready"
                     );
+
+                    let expected = protocol_major(duragent_gateway_protocol::PROTOCOL_VERSION);
+                    let actual = protocol_major(&version);
+                    if actual != expected {
+                        warn!(
+                            gateway = %gateway,
+                            expected = %duragent_gateway_protocol::PROTOCOL_VERSION,
+                            actual = %version,
+                            "Gateway protocol major version mismatch"
+                        );
+                    }
                 }
 
                 GatewayEvent::MessageReceived(data) => {
@@ -489,6 +569,10 @@ impl GatewayManager {
                         });
                     }
                 }
+
+                GatewayEvent::Unknown => {
+                    debug!(gateway = %gateway, "Ignoring unknown event type from gateway");
+                }
             }
         }
 
@@ -588,6 +672,17 @@ pub fn build_approval_keyboard() -> InlineKeyboard {
     ])
 }
 
+/// Extract the major version from a Kubernetes-style version string.
+///
+/// `"v1alpha1"` → `"v1"`, `"v2beta3"` → `"v2"`, `"v1"` → `"v1"`
+fn protocol_major(version: &str) -> &str {
+    let prefix_len = if version.starts_with('v') { 1 } else { 0 };
+    let digits_end = version[prefix_len..]
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(version.len() - prefix_len);
+    &version[..prefix_len + digits_end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,5 +724,36 @@ mod tests {
         assert!(handle.has_capability("media"));
         assert!(handle.has_capability("edit"));
         assert!(!handle.has_capability("delete"));
+    }
+
+    #[test]
+    fn protocol_major_extracts_v1_from_alpha() {
+        assert_eq!(protocol_major("v1alpha1"), "v1");
+    }
+
+    #[test]
+    fn protocol_major_extracts_v2_from_beta() {
+        assert_eq!(protocol_major("v2beta3"), "v2");
+    }
+
+    #[test]
+    fn protocol_major_handles_plain_version() {
+        assert_eq!(protocol_major("v1"), "v1");
+    }
+
+    #[test]
+    fn protocol_major_handles_no_prefix() {
+        assert_eq!(protocol_major("1alpha1"), "1");
+    }
+
+    #[tokio::test]
+    async fn test_sender_shares_registry() {
+        let manager = GatewayManager::default();
+        let (_cmd_rx, _evt_tx) = manager.register("test", vec![]).await;
+
+        let sender = manager.sender();
+        // Sender can send to the registered gateway (won't error because channel is open)
+        let result = sender.send_typing("test", "chat1").await;
+        assert!(result.is_ok());
     }
 }

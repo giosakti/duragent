@@ -16,6 +16,7 @@ use duragent_gateway_protocol::{
     CallbackQueryData, MessageContent, MessageReceivedData, RoutingContext, Sender,
 };
 
+use super::manager::GatewaySender;
 use super::queue::{
     DrainResult, EnqueueResult, QueuedMessage, SessionMessageQueues, combine_messages,
 };
@@ -43,6 +44,7 @@ use crate::tools::{ToolDependencies, ToolExecutionContext, build_executor};
 /// Configuration for creating a gateway message handler.
 pub struct GatewayHandlerConfig {
     pub services: RuntimeServices,
+    pub gateway_sender: GatewaySender,
     pub routing_config: RoutingConfig,
     pub policy_locks: PolicyLocks,
     pub scheduler: Option<SchedulerHandle>,
@@ -52,6 +54,8 @@ pub struct GatewayHandlerConfig {
 /// Handler that routes gateway messages to sessions.
 pub struct GatewayMessageHandler {
     pub(super) services: RuntimeServices,
+    /// Send-only handle for gateway communication.
+    pub(super) gateway_sender: GatewaySender,
     /// Shared cache mapping (gateway, chat_id, agent) to session_id.
     pub(super) chat_session_cache: ChatSessionCache,
     /// Per-session locks to serialize callback query processing.
@@ -80,6 +84,7 @@ impl GatewayMessageHandler {
 
         Self {
             services: config.services,
+            gateway_sender: config.gateway_sender,
             chat_session_cache: config.chat_session_cache,
             message_locks: KeyedLocks::with_cleanup("gateway_callback_locks"),
             session_queues,
@@ -375,8 +380,7 @@ impl GatewayMessageHandler {
 
         // Show typing indicator
         let _ = self
-            .services
-            .gateways
+            .gateway_sender
             .send_typing(gateway, &routing.chat_id)
             .await;
 
@@ -441,8 +445,7 @@ impl GatewayMessageHandler {
                     let combined = combine_messages(messages);
                     if let Some(response) = self.process_queued_message(&combined, handle).await {
                         let _ = self
-                            .services
-                            .gateways
+                            .gateway_sender
                             .send_message(
                                 &combined.gateway,
                                 &combined.data.routing.chat_id,
@@ -455,8 +458,7 @@ impl GatewayMessageHandler {
                 DrainResult::Sequential(msg) => {
                     if let Some(response) = self.process_queued_message(&msg, handle).await {
                         let _ = self
-                            .services
-                            .gateways
+                            .gateway_sender
                             .send_message(&msg.gateway, &msg.data.routing.chat_id, &response, None)
                             .await;
                     }
@@ -704,8 +706,7 @@ impl GatewayMessageHandler {
                     format!("Command requires approval:\n```\n{}\n```", pending.command);
 
                 if let Err(e) = self
-                    .services
-                    .gateways
+                    .gateway_sender
                     .send_message_with_keyboard(
                         gateway,
                         chat_id,

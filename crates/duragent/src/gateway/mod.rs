@@ -56,7 +56,8 @@ pub use duragent_gateway_protocol::{
 
 pub use handler::{GatewayHandlerConfig, GatewayMessageHandler};
 pub use manager::{
-    GatewayHandle, GatewayManager, MessageHandler, SendError, build_approval_keyboard,
+    GatewayHandle, GatewayManager, GatewaySender, MessageHandler, SendError,
+    build_approval_keyboard,
 };
 pub use routing::RoutingConfig;
 pub use subprocess::SubprocessGateway;

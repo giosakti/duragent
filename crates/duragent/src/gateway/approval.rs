@@ -274,8 +274,7 @@ impl GatewayMessageHandler {
 
                 // Send response via gateway
                 if let Err(e) = self
-                    .services
-                    .gateways
+                    .gateway_sender
                     .send_message(gateway, &data.chat_id, &content, None)
                     .await
                 {
@@ -309,8 +308,7 @@ impl GatewayMessageHandler {
                 );
 
                 if let Err(e) = self
-                    .services
-                    .gateways
+                    .gateway_sender
                     .send_message_with_keyboard(
                         gateway,
                         &data.chat_id,

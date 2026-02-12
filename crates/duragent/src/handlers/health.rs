@@ -18,7 +18,7 @@ pub struct ReadyzResponse {
 pub async fn readyz(State(state): State<AppState>) -> Json<ReadyzResponse> {
     Json(ReadyzResponse {
         status: "ok".to_string(),
-        workspace_hash: state.services.workspace_hash.clone(),
+        workspace_hash: state.workspace_hash.clone(),
     })
 }
 

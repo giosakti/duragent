@@ -162,23 +162,22 @@ pub async fn run(
         .join("schedules");
     // Build shared RuntimeServices once
     let workspace_hash = config::compute_workspace_hash(config_path_ref, &config);
+    let gateway_sender = gateways.sender();
     let services = RuntimeServices {
         agents: store.clone(),
         providers: providers.clone(),
         session_registry: session_registry.clone(),
-        gateways: gateways.clone(),
         sandbox: sandbox.clone(),
         policy_store: policy_store.clone(),
         world_memory_path: world_memory_path.clone(),
         workspace_directives_path: workspace_directives_path.clone(),
-        chat_session_cache: chat_session_cache.clone(),
-        workspace_hash,
     };
 
     let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));
     let run_log_store = Arc::new(FileRunLogStore::new(schedules_path.join("runs")));
     let scheduler_config = SchedulerConfig {
         services: services.clone(),
+        gateway_sender: gateway_sender.clone(),
         schedule_store,
         run_log_store,
         chat_session_cache: chat_session_cache.clone(),
@@ -192,10 +191,11 @@ pub async fn run(
     let gateway_handler =
         duragent::gateway::GatewayMessageHandler::new(duragent::gateway::GatewayHandlerConfig {
             services: services.clone(),
+            gateway_sender,
             routing_config,
             policy_locks: policy_locks.clone(),
             scheduler: Some(scheduler_handle.clone()),
-            chat_session_cache,
+            chat_session_cache: chat_session_cache.clone(),
         });
 
     gateways
@@ -244,6 +244,8 @@ pub async fn run(
         max_connections: config.server.max_connections,
         background_tasks: background_tasks.clone(),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+        workspace_hash,
+        chat_session_cache,
     };
 
     // Spawn ephemeral idle monitor if requested
