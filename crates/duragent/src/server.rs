@@ -54,6 +54,7 @@ pub struct AppState {
     pub shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     pub workspace_hash: String,
     pub chat_session_cache: ChatSessionCache,
+    pub agents_dir: PathBuf,
 }
 
 // ============================================================================
@@ -117,6 +118,7 @@ pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
     // Admin routes (no timeout, state required for shutdown)
     let admin_routes = Router::new()
         .route("/shutdown", post(handlers::shutdown))
+        .route("/reload-agents", post(handlers::reload_agents))
         .with_state(state.clone());
 
     Router::new()

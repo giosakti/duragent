@@ -55,6 +55,7 @@ pub async fn test_app_state() -> AppState {
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         workspace_hash: "test".to_string(),
         chat_session_cache: ChatSessionCache::new(),
+        agents_dir,
     }
 }
 

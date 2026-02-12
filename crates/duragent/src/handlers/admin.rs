@@ -7,7 +7,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
 use super::api_auth;
+use crate::agent::{AgentStore, log_scan_warnings};
 use crate::server::AppState;
+use crate::store::file::FileAgentCatalog;
 
 /// POST /api/admin/v1/shutdown
 ///
@@ -31,4 +33,28 @@ pub async fn shutdown(
     } else {
         (StatusCode::CONFLICT, "Shutdown already in progress").into_response()
     }
+}
+
+/// POST /api/admin/v1/reload-agents
+///
+/// Reloads agent configurations from disk without restarting the server.
+///
+/// Authorization: same as shutdown.
+pub async fn reload_agents(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !api_auth::is_authorized(&state.admin_token, &addr, &headers) {
+        return (StatusCode::FORBIDDEN, "Admin access denied").into_response();
+    }
+
+    let catalog = FileAgentCatalog::new(&state.agents_dir);
+    let report = AgentStore::from_catalog(&catalog).await;
+    log_scan_warnings(&report.warnings);
+
+    let count = report.store.len();
+    state.services.agents.replace_from(&report.store);
+
+    (StatusCode::OK, format!("Reloaded {} agents", count)).into_response()
 }

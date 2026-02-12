@@ -125,6 +125,8 @@ enum Commands {
 enum ServeAction {
     /// Stop a running server
     Stop,
+    /// Reload agent configurations from disk
+    ReloadAgents,
 }
 
 // ============================================================================
@@ -183,6 +185,7 @@ async fn run() -> Result<()> {
             ephemeral,
         } => match action {
             Some(ServeAction::Stop) => commands::serve::stop(&config, port).await,
+            Some(ServeAction::ReloadAgents) => commands::serve::reload_agents(&config, port).await,
             None => {
                 commands::serve::run(&config, host, port, agents_dir.as_deref(), ephemeral).await
             }

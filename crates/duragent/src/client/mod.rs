@@ -214,6 +214,20 @@ impl AgentClient {
         }
     }
 
+    /// Reload agent configurations from disk.
+    ///
+    /// Calls POST /api/admin/v1/reload-agents.
+    pub async fn reload_agents(&self) -> Result<String> {
+        let url = format!("{}/api/admin/v1/reload-agents", self.base_url);
+        let response = self.http.post(&url).send().await?;
+
+        if response.status().is_success() {
+            Ok(response.text().await?)
+        } else {
+            Err(self.parse_error(response).await)
+        }
+    }
+
     // ----------------------------------------------------------------------------
     // Helpers
     // ----------------------------------------------------------------------------

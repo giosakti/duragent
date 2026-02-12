@@ -477,7 +477,7 @@ pub async fn approve_command(
             execution_context: None,
         };
         let executor = build_executor(
-            agent_spec,
+            &agent_spec,
             &agent_name,
             &session_id,
             policy.clone(),
@@ -531,7 +531,7 @@ pub async fn approve_command(
         execution_context: None,
     };
     let executor = build_executor(
-        agent_spec,
+        &agent_spec,
         &agent_name,
         &session_id,
         policy,
@@ -546,7 +546,7 @@ pub async fn approve_command(
 
     // Extract tool_refs from agent spec (consistent with run path)
     let tool_refs = ContextBuilder::new()
-        .from_agent_spec(agent_spec)
+        .from_agent_spec(&agent_spec)
         .build()
         .tool_refs;
 
@@ -554,7 +554,7 @@ pub async fn approve_command(
     let result = match resume_agentic_loop(
         provider,
         &executor,
-        agent_spec,
+        &agent_spec,
         pending,
         tool_result,
         &handle,
@@ -662,7 +662,7 @@ async fn prepare_chat_context(
     let directives =
         load_all_directives(&state.services.workspace_directives_path, &agent.agent_dir);
     let structured_context = ContextBuilder::new()
-        .from_agent_spec(agent)
+        .from_agent_spec(&agent)
         .with_messages(history)
         .with_directives(directives)
         .build();
@@ -685,7 +685,7 @@ async fn prepare_chat_context(
     );
 
     let agent_dir = agent.agent_dir.clone();
-    let agent_spec = Arc::new(agent.clone());
+    let agent_spec = agent.clone();
 
     Ok(ChatContext {
         request: chat_request,

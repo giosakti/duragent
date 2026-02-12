@@ -518,12 +518,12 @@ impl GatewayMessageHandler {
         let directives =
             load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
         let mut builder = ContextBuilder::new()
-            .from_agent_spec(agent)
+            .from_agent_spec(&agent)
             .with_messages(history)
             .with_directives(directives);
 
         // Inject context buffer for mention-activated group chats
-        if let Some(config) = self.should_inject_context_buffer(agent, routing)
+        if let Some(config) = self.should_inject_context_buffer(&agent, routing)
             && let Some(block) = self.build_context_buffer_block(handle, config).await
         {
             builder = builder.add_block(block);
@@ -601,7 +601,7 @@ impl GatewayMessageHandler {
             execution_context,
         };
         let executor = build_executor(
-            agent,
+            &agent,
             handle.agent(),
             handle.id(),
             policy,
@@ -620,12 +620,12 @@ impl GatewayMessageHandler {
         let directives =
             load_all_directives(&self.services.workspace_directives_path, &agent.agent_dir);
         let mut builder = ContextBuilder::new()
-            .from_agent_spec(agent)
+            .from_agent_spec(&agent)
             .with_messages(history)
             .with_directives(directives);
 
         // Inject context buffer for mention-activated group chats
-        if let Some(config) = self.should_inject_context_buffer(agent, routing)
+        if let Some(config) = self.should_inject_context_buffer(&agent, routing)
             && let Some(block) = self.build_context_buffer_block(handle, config).await
         {
             builder = builder.add_block(block);
@@ -652,7 +652,7 @@ impl GatewayMessageHandler {
         let result = match run_agentic_loop(
             provider,
             &executor,
-            agent,
+            &agent,
             messages,
             handle,
             tool_refs.as_ref(),

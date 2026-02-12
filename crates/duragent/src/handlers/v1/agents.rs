@@ -16,7 +16,8 @@ pub async fn list_agents(State(state): State<AppState>) -> Json<ListAgentsRespon
     let agents: Vec<AgentSummary> = state
         .services
         .agents
-        .iter()
+        .snapshot()
+        .into_iter()
         .map(|(_, spec)| AgentSummary {
             name: spec.metadata.name.clone(),
             description: spec.metadata.description.clone(),

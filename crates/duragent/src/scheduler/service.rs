@@ -656,7 +656,7 @@ async fn execute_task_payload(
         execution_context: None,
     };
     let executor = build_executor(
-        agent,
+        &agent,
         &schedule.agent,
         handle.id(),
         policy,
@@ -674,7 +674,7 @@ async fn execute_task_payload(
         max_history_tokens: agent.session.context.max_history_tokens,
     };
     let messages = ContextBuilder::new()
-        .from_agent_spec(agent)
+        .from_agent_spec(&agent)
         .with_messages(history)
         .with_directives(directives)
         .build()
@@ -688,7 +688,7 @@ async fn execute_task_payload(
         .messages;
 
     // Run agentic loop with SessionHandle
-    let result = run_agentic_loop(provider, &executor, agent, messages, &handle, None)
+    let result = run_agentic_loop(provider, &executor, &agent, messages, &handle, None)
         .await
         .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::error::{AgentLoadError, AgentLoadWarning};
 use super::spec::AgentSpec;
@@ -10,9 +10,12 @@ use crate::store::{AgentCatalog, ScanWarning};
 // ============================================================================
 
 /// Store for loaded agents, shared across request handlers.
+///
+/// Uses `std::sync::RwLock` (not tokio) because the lock is never held across
+/// await points. Interior mutability enables hot-reloading agents at runtime.
 #[derive(Debug, Clone)]
 pub struct AgentStore {
-    agents: Arc<HashMap<String, AgentSpec>>,
+    agents: Arc<RwLock<HashMap<String, Arc<AgentSpec>>>>,
 }
 
 /// Result of scanning the agents directory.
@@ -41,23 +44,34 @@ pub enum AgentScanWarning {
 
 impl AgentStore {
     /// Get an agent by name.
-    pub fn get(&self, name: &str) -> Option<&AgentSpec> {
-        self.agents.get(name)
+    pub fn get(&self, name: &str) -> Option<Arc<AgentSpec>> {
+        self.agents.read().unwrap().get(name).cloned()
     }
 
     /// Get the number of loaded agents.
     pub fn len(&self) -> usize {
-        self.agents.len()
+        self.agents.read().unwrap().len()
     }
 
     /// Check if the store is empty.
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty()
+        self.agents.read().unwrap().is_empty()
     }
 
-    /// Iterate over all agents.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &AgentSpec)> {
-        self.agents.iter()
+    /// Snapshot all agents as a vec of (name, spec) pairs.
+    pub fn snapshot(&self) -> Vec<(String, Arc<AgentSpec>)> {
+        self.agents
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Replace the contents of this store with agents from `other`.
+    pub fn replace_from(&self, other: &AgentStore) {
+        let new_map = other.agents.read().unwrap().clone();
+        *self.agents.write().unwrap() = new_map;
     }
 
     /// Load agents from a catalog.
@@ -70,7 +84,7 @@ impl AgentStore {
                 // Storage error during scan (e.g., read_dir failed)
                 return AgentScanReport {
                     store: AgentStore {
-                        agents: Arc::new(HashMap::new()),
+                        agents: Arc::new(RwLock::new(HashMap::new())),
                     },
                     warnings: vec![AgentScanWarning::CatalogError {
                         error: e.to_string(),
@@ -79,11 +93,11 @@ impl AgentStore {
             }
         };
 
-        // Convert loaded agents to HashMap by name
-        let agents: HashMap<String, AgentSpec> = result
+        // Convert loaded agents to HashMap by name, wrapping each in Arc
+        let agents: HashMap<String, Arc<AgentSpec>> = result
             .agents
             .into_iter()
-            .map(|a| (a.metadata.name.clone(), a))
+            .map(|a| (a.metadata.name.clone(), Arc::new(a)))
             .collect();
 
         // Convert ScanWarning to AgentScanWarning
@@ -111,7 +125,7 @@ impl AgentStore {
 
         AgentScanReport {
             store: AgentStore {
-                agents: Arc::new(agents),
+                agents: Arc::new(RwLock::new(agents)),
             },
             warnings,
         }
@@ -274,11 +288,16 @@ spec:
         }
 
         let report = scan_agents(&agents_dir).await;
-        let names: Vec<_> = report.store.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<String> = report
+            .store
+            .snapshot()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         assert_eq!(names.len(), 3);
-        assert!(names.contains(&"alpha"));
-        assert!(names.contains(&"beta"));
-        assert!(names.contains(&"gamma"));
+        assert!(names.iter().any(|n| n == "alpha"));
+        assert!(names.iter().any(|n| n == "beta"));
+        assert!(names.iter().any(|n| n == "gamma"));
     }
 
     // ==========================================================================

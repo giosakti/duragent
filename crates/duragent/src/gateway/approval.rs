@@ -162,7 +162,7 @@ impl GatewayMessageHandler {
                 execution_context,
             };
             let executor = build_executor(
-                agent,
+                &agent,
                 handle.agent(),
                 handle.id(),
                 policy.clone(),
@@ -222,7 +222,7 @@ impl GatewayMessageHandler {
             execution_context,
         };
         let executor = build_executor(
-            agent,
+            &agent,
             handle.agent(),
             handle.id(),
             policy,
@@ -232,7 +232,7 @@ impl GatewayMessageHandler {
 
         // Extract tool_refs from agent spec (consistent with run path)
         let tool_refs = ContextBuilder::new()
-            .from_agent_spec(agent)
+            .from_agent_spec(&agent)
             .build()
             .tool_refs;
 
@@ -240,7 +240,7 @@ impl GatewayMessageHandler {
         let result = match resume_agentic_loop(
             provider,
             &executor,
-            agent,
+            &agent,
             pending,
             tool_result,
             &handle,

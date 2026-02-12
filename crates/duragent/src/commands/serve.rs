@@ -76,7 +76,7 @@ pub async fn run(
     info!(agents = store.len(), "Loaded agents");
 
     // Auto-create memory directive per agent that has memory enabled
-    for (_, agent) in store.iter() {
+    for (_, agent) in store.snapshot() {
         if agent.memory.is_some() {
             let agent_directives_path = agent.agent_dir.join("directives");
             duragent::context::ensure_memory_directive(
@@ -246,6 +246,7 @@ pub async fn run(
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         workspace_hash,
         chat_session_cache,
+        agents_dir: agents_dir.clone(),
     };
 
     // Spawn ephemeral idle monitor if requested
@@ -322,6 +323,25 @@ pub async fn stop(config_path: &str, port_override: Option<u16>) -> Result<()> {
     client.shutdown().await.context("Failed to stop server")?;
 
     println!("Shutdown initiated for server on port {}", port);
+    Ok(())
+}
+
+/// Reload agent configurations on a running server.
+pub async fn reload_agents(config_path: &str, port_override: Option<u16>) -> Result<()> {
+    let config = Config::load(config_path).await?;
+    let port = port_override.unwrap_or(config.server.port);
+
+    let client = AgentClient::new(&format!("http://127.0.0.1:{}", port));
+
+    if client.health().await.is_err() {
+        anyhow::bail!("No server running on port {}", port);
+    }
+
+    let message = client
+        .reload_agents()
+        .await
+        .context("Failed to reload agents")?;
+    println!("{}", message);
     Ok(())
 }
 
