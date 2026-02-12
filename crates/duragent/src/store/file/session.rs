@@ -19,15 +19,20 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::session::{SessionEvent, SessionSnapshot};
 use crate::store::error::{StorageError, StorageResult};
 use crate::store::session::SessionStore;
+use crate::sync::KeyedLocks;
 
 /// File-based implementation of `SessionStore`.
 ///
 /// Sessions are stored in subdirectories of `sessions_dir`, with each session
 /// having its own `events.jsonl` (append-only event log) and `state.yaml`
 /// (atomic snapshot).
-#[derive(Debug, Clone)]
+///
+/// A per-session `KeyedLock` serializes `append_events` and `compact_events`
+/// to prevent data loss from concurrent read-modify-write during compaction.
+#[derive(Clone)]
 pub struct FileSessionStore {
     sessions_dir: PathBuf,
+    session_locks: KeyedLocks,
 }
 
 impl FileSessionStore {
@@ -37,6 +42,7 @@ impl FileSessionStore {
     pub fn new(sessions_dir: impl Into<PathBuf>) -> Self {
         Self {
             sessions_dir: sessions_dir.into(),
+            session_locks: KeyedLocks::new(),
         }
     }
 
@@ -163,6 +169,9 @@ impl SessionStore for FileSessionStore {
             return Ok(());
         }
 
+        let lock = self.session_locks.get(session_id);
+        let _guard = lock.lock().await;
+
         self.ensure_session_dir(session_id).await?;
         let path = self.events_path(session_id);
 
@@ -246,6 +255,9 @@ impl SessionStore for FileSessionStore {
         up_to_seq: u64,
         archive: bool,
     ) -> StorageResult<()> {
+        let lock = self.session_locks.get(session_id);
+        let _guard = lock.lock().await;
+
         let path = self.events_path(session_id);
 
         let contents = match fs::read_to_string(&path).await {
