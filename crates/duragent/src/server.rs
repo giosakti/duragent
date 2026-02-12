@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use tokio::sync::{Mutex, oneshot};
@@ -108,6 +109,7 @@ pub fn build_app(state: AppState, request_timeout_seconds: u64) -> Router {
     let api_v1 = Router::new()
         .merge(streaming_routes)
         .merge(api_routes)
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024)) // 2 MB
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             handlers::api_auth::require_api_token,
