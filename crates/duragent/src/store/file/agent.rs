@@ -60,8 +60,8 @@ impl AgentCatalog for FileAgentCatalog {
             let path = entry.path();
 
             // Skip non-directories
-            let is_dir = match fs::metadata(&path).await {
-                Ok(m) => m.is_dir(),
+            let is_dir = match entry.file_type().await {
+                Ok(ft) => ft.is_dir(),
                 Err(_) => false,
             };
             if !is_dir {
@@ -271,8 +271,8 @@ async fn load_skills_from_dir(
         let path = entry.path();
 
         // Only process directories
-        let is_dir = match fs::metadata(&path).await {
-            Ok(m) => m.is_dir(),
+        let is_dir = match entry.file_type().await {
+            Ok(ft) => ft.is_dir(),
             Err(_) => false,
         };
         if !is_dir {
