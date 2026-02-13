@@ -9,9 +9,9 @@ use tracing::warn;
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::sandbox::Sandbox;
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// A CLI tool that executes a custom script.
 pub struct CliTool {

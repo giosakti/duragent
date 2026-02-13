@@ -120,6 +120,40 @@ impl ToolExecutor {
         self
     }
 
+    /// Replace all tools, preserving memory tools and `reload_tools`.
+    ///
+    /// Used by the agentic loop after `reload_tools` to rebuild the executor
+    /// with newly discovered tools while keeping session-bound tools intact.
+    pub fn replace_tools(&mut self, new_tools: Vec<Arc<dyn Tool>>) {
+        const PRESERVED_TOOLS: &[&str] = &[
+            "recall",
+            "remember",
+            "reflect",
+            "update_world",
+            "reload_tools",
+        ];
+
+        // Extract preserved tools before clearing
+        let preserved: Vec<Arc<dyn Tool>> = self
+            .tools
+            .values()
+            .filter(|t| PRESERVED_TOOLS.contains(&t.name()))
+            .cloned()
+            .collect();
+
+        self.tools.clear();
+
+        // Re-insert preserved tools
+        for tool in preserved {
+            self.tools.insert(tool.name().to_string(), tool);
+        }
+
+        // Insert new tools (preserved tools win on collision)
+        for tool in new_tools {
+            self.tools.entry(tool.name().to_string()).or_insert(tool);
+        }
+    }
+
     /// Execute a tool call and return the result.
     ///
     /// Checks policy before execution:
@@ -280,6 +314,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -293,6 +328,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools)
@@ -305,6 +341,7 @@ mod tests {
             agent_dir: dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -564,6 +601,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {
@@ -598,6 +636,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {
