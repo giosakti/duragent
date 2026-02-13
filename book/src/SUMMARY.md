@@ -5,6 +5,7 @@
 # Getting Started
 
 - [Installation](./getting-started/installation.md)
+- [Authentication](./guides/authentication.md)
 - [Quick Start](./getting-started/quick-start.md)
 
 # Concepts

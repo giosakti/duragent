@@ -34,12 +34,44 @@ spec:
 |------|-------------|
 | `bash` | Execute shell commands in sandbox |
 | `web_search` | Search the web (requires `BRAVE_API_KEY`) |
-| `web_fetch` | Fetch and convert a web page to Markdown |
+| `web_fetch` | Fetch a URL and convert to Markdown |
 | `schedule_task` | Create a scheduled task |
 | `list_schedules` | List active schedules |
 | `cancel_schedule` | Cancel a schedule by ID |
 
 Memory tools (`recall`, `remember`, `reflect`, `update_world`) are automatically registered when memory is configured. See [Memory](./memory.md).
+
+#### web_search
+
+Searches the web using the [Brave Search API](https://brave.com/search/api/).
+
+- **Parameters:** `query` (string, required), `count` (integer, 1–20, default 5)
+- **Requires:** `BRAVE_API_KEY` environment variable. If not set, the tool is silently skipped when registering.
+- **Timeout:** 30 seconds
+
+```yaml
+spec:
+  tools:
+    - type: builtin
+      name: web_search
+```
+
+#### web_fetch
+
+Fetches a web page and converts HTML to Markdown.
+
+- **Parameters:** `url` (string, required — `http` and `https` only)
+- **Download limit:** 1 MB response body
+- **Output limit:** 50 KB sent to the LLM (truncated with notice if larger)
+- **Timeout:** 30 seconds
+- **No API key required** — always available as a built-in tool
+
+```yaml
+spec:
+  tools:
+    - type: builtin
+      name: web_fetch
+```
 
 ### CLI Tools
 

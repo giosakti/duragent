@@ -4,7 +4,14 @@ Duragent exposes an HTTP API for programmatic access to agents and sessions.
 
 ## Authentication
 
-Non-admin API routes require token authentication. Pass the token via the `Authorization` header:
+API authentication depends on whether `server.api_token` is configured:
+
+- **Token configured:** All `/api/v1/*` routes require a `Bearer` token via the `Authorization` header.
+- **Token not configured:** Only requests from localhost (`127.0.0.1`, `::1`) are accepted.
+
+Admin routes (`/api/admin/v1/*`) follow the same logic using `server.admin_token`.
+
+Health endpoints (`/livez`, `/readyz`, `/version`) are always public.
 
 ```bash
 curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8080/api/v1/agents

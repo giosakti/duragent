@@ -24,7 +24,9 @@ duragent init --agent-name my-bot --provider anthropic
 
 ### `duragent login`
 
-Authenticate with an LLM provider.
+Authenticate with an LLM provider via OAuth. Currently only `anthropic` is supported.
+
+Credentials are stored at `~/.duragent/auth.json` (mode 0600) and take precedence over the corresponding environment variable (e.g. `ANTHROPIC_API_KEY`). Tokens are automatically refreshed when they expire.
 
 ```bash
 duragent login <provider>

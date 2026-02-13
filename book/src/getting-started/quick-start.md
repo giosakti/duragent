@@ -11,12 +11,23 @@ duragent init
 
 This creates a `.duragent/` directory with a starter agent and configuration.
 
-## 2. Set Up Your API Key and Start the Server
+## 2. Authenticate and Start the Server
+
+Set up credentials for your LLM provider, then start the server:
 
 ```bash
-export OPENROUTER_API_KEY=your-key  # or: duragent login anthropic
+# Option A: OAuth login (Anthropic only — tokens auto-refresh)
+duragent login anthropic
+
+# Option B: API key via environment variable
+export OPENROUTER_API_KEY=your-key
+```
+
+```bash
 duragent serve
 ```
+
+See [Authentication](../guides/authentication.md) for details on all providers.
 
 ## 3. Chat with Your Agent
 

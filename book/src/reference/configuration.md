@@ -18,7 +18,7 @@ Duragent reads certain environment variables directly at startup, independent of
 
 ### LLM Provider Keys
 
-These are read directly from the environment — there is no YAML config equivalent.
+These are read directly from the environment — there is no YAML config equivalent. Anthropic also supports OAuth login via `duragent login anthropic`, which stores credentials at `~/.duragent/auth.json` and takes precedence over the environment variable. See [Authentication](../guides/authentication.md) for details.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
