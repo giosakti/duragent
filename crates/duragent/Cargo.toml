@@ -39,6 +39,9 @@ url = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
+# HTML processing
+html-to-markdown-rs = { workspace = true }
+
 # HTTP server
 axum = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }

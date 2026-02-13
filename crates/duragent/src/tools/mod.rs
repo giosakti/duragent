@@ -12,6 +12,8 @@ pub mod memory;
 mod notify;
 pub mod schedule;
 mod tool;
+mod web_fetch;
+mod web_search;
 
 pub use error::ToolError;
 pub use executor::{ToolExecutor, ToolResult};

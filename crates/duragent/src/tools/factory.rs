@@ -19,12 +19,20 @@ use super::schedule::{
     CancelScheduleTool, ListSchedulesTool, ScheduleTaskTool, ToolExecutionContext,
 };
 use super::tool::SharedTool;
+use super::web_fetch::WebFetchTool;
+use super::web_search::WebSearchTool;
 
 /// All recognized builtin tool names.
 ///
 /// Used at agent load time to warn about typos or unknown tool names.
-pub const KNOWN_BUILTIN_TOOLS: &[&str] =
-    &["bash", "schedule_task", "list_schedules", "cancel_schedule"];
+pub const KNOWN_BUILTIN_TOOLS: &[&str] = &[
+    "bash",
+    "schedule_task",
+    "list_schedules",
+    "cancel_schedule",
+    "web_search",
+    "web_fetch",
+];
 
 /// Dependencies needed for creating tools.
 pub struct ToolDependencies {
@@ -94,6 +102,11 @@ fn create_builtin_tool(name: &str, deps: &ToolDependencies) -> Option<SharedTool
             let tool = CancelScheduleTool::new(scheduler, ctx);
             Some(Arc::new(tool))
         }
+        "web_search" => {
+            let tool = WebSearchTool::new()?;
+            Some(Arc::new(tool))
+        }
+        "web_fetch" => Some(Arc::new(WebFetchTool::new())),
         _ => {
             // Unknown builtin - return None to skip
             // The executor will handle this as a missing tool if called
@@ -256,6 +269,19 @@ mod tests {
     }
 
     #[test]
+    fn create_tools_creates_web_fetch_tool() {
+        let (_temp, deps) = test_deps();
+        let configs = vec![ToolConfig::Builtin {
+            name: "web_fetch".to_string(),
+        }];
+
+        let tools = create_tools(&configs, &deps);
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "web_fetch");
+    }
+
+    #[test]
     fn known_builtin_tools_matches_factory() {
         // Every tool in KNOWN_BUILTIN_TOOLS should be handled by create_builtin_tool.
         // "bash" is the only one that doesn't need scheduler deps.
@@ -263,7 +289,9 @@ mod tests {
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"schedule_task"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"list_schedules"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"cancel_schedule"));
-        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 4);
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_search"));
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_fetch"));
+        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 6);
     }
 
     #[test]
