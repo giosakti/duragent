@@ -232,14 +232,13 @@ impl GatewayMessageHandler {
             policy,
             deps,
             &self.services.world_memory_path,
-        );
-
-        let reload_deps = ReloadDeps {
+        )
+        .with_reload_deps(ReloadDeps {
             sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
             workspace_tools_dir: Some(self.services.workspace_tools_path.clone()),
             agent_tool_configs: agent.tools.clone(),
-        };
+        });
 
         // Extract tool_refs from agent spec (consistent with run path)
         let tool_refs = ContextBuilder::new()
@@ -256,7 +255,6 @@ impl GatewayMessageHandler {
             tool_result,
             &handle,
             tool_refs.as_ref(),
-            Some(&reload_deps),
         )
         .await
         {

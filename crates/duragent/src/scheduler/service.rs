@@ -663,14 +663,13 @@ async fn execute_task_payload(
         policy,
         deps,
         &config.services.world_memory_path,
-    );
-
-    let reload_deps = ReloadDeps {
+    )
+    .with_reload_deps(ReloadDeps {
         sandbox: config.services.sandbox.clone(),
         agent_dir: agent.agent_dir.clone(),
         workspace_tools_dir: Some(config.services.workspace_tools_path.clone()),
         agent_tool_configs: agent.tools.clone(),
-    };
+    });
 
     // Build messages using StructuredContext
     let history = handle.get_messages().await.unwrap_or_default();
@@ -696,17 +695,9 @@ async fn execute_task_payload(
         .messages;
 
     // Run agentic loop with SessionHandle
-    let result = run_agentic_loop(
-        provider,
-        &mut executor,
-        &agent,
-        messages,
-        &handle,
-        None,
-        Some(&reload_deps),
-    )
-    .await
-    .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
+    let result = run_agentic_loop(provider, &mut executor, &agent, messages, &handle, None)
+        .await
+        .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 
     let response = match result {
         AgenticResult::Complete { content, usage, .. } => {

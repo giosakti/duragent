@@ -8,7 +8,8 @@
 //! 5. Check iteration limit
 //!
 //! The loop can pause when a tool requires approval, returning `AwaitingApproval`.
-//! Use `resume_agentic_loop` to continue after the user approves or denies.
+//! Use `PendingApproval::into_messages()` to prepare messages, then call
+//! `run_agentic_loop` again to continue after the user approves or denies.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -20,12 +21,10 @@ use tracing::{debug, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{AgentSpec, ContextConfig, ToolType};
-use crate::config::DEFAULT_TOOLS_DIR;
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMError, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::handle::SessionHandle;
-use crate::tools::discovery::discover_all_tools;
-use crate::tools::{ReloadDeps, ToolError, ToolExecutor, ToolResult, create_tools};
+use crate::tools::{ToolError, ToolExecutor, ToolResult};
 
 // ============================================================================
 // Types
@@ -126,6 +125,13 @@ impl PendingApproval {
             requester_id: None,
         }
     }
+
+    /// Convert into initial messages for resuming the loop, appending the tool result.
+    pub fn into_messages(self, tool_result_content: String) -> Vec<Message> {
+        let mut messages = self.messages;
+        messages.push(Message::tool_result(&self.call_id, tool_result_content));
+        messages
+    }
 }
 
 /// Outcome of executing a single tool call.
@@ -159,7 +165,6 @@ pub async fn run_agentic_loop(
     initial_messages: Vec<Message>,
     handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
-    reload_deps: Option<&ReloadDeps>,
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
     let llm_timeout = Duration::from_secs(agent_spec.session.llm_timeout_seconds);
@@ -321,9 +326,7 @@ pub async fn run_agentic_loop(
 
         // Rebuild executor if reload_tools was called
         if reload_requested {
-            if let Some(deps) = reload_deps {
-                rebuild_executor(executor, deps);
-            }
+            executor.rebuild();
         }
 
         // Continue loop with updated messages
@@ -343,11 +346,7 @@ pub async fn resume_agentic_loop(
     tool_result: ToolResult,
     handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
-    reload_deps: Option<&ReloadDeps>,
 ) -> Result<AgenticResult, AgenticError> {
-    // Restore messages from pending state
-    let mut messages = pending.messages;
-
     // Record tool result event
     if let Err(e) = handle
         .enqueue_tool_result(
@@ -360,11 +359,8 @@ pub async fn resume_agentic_loop(
         warn!(error = %e, "Failed to enqueue tool result event");
     }
 
-    // Add tool result message
-    let tool_result_msg = Message::tool_result(&pending.call_id, tool_result.content);
-    messages.push(tool_result_msg);
-
-    // Continue the loop with the updated messages
+    // Build messages and continue the loop
+    let messages = pending.into_messages(tool_result.content);
     run_agentic_loop(
         provider,
         executor,
@@ -372,7 +368,6 @@ pub async fn resume_agentic_loop(
         messages,
         handle,
         tool_filter,
-        reload_deps,
     )
     .await
 }
@@ -380,42 +375,6 @@ pub async fn resume_agentic_loop(
 // ============================================================================
 // Private Helpers
 // ============================================================================
-
-/// Rebuild the tool executor after `reload_tools` was invoked.
-///
-/// Re-creates explicit tools from config, discovers tools from directories,
-/// merges them (explicit wins), and replaces the executor's tool set.
-fn rebuild_executor(executor: &mut ToolExecutor, deps: &ReloadDeps) {
-    let tool_deps = crate::tools::ToolDependencies {
-        sandbox: deps.sandbox.clone(),
-        agent_dir: deps.agent_dir.clone(),
-        scheduler: None,
-        execution_context: None,
-        workspace_tools_dir: deps.workspace_tools_dir.clone(),
-    };
-    let explicit = create_tools(&deps.agent_tool_configs, &tool_deps);
-
-    let mut discovery_dirs = vec![deps.agent_dir.join(DEFAULT_TOOLS_DIR)];
-    if let Some(ref ws) = deps.workspace_tools_dir {
-        discovery_dirs.push(ws.clone());
-    }
-    let discovered = discover_all_tools(&discovery_dirs, &deps.sandbox);
-
-    // Merge: explicit wins on name collision
-    let explicit_names: HashSet<String> = explicit.iter().map(|t| t.name().to_string()).collect();
-    let mut merged = explicit;
-    for tool in discovered {
-        if !explicit_names.contains(tool.name()) {
-            merged.push(tool);
-        }
-    }
-
-    debug!(
-        tool_count = merged.len(),
-        "Rebuilt executor after reload_tools"
-    );
-    executor.replace_tools(merged);
-}
 
 /// Execute a single tool call and return the outcome.
 ///
@@ -471,10 +430,15 @@ async fn execute_tool_call(
             command,
             tool_type,
         }) => {
-            return handle_approval_required(
-                handle, tool_call, &arguments, call_id, command, tool_type, messages, content,
-            )
-            .await;
+            let pending = PendingApproval::new(
+                call_id,
+                tool_call.function.name.clone(),
+                arguments.clone(),
+                command,
+                tool_type,
+                messages.to_vec(),
+            );
+            return handle_approval_required(handle, pending, content).await;
         }
         Err(ToolError::PolicyDenied(command)) => ToolResult {
             success: false,
@@ -515,15 +479,10 @@ async fn execute_tool_call(
 
 /// Handle a tool that requires approval.
 ///
-/// Records events and creates the pending approval state.
+/// Records events and returns the pending approval state.
 async fn handle_approval_required(
     handle: &SessionHandle,
-    tool_call: &ToolCall,
-    arguments: &serde_json::Value,
-    call_id: String,
-    command: String,
-    tool_type: ToolType,
-    messages: &[Message],
+    pending: PendingApproval,
     content: &str,
 ) -> ToolCallOutcome {
     // Record partial assistant content if any (before tool call)
@@ -537,21 +496,11 @@ async fn handle_approval_required(
 
     // Record approval required event
     if let Err(e) = handle
-        .enqueue_approval_required(call_id.clone(), command.clone())
+        .enqueue_approval_required(pending.call_id.clone(), pending.command.clone())
         .await
     {
         warn!(error = %e, "Failed to enqueue approval required event");
     }
-
-    // Create pending approval
-    let pending = PendingApproval::new(
-        call_id,
-        tool_call.function.name.clone(),
-        arguments.clone(),
-        command,
-        tool_type,
-        messages.to_vec(),
-    );
 
     ToolCallOutcome::AwaitingApproval(pending)
 }

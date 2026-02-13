@@ -76,9 +76,7 @@ pub fn discover_tools(dir: &Path, sandbox: &Arc<dyn Sandbox>) -> Vec<SharedTool>
 
 /// Discover a single tool from a subdirectory.
 fn discover_single_tool(tool_dir: &Path, sandbox: &Arc<dyn Sandbox>) -> Option<SharedTool> {
-    let Some(executable) = find_run_executable(tool_dir) else {
-        return None;
-    };
+    let executable = find_run_executable(tool_dir)?;
 
     let dir_name = tool_dir.file_name()?.to_string_lossy().to_string();
     let readme = load_readme(tool_dir);
@@ -132,10 +130,7 @@ fn find_run_executable(dir: &Path) -> Option<PathBuf> {
 /// Load README.md content from a tool directory.
 fn load_readme(dir: &Path) -> Option<String> {
     let readme_path = dir.join("README.md");
-    match std::fs::read_to_string(&readme_path) {
-        Ok(content) => Some(content),
-        Err(_) => None,
-    }
+    std::fs::read_to_string(&readme_path).ok()
 }
 
 // ============================================================================

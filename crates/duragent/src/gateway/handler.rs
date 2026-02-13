@@ -608,14 +608,13 @@ impl GatewayMessageHandler {
             policy,
             deps,
             &self.services.world_memory_path,
-        );
-
-        let reload_deps = ReloadDeps {
+        )
+        .with_reload_deps(ReloadDeps {
             sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
             workspace_tools_dir: Some(self.services.workspace_tools_path.clone()),
             agent_tool_configs: agent.tools.clone(),
-        };
+        });
 
         // Build initial messages from history using StructuredContext
         let history = match handle.get_messages().await {
@@ -664,7 +663,6 @@ impl GatewayMessageHandler {
             messages,
             handle,
             tool_refs.as_ref(),
-            Some(&reload_deps),
         )
         .await
         {

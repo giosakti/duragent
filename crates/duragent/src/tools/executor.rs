@@ -5,10 +5,13 @@ use std::sync::Arc;
 
 use tracing::debug;
 
+use super::discovery::discover_all_tools;
 use super::error::ToolError;
+use super::factory::{ReloadDeps, create_tools};
 use super::notify::send_notification;
 use super::tool::Tool;
 use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolType};
+use crate::config::DEFAULT_TOOLS_DIR;
 use crate::llm::{ToolCall, ToolDefinition};
 use crate::sandbox::ExecResult;
 
@@ -82,6 +85,8 @@ pub struct ToolExecutor {
     session_id: Option<String>,
     /// Agent name for notifications.
     agent_name: String,
+    /// Dependencies for rebuilding tools mid-session via `reload_tools`.
+    reload_deps: Option<ReloadDeps>,
 }
 
 impl ToolExecutor {
@@ -97,6 +102,7 @@ impl ToolExecutor {
             notify_config,
             session_id: None,
             agent_name,
+            reload_deps: None,
         }
     }
 
@@ -117,6 +123,12 @@ impl ToolExecutor {
     /// Set the session ID for notifications.
     pub fn with_session_id(mut self, session_id: String) -> Self {
         self.session_id = Some(session_id);
+        self
+    }
+
+    /// Set the reload dependencies for mid-session tool rebuilds.
+    pub fn with_reload_deps(mut self, deps: ReloadDeps) -> Self {
+        self.reload_deps = Some(deps);
         self
     }
 
@@ -152,6 +164,48 @@ impl ToolExecutor {
         for tool in new_tools {
             self.tools.entry(tool.name().to_string()).or_insert(tool);
         }
+    }
+
+    /// Rebuild tool set using stored `reload_deps`.
+    ///
+    /// Called after `reload_tools` to re-discover tools from directories
+    /// and merge with explicit tools (explicit wins on name collision).
+    /// No-op if `reload_deps` was not set.
+    pub fn rebuild(&mut self) {
+        let Some(ref deps) = self.reload_deps else {
+            return;
+        };
+
+        let tool_deps = super::factory::ToolDependencies {
+            sandbox: deps.sandbox.clone(),
+            agent_dir: deps.agent_dir.clone(),
+            scheduler: None,
+            execution_context: None,
+            workspace_tools_dir: deps.workspace_tools_dir.clone(),
+        };
+        let explicit = create_tools(&deps.agent_tool_configs, &tool_deps);
+
+        let mut discovery_dirs = vec![deps.agent_dir.join(DEFAULT_TOOLS_DIR)];
+        if let Some(ref ws) = deps.workspace_tools_dir {
+            discovery_dirs.push(ws.clone());
+        }
+        let discovered = discover_all_tools(&discovery_dirs, &deps.sandbox);
+
+        // Merge: explicit wins on name collision
+        let explicit_names: HashSet<String> =
+            explicit.iter().map(|t| t.name().to_string()).collect();
+        let mut merged = explicit;
+        for tool in discovered {
+            if !explicit_names.contains(tool.name()) {
+                merged.push(tool);
+            }
+        }
+
+        debug!(
+            tool_count = merged.len(),
+            "Rebuilt executor after reload_tools"
+        );
+        self.replace_tools(merged);
     }
 
     /// Execute a tool call and return the result.
