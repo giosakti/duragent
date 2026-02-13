@@ -143,6 +143,8 @@ impl ToolExecutor {
             "reflect",
             "update_world",
             "reload_tools",
+            "spawn_process",
+            "manage_process",
         ];
 
         // Extract preserved tools before clearing
@@ -182,6 +184,11 @@ impl ToolExecutor {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: deps.workspace_tools_dir.clone(),
+            // Process tools hold session-specific state (registry handle, session_id).
+            // They survive rebuild via PRESERVED_TOOLS in replace_tools().
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let explicit = create_tools(&deps.agent_tool_configs, &tool_deps);
 
@@ -267,6 +274,23 @@ impl ToolExecutor {
             .await
     }
 
+    /// Generate tool definitions for the LLM.
+    ///
+    /// If `filter` is provided, only tools whose names are in the filter
+    /// will be included. This controls what the LLM sees, not what can execute.
+    pub fn tool_definitions(&self, filter: Option<&HashSet<String>>) -> Vec<ToolDefinition> {
+        self.tools
+            .iter()
+            .filter(|(name, _)| filter.is_none_or(|f| f.contains(*name)))
+            .map(|(_, tool)| tool.definition())
+            .collect()
+    }
+
+    /// Check if any tools are configured.
+    pub fn has_tools(&self) -> bool {
+        !self.tools.is_empty()
+    }
+
     /// Get tool type and invocation string for policy checks.
     fn get_tool_type_and_invocation(
         &self,
@@ -317,23 +341,6 @@ impl ToolExecutor {
 
         result
     }
-
-    /// Generate tool definitions for the LLM.
-    ///
-    /// If `filter` is provided, only tools whose names are in the filter
-    /// will be included. This controls what the LLM sees, not what can execute.
-    pub fn tool_definitions(&self, filter: Option<&HashSet<String>>) -> Vec<ToolDefinition> {
-        self.tools
-            .iter()
-            .filter(|(name, _)| filter.is_none_or(|f| f.contains(*name)))
-            .map(|(_, tool)| tool.definition())
-            .collect()
-    }
-
-    /// Check if any tools are configured.
-    pub fn has_tools(&self) -> bool {
-        !self.tools.is_empty()
-    }
 }
 
 // ============================================================================
@@ -373,6 +380,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -387,6 +397,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools)
@@ -400,6 +413,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -665,6 +681,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {
@@ -700,6 +719,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {

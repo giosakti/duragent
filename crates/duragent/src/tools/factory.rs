@@ -9,16 +9,19 @@ use std::sync::Arc;
 use crate::agent::{AgentSpec, ToolConfig, ToolPolicy};
 use crate::config::DEFAULT_TOOLS_DIR;
 use crate::memory::Memory;
+use crate::process::ProcessRegistryHandle;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 
 use super::builtins::bash::BashTool;
 use super::builtins::cli::CliTool;
+use super::builtins::manage_process::ProcessTool;
 use super::builtins::memory::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
 use super::builtins::reload::ReloadToolsTool;
 use super::builtins::schedule::{
     CancelScheduleTool, ListSchedulesTool, ScheduleTaskTool, ToolExecutionContext,
 };
+use super::builtins::spawn_process::SpawnProcessTool;
 use super::builtins::web_fetch::WebFetchTool;
 use super::builtins::web_search::WebSearchTool;
 use super::discovery::discover_all_tools;
@@ -36,6 +39,8 @@ pub const KNOWN_BUILTIN_TOOLS: &[&str] = &[
     "web_search",
     "web_fetch",
     "reload_tools",
+    "spawn_process",
+    "manage_process",
 ];
 
 /// Dependencies needed for creating tools.
@@ -50,6 +55,12 @@ pub struct ToolDependencies {
     pub execution_context: Option<ToolExecutionContext>,
     /// Workspace-level tools directory for discovery (optional).
     pub workspace_tools_dir: Option<PathBuf>,
+    /// Process registry handle for background process tools (optional).
+    pub process_registry: Option<ProcessRegistryHandle>,
+    /// Session ID for process tools (optional).
+    pub session_id: Option<String>,
+    /// Agent name for process tools (optional).
+    pub agent_name: Option<String>,
 }
 
 /// Dependencies needed for rebuilding tools mid-session via `reload_tools`.
@@ -128,6 +139,23 @@ fn create_builtin_tool(name: &str, deps: &ToolDependencies) -> Option<SharedTool
             }
             Some(Arc::new(ReloadToolsTool::new(dirs, deps.sandbox.clone())))
         }
+        "spawn_process" => {
+            let (registry, session_id, agent_name) = get_process_deps(deps)?;
+            let ctx = deps.execution_context.as_ref();
+            let tool = SpawnProcessTool::new(
+                registry,
+                session_id,
+                agent_name,
+                ctx.and_then(|c| c.gateway.clone()),
+                ctx.and_then(|c| c.chat_id.clone()),
+            );
+            Some(Arc::new(tool))
+        }
+        "manage_process" => {
+            let (registry, session_id, _) = get_process_deps(deps)?;
+            let tool = ProcessTool::new(registry, session_id);
+            Some(Arc::new(tool))
+        }
         _ => {
             // Unknown builtin - return None to skip
             // The executor will handle this as a missing tool if called
@@ -142,6 +170,14 @@ fn get_schedule_deps(deps: &ToolDependencies) -> Option<(SchedulerHandle, ToolEx
     let scheduler = deps.scheduler.clone()?;
     let ctx = deps.execution_context.clone()?;
     Some((scheduler, ctx))
+}
+
+/// Get process dependencies, returning None if not available.
+fn get_process_deps(deps: &ToolDependencies) -> Option<(ProcessRegistryHandle, String, String)> {
+    let registry = deps.process_registry.clone()?;
+    let session_id = deps.session_id.clone()?;
+    let agent_name = deps.agent_name.clone()?;
+    Some((registry, session_id, agent_name))
 }
 
 /// Create memory tools for an agent.
@@ -225,6 +261,9 @@ mod tests {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: None,
+            process_registry: None,
+            session_id: None,
+            agent_name: None,
         };
         (temp_dir, deps)
     }
@@ -336,7 +375,9 @@ mod tests {
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_search"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_fetch"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"reload_tools"));
-        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 7);
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"spawn_process"));
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"manage_process"));
+        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 9);
     }
 
     #[test]
