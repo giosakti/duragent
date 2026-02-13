@@ -113,6 +113,8 @@ pub const DEFAULT_DIRECTIVES_DIR: &str = "directives";
 pub const DEFAULT_TOOLS_DIR: &str = "tools";
 /// Default schedules directory (relative to workspace).
 pub const DEFAULT_SCHEDULES_DIR: &str = "schedules";
+/// Default processes directory (relative to workspace).
+pub const DEFAULT_PROCESSES_DIR: &str = "processes";
 /// Default artifacts directory (relative to workspace).
 pub const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
 
