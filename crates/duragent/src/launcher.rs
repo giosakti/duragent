@@ -212,7 +212,7 @@ async fn wait_for_ready(client: &AgentClient, timeout_secs: u64, log_path: &Path
 fn server_log_path(config_path: &Path, port: u16) -> PathBuf {
     let base_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
     base_dir
-        .join(".duragent")
+        .join(crate::config::DEFAULT_WORKSPACE)
         .join("logs")
         .join(format!("server-{}.log", port))
 }

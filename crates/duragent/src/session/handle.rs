@@ -583,6 +583,7 @@ mod tests {
             "bash".to_string(),
             serde_json::json!({"command": "ls"}),
             "ls".to_string(),
+            crate::agent::ToolType::Bash,
             vec![],
         );
         handle.set_pending_approval(approval).await.unwrap();

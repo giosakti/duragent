@@ -109,166 +109,12 @@ pub const DEFAULT_SESSIONS_DIR: &str = "sessions";
 pub const DEFAULT_WORLD_MEMORY_DIR: &str = "memory/world";
 /// Default directives directory (relative to workspace).
 pub const DEFAULT_DIRECTIVES_DIR: &str = "directives";
+/// Default tools directory (relative to workspace).
+pub const DEFAULT_TOOLS_DIR: &str = "tools";
 /// Default schedules directory (relative to workspace).
 pub const DEFAULT_SCHEDULES_DIR: &str = "schedules";
 /// Default artifacts directory (relative to workspace).
 pub const DEFAULT_ARTIFACTS_DIR: &str = "artifacts";
-
-// ============================================================================
-// Private Helpers (Serde Defaults)
-// ============================================================================
-
-fn default_host() -> String {
-    "127.0.0.1".to_string()
-}
-
-fn default_port() -> u16 {
-    8080
-}
-
-fn default_request_timeout() -> u64 {
-    300
-}
-
-fn default_idle_timeout() -> u64 {
-    60
-}
-
-fn default_keep_alive_interval() -> u64 {
-    15
-}
-
-fn default_max_connections() -> usize {
-    1024
-}
-
-/// Serde default for bool fields that should be `true` (serde's default is `false`).
-fn default_true() -> bool {
-    true
-}
-
-// ============================================================================
-// Environment Variable Expansion
-// ============================================================================
-
-/// Expand environment variables in a string.
-///
-/// Supports the following syntax (shell-compatible):
-/// - `${VAR}` - Required variable, errors if not set
-/// - `${VAR:-default}` - Optional variable with default value
-/// - `${VAR:-}` - Optional variable, empty string if not set
-/// - `$$` - Escaped `$` (only needed before `{` to prevent expansion)
-///
-/// # Limitations
-///
-/// - No nested/recursive expansion: `${VAR:-${DEFAULT}}` is not supported
-/// - Unclosed `${` (missing `}`) returns an error
-///
-/// # Examples
-///
-/// ```yaml
-/// # Required - errors if TELEGRAM_BOT_TOKEN is not set
-/// bot_token: ${TELEGRAM_BOT_TOKEN}
-///
-/// # Optional with default
-/// host: ${HOST:-0.0.0.0}
-/// port: ${PORT:-8080}
-///
-/// # Optional, empty if not set
-/// api_key: ${OPTIONAL_KEY:-}
-///
-/// # Plain $ doesn't need escaping
-/// price: $100
-/// ```
-fn expand_env_vars(input: &str) -> Result<String, ConfigError> {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '$' {
-            match chars.peek() {
-                // Escaped $ -> literal $
-                Some('$') => {
-                    chars.next();
-                    result.push('$');
-                }
-                // Start of variable reference
-                Some('{') => {
-                    chars.next(); // consume '{'
-                    let expanded = parse_var_reference(&mut chars)?;
-                    result.push_str(&expanded);
-                }
-                // Not a variable reference, keep literal $
-                _ => {
-                    result.push('$');
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    Ok(result)
-}
-
-/// Parse a variable reference after seeing `${`.
-///
-/// Handles:
-/// - `VAR}` - Required variable
-/// - `VAR:-default}` - Variable with default
-///
-/// Returns error if closing `}` is missing.
-fn parse_var_reference(
-    chars: &mut std::iter::Peekable<std::str::Chars>,
-) -> Result<String, ConfigError> {
-    let mut var_name = String::new();
-    let mut default_value: Option<String> = None;
-    let mut in_default = false;
-    let mut found_closing_brace = false;
-
-    while let Some(&c) = chars.peek() {
-        match c {
-            '}' => {
-                chars.next(); // consume '}'
-                found_closing_brace = true;
-                break;
-            }
-            ':' if !in_default => {
-                chars.next(); // consume ':'
-                // Check for '-' (default value syntax)
-                if chars.peek() == Some(&'-') {
-                    chars.next(); // consume '-'
-                    in_default = true;
-                    default_value = Some(String::new());
-                } else {
-                    // ':' without '-' is part of var name (unusual but valid)
-                    var_name.push(':');
-                }
-            }
-            _ => {
-                chars.next();
-                if in_default {
-                    default_value.as_mut().unwrap().push(c);
-                } else {
-                    var_name.push(c);
-                }
-            }
-        }
-    }
-
-    if !found_closing_brace {
-        return Err(ConfigError::UnclosedVarReference);
-    }
-
-    // Look up the environment variable
-    match std::env::var(&var_name) {
-        Ok(value) => Ok(value),
-        Err(_) => match default_value {
-            Some(default) => Ok(default),
-            None => Err(ConfigError::MissingEnvVar(var_name)),
-        },
-    }
-}
 
 // ============================================================================
 // ServerConfig
@@ -527,6 +373,162 @@ pub enum CompactionMode {
     Archive,
     /// No compaction (events.jsonl grows unbounded, existing behavior).
     Disabled,
+}
+
+// ============================================================================
+// Private Helpers (Serde Defaults)
+// ============================================================================
+
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+fn default_request_timeout() -> u64 {
+    300
+}
+
+fn default_idle_timeout() -> u64 {
+    60
+}
+
+fn default_keep_alive_interval() -> u64 {
+    15
+}
+
+fn default_max_connections() -> usize {
+    1024
+}
+
+/// Serde default for bool fields that should be `true` (serde's default is `false`).
+fn default_true() -> bool {
+    true
+}
+
+// ============================================================================
+// Environment Variable Expansion
+// ============================================================================
+
+/// Expand environment variables in a string.
+///
+/// Supports the following syntax (shell-compatible):
+/// - `${VAR}` - Required variable, errors if not set
+/// - `${VAR:-default}` - Optional variable with default value
+/// - `${VAR:-}` - Optional variable, empty string if not set
+/// - `$$` - Escaped `$` (only needed before `{` to prevent expansion)
+///
+/// # Limitations
+///
+/// - No nested/recursive expansion: `${VAR:-${DEFAULT}}` is not supported
+/// - Unclosed `${` (missing `}`) returns an error
+///
+/// # Examples
+///
+/// ```yaml
+/// # Required - errors if TELEGRAM_BOT_TOKEN is not set
+/// bot_token: ${TELEGRAM_BOT_TOKEN}
+///
+/// # Optional with default
+/// host: ${HOST:-0.0.0.0}
+/// port: ${PORT:-8080}
+///
+/// # Optional, empty if not set
+/// api_key: ${OPTIONAL_KEY:-}
+///
+/// # Plain $ doesn't need escaping
+/// price: $100
+/// ```
+fn expand_env_vars(input: &str) -> Result<String, ConfigError> {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            match chars.peek() {
+                // Escaped $ -> literal $
+                Some('$') => {
+                    chars.next();
+                    result.push('$');
+                }
+                // Start of variable reference
+                Some('{') => {
+                    chars.next(); // consume '{'
+                    let expanded = parse_var_reference(&mut chars)?;
+                    result.push_str(&expanded);
+                }
+                // Not a variable reference, keep literal $
+                _ => {
+                    result.push('$');
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Parse a variable reference after seeing `${`.
+///
+/// Handles:
+/// - `VAR}` - Required variable
+/// - `VAR:-default}` - Variable with default
+///
+/// Returns error if closing `}` is missing.
+fn parse_var_reference(
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+) -> Result<String, ConfigError> {
+    let mut var_name = String::new();
+    let mut default_value: Option<String> = None;
+    let mut in_default = false;
+    let mut found_closing_brace = false;
+
+    while let Some(&c) = chars.peek() {
+        match c {
+            '}' => {
+                chars.next(); // consume '}'
+                found_closing_brace = true;
+                break;
+            }
+            ':' if !in_default => {
+                chars.next(); // consume ':'
+                // Check for '-' (default value syntax)
+                if chars.peek() == Some(&'-') {
+                    chars.next(); // consume '-'
+                    in_default = true;
+                    default_value = Some(String::new());
+                } else {
+                    // ':' without '-' is part of var name (unusual but valid)
+                    var_name.push(':');
+                }
+            }
+            _ => {
+                chars.next();
+                if in_default {
+                    default_value.as_mut().unwrap().push(c);
+                } else {
+                    var_name.push(c);
+                }
+            }
+        }
+    }
+
+    if !found_closing_brace {
+        return Err(ConfigError::UnclosedVarReference);
+    }
+
+    // Look up the environment variable
+    match std::env::var(&var_name) {
+        Ok(value) => Ok(value),
+        Err(_) => match default_value {
+            Some(default) => Ok(default),
+            None => Err(ConfigError::MissingEnvVar(var_name)),
+        },
+    }
 }
 
 // ============================================================================

@@ -70,6 +70,7 @@ pub async fn run(
         .map(|p| config::resolve_path(config_path_ref, p))
         .unwrap_or_else(|| workspace.join(config::DEFAULT_WORLD_MEMORY_DIR));
     let workspace_directives_path = workspace.join(config::DEFAULT_DIRECTIVES_DIR);
+    let workspace_tools_path = workspace.join(config::DEFAULT_TOOLS_DIR);
 
     // Load agents, providers, and policy store
     let (store, providers, policy_store) = load_agents(&agents_dir).await;
@@ -78,7 +79,7 @@ pub async fn run(
     // Auto-create memory directive per agent that has memory enabled
     for (_, agent) in store.snapshot() {
         if agent.memory.is_some() {
-            let agent_directives_path = agent.agent_dir.join("directives");
+            let agent_directives_path = agent.agent_dir.join(config::DEFAULT_DIRECTIVES_DIR);
             duragent::context::ensure_memory_directive(
                 &agent_directives_path,
                 duragent::memory::DEFAULT_MEMORY_DIRECTIVE,
@@ -159,7 +160,7 @@ pub async fn run(
     let schedules_path = sessions_path
         .parent()
         .unwrap_or(&sessions_path)
-        .join("schedules");
+        .join(config::DEFAULT_SCHEDULES_DIR);
     // Build shared RuntimeServices once
     let workspace_hash = config::compute_workspace_hash(config_path_ref, &config);
     let gateway_sender = gateways.sender();
@@ -171,6 +172,7 @@ pub async fn run(
         policy_store: policy_store.clone(),
         world_memory_path: world_memory_path.clone(),
         workspace_directives_path: workspace_directives_path.clone(),
+        workspace_tools_path: workspace_tools_path.clone(),
     };
 
     let schedule_store = Arc::new(FileScheduleStore::new(&schedules_path));

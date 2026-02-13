@@ -13,9 +13,9 @@ use crate::scheduler::{
     SchedulerHandle,
 };
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// Context needed for schedule tool execution.
 #[derive(Debug, Clone)]

@@ -86,6 +86,7 @@ Use the built-ins, or swap in your own:
 │   ├── INSTRUCTIONS.md      # Additional runtime instructions (optional)
 │   ├── policy.yaml          # Tool execution policy (optional)
 │   ├── skills/              # Modular capabilities (SKILL.md files)
+│   ├── tools/               # Agent-specific auto-discovered tools
 │   └── memory/
 │       ├── MEMORY.md        # Curated long-term memory
 │       └── daily/           # Daily experience logs
@@ -93,6 +94,7 @@ Use the built-ins, or swap in your own:
 │   └── <session_id>/
 │       ├── events.jsonl     # Append-only event log
 │       └── state.yaml       # Snapshot for fast resume
+├── tools/                   # Workspace-level auto-discovered tools
 ├── schedules/               # Scheduled tasks and run logs
 └── memory/
     └── world/               # Shared knowledge across all agents

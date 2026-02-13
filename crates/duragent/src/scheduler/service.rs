@@ -17,7 +17,7 @@ use crate::gateway::GatewaySender;
 use crate::server::RuntimeServices;
 use crate::session::{AgenticResult, ChatSessionCache, SessionHandle, run_agentic_loop};
 use crate::store::{RunLogStore, ScheduleStore as ScheduleStoreTrait};
-use crate::tools::{ToolDependencies, build_executor};
+use crate::tools::{ReloadDeps, ToolDependencies, build_executor};
 
 use super::error::{Result, SchedulerError};
 use super::schedule::{
@@ -654,15 +654,22 @@ async fn execute_task_payload(
         agent_dir: agent.agent_dir.clone(),
         scheduler: None, // Schedules don't create nested schedules
         execution_context: None,
+        workspace_tools_dir: Some(config.services.workspace_tools_path.clone()),
     };
-    let executor = build_executor(
+    let mut executor = build_executor(
         &agent,
         &schedule.agent,
         handle.id(),
         policy,
         deps,
         &config.services.world_memory_path,
-    );
+    )
+    .with_reload_deps(ReloadDeps {
+        sandbox: config.services.sandbox.clone(),
+        agent_dir: agent.agent_dir.clone(),
+        workspace_tools_dir: Some(config.services.workspace_tools_path.clone()),
+        agent_tool_configs: agent.tools.clone(),
+    });
 
     // Build messages using StructuredContext
     let history = handle.get_messages().await.unwrap_or_default();
@@ -688,7 +695,7 @@ async fn execute_task_payload(
         .messages;
 
     // Run agentic loop with SessionHandle
-    let result = run_agentic_loop(provider, &executor, &agent, messages, &handle, None)
+    let result = run_agentic_loop(provider, &mut executor, &agent, messages, &handle, None)
         .await
         .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 

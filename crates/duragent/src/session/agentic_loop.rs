@@ -8,7 +8,8 @@
 //! 5. Check iteration limit
 //!
 //! The loop can pause when a tool requires approval, returning `AwaitingApproval`.
-//! Use `resume_agentic_loop` to continue after the user approves or denies.
+//! Use `PendingApproval::into_messages()` to prepare messages, then call
+//! `run_agentic_loop` again to continue after the user approves or denies.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use tracing::{debug, warn};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{AgentSpec, ContextConfig};
+use crate::agent::{AgentSpec, ContextConfig, ToolType};
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMError, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::handle::SessionHandle;
@@ -88,12 +89,20 @@ pub struct PendingApproval {
     pub arguments: serde_json::Value,
     /// The command being approved (for display).
     pub command: String,
+    /// The tool type (for saving "Allow Always" patterns).
+    #[serde(default = "default_tool_type")]
+    pub tool_type: ToolType,
     /// Accumulated messages to restore when resuming the loop.
     pub messages: Vec<Message>,
     /// Platform sender ID of the user who triggered this approval.
     /// Used in group chats to ensure only the requester can approve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester_id: Option<String>,
+}
+
+/// Default tool type for backwards compatibility with persisted approvals.
+fn default_tool_type() -> ToolType {
+    ToolType::Bash
 }
 
 impl PendingApproval {
@@ -103,6 +112,7 @@ impl PendingApproval {
         tool_name: String,
         arguments: serde_json::Value,
         command: String,
+        tool_type: ToolType,
         messages: Vec<Message>,
     ) -> Self {
         Self {
@@ -110,9 +120,17 @@ impl PendingApproval {
             tool_name,
             arguments,
             command,
+            tool_type,
             messages,
             requester_id: None,
         }
+    }
+
+    /// Convert into initial messages for resuming the loop, appending the tool result.
+    pub fn into_messages(self, tool_result_content: String) -> Vec<Message> {
+        let mut messages = self.messages;
+        messages.push(Message::tool_result(&self.call_id, tool_result_content));
+        messages
     }
 }
 
@@ -142,7 +160,7 @@ enum ToolCallOutcome {
 /// If `tool_filter` is provided, only those tools will be visible to the LLM.
 pub async fn run_agentic_loop(
     provider: Arc<dyn LLMProvider>,
-    executor: &ToolExecutor,
+    executor: &mut ToolExecutor,
     agent_spec: &AgentSpec,
     initial_messages: Vec<Message>,
     handle: &SessionHandle,
@@ -150,7 +168,6 @@ pub async fn run_agentic_loop(
 ) -> Result<AgenticResult, AgenticError> {
     let max_iterations = agent_spec.session.max_tool_iterations;
     let llm_timeout = Duration::from_secs(agent_spec.session.llm_timeout_seconds);
-    let tool_definitions = executor.tool_definitions(tool_filter);
     let context_config = &agent_spec.session.context;
 
     let mut messages = initial_messages;
@@ -185,6 +202,9 @@ pub async fn run_agentic_loop(
         // Layer 3c: Drop oldest iteration groups if over budget
         drop_oldest_iterations(&mut messages, conversation_end_idx, loop_token_budget);
 
+        // Refresh tool definitions each iteration (picks up reload_tools changes)
+        let tool_definitions = executor.tool_definitions(tool_filter);
+
         debug!(
             iteration = iterations,
             max_iterations,
@@ -198,7 +218,7 @@ pub async fn run_agentic_loop(
             messages.clone(),
             agent_spec.model.temperature,
             agent_spec.model.max_output_tokens,
-            tool_definitions.clone(),
+            tool_definitions,
         );
 
         // Call LLM with streaming (retry on rate limit) + consume stream,
@@ -270,8 +290,13 @@ pub async fn run_agentic_loop(
 
         // Execute tools sequentially to catch approval requirements
         // (We process one at a time so we can pause at the first approval request)
+        let mut reload_requested = false;
         for tool_call in &tool_calls {
             tool_calls_made += 1;
+
+            if tool_call.function.name == "reload_tools" {
+                reload_requested = true;
+            }
 
             let outcome = execute_tool_call(
                 executor,
@@ -299,6 +324,11 @@ pub async fn run_agentic_loop(
             }
         }
 
+        // Rebuild executor if reload_tools was called
+        if reload_requested {
+            executor.rebuild();
+        }
+
         // Continue loop with updated messages
     }
 }
@@ -310,16 +340,13 @@ pub async fn run_agentic_loop(
 /// until completion or another approval is needed.
 pub async fn resume_agentic_loop(
     provider: Arc<dyn LLMProvider>,
-    executor: &ToolExecutor,
+    executor: &mut ToolExecutor,
     agent_spec: &AgentSpec,
     pending: PendingApproval,
     tool_result: ToolResult,
     handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
 ) -> Result<AgenticResult, AgenticError> {
-    // Restore messages from pending state
-    let mut messages = pending.messages;
-
     // Record tool result event
     if let Err(e) = handle
         .enqueue_tool_result(
@@ -332,11 +359,8 @@ pub async fn resume_agentic_loop(
         warn!(error = %e, "Failed to enqueue tool result event");
     }
 
-    // Add tool result message
-    let tool_result_msg = Message::tool_result(&pending.call_id, tool_result.content);
-    messages.push(tool_result_msg);
-
-    // Continue the loop with the updated messages
+    // Build messages and continue the loop
+    let messages = pending.into_messages(tool_result.content);
     run_agentic_loop(
         provider,
         executor,
@@ -401,11 +425,20 @@ async fn execute_tool_call(
     // Handle the execution result
     let result = match exec_result {
         Ok(r) => r,
-        Err(ToolError::ApprovalRequired { call_id, command }) => {
-            return handle_approval_required(
-                handle, tool_call, &arguments, call_id, command, messages, content,
-            )
-            .await;
+        Err(ToolError::ApprovalRequired {
+            call_id,
+            command,
+            tool_type,
+        }) => {
+            let pending = PendingApproval::new(
+                call_id,
+                tool_call.function.name.clone(),
+                arguments.clone(),
+                command,
+                tool_type,
+                messages.to_vec(),
+            );
+            return handle_approval_required(handle, pending, content).await;
         }
         Err(ToolError::PolicyDenied(command)) => ToolResult {
             success: false,
@@ -446,14 +479,10 @@ async fn execute_tool_call(
 
 /// Handle a tool that requires approval.
 ///
-/// Records events and creates the pending approval state.
+/// Records events and returns the pending approval state.
 async fn handle_approval_required(
     handle: &SessionHandle,
-    tool_call: &ToolCall,
-    arguments: &serde_json::Value,
-    call_id: String,
-    command: String,
-    messages: &[Message],
+    pending: PendingApproval,
     content: &str,
 ) -> ToolCallOutcome {
     // Record partial assistant content if any (before tool call)
@@ -467,20 +496,11 @@ async fn handle_approval_required(
 
     // Record approval required event
     if let Err(e) = handle
-        .enqueue_approval_required(call_id.clone(), command.clone())
+        .enqueue_approval_required(pending.call_id.clone(), pending.command.clone())
         .await
     {
         warn!(error = %e, "Failed to enqueue approval required event");
     }
-
-    // Create pending approval
-    let pending = PendingApproval::new(
-        call_id,
-        tool_call.function.name.clone(),
-        arguments.clone(),
-        command,
-        messages.to_vec(),
-    );
 
     ToolCallOutcome::AwaitingApproval(pending)
 }
@@ -540,6 +560,7 @@ mod tests {
             "bash".to_string(),
             serde_json::json!({"command": "ls"}),
             "ls".to_string(),
+            ToolType::Bash,
             vec![],
         );
         let result = AgenticResult::AwaitingApproval {

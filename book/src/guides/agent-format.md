@@ -18,8 +18,10 @@ The Duragent Format defines a portable, human-readable specification for AI agen
 ├── memory/                 # Agent's long-term memory
 │   ├── MEMORY.md
 │   └── daily/
-└── tools/                  # CLI tools (optional)
-    └── my-tool.sh
+└── tools/                  # Auto-discovered tools (optional)
+    └── my-tool/
+        ├── run.sh          # Executable (run, run.sh, run.py, etc.)
+        └── README.md       # Tool description (optional)
 ```
 
 ## Agent Definition

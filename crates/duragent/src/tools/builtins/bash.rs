@@ -5,12 +5,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::agent::ToolType;
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::sandbox::Sandbox;
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// The bash tool for executing shell commands.
 pub struct BashTool {
@@ -29,6 +30,10 @@ impl BashTool {
 impl Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
+    }
+
+    fn tool_type(&self) -> ToolType {
+        ToolType::Bash
     }
 
     fn definition(&self) -> ToolDefinition {

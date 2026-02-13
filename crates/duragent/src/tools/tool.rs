@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use super::error::ToolError;
 use super::executor::ToolResult;
+use crate::agent::ToolType;
 use crate::llm::ToolDefinition;
 
 /// A tool that can be executed by the tool executor.
@@ -21,6 +22,13 @@ use crate::llm::ToolDefinition;
 pub trait Tool: Send + Sync {
     /// The unique name of this tool.
     fn name(&self) -> &str;
+
+    /// The tool type for policy pattern matching.
+    ///
+    /// Defaults to `Builtin`. Override in `BashTool` and `CliTool`.
+    fn tool_type(&self) -> ToolType {
+        ToolType::Builtin
+    }
 
     /// Generate the LLM tool definition for this tool.
     ///

@@ -11,6 +11,8 @@ use std::path::Path;
 use chrono::Utc;
 use tracing::warn;
 
+use crate::config::DEFAULT_DIRECTIVES_DIR;
+
 use super::{DirectiveEntry, Scope};
 
 /// Load directives from both workspace and agent directories.
@@ -19,7 +21,7 @@ use super::{DirectiveEntry, Scope};
 pub fn load_all_directives(workspace_directives: &Path, agent_dir: &Path) -> Vec<DirectiveEntry> {
     let mut directives = load_directives_from_dir(workspace_directives, Scope::Global);
     directives.extend(load_directives_from_dir(
-        &agent_dir.join("directives"),
+        &agent_dir.join(DEFAULT_DIRECTIVES_DIR),
         Scope::Agent,
     ));
     directives

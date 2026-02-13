@@ -43,6 +43,7 @@ pub async fn test_app_state() -> AppState {
             policy_store,
             world_memory_path: tmp.path().join("memory/world"),
             workspace_directives_path: tmp.path().join("directives"),
+            workspace_tools_path: tmp.path().join("tools"),
         },
         scheduler: None,
         policy_locks: duragent::sync::KeyedLocks::new(),

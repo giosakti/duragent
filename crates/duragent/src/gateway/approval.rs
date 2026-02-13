@@ -6,12 +6,14 @@ use duragent_gateway_protocol::CallbackQueryData;
 
 use super::build_approval_keyboard;
 use super::handler::GatewayMessageHandler;
-use crate::agent::{ToolPolicy, ToolType};
+use crate::agent::ToolPolicy;
 use crate::api::SessionStatus;
 use crate::context::ContextBuilder;
 use crate::llm::{FunctionCall, ToolCall};
 use crate::session::{AgenticResult, ApprovalDecisionType, resume_agentic_loop};
-use crate::tools::{ToolDependencies, ToolExecutionContext, ToolResult, build_executor};
+use crate::tools::{
+    ReloadDeps, ToolDependencies, ToolExecutionContext, ToolResult, build_executor,
+};
 
 // ============================================================================
 // Approval Processing
@@ -121,7 +123,7 @@ impl GatewayMessageHandler {
             && let Err(e) = ToolPolicy::add_pattern_and_save(
                 self.services.policy_store.as_ref(),
                 handle.agent(),
-                ToolType::Bash,
+                pending.tool_type,
                 &pending.command,
                 &self.policy_locks,
             )
@@ -160,6 +162,7 @@ impl GatewayMessageHandler {
                 agent_dir: agent.agent_dir.clone(),
                 scheduler: self.scheduler.clone(),
                 execution_context,
+                workspace_tools_dir: Some(self.services.workspace_tools_path.clone()),
             };
             let executor = build_executor(
                 &agent,
@@ -220,15 +223,22 @@ impl GatewayMessageHandler {
             agent_dir: agent.agent_dir.clone(),
             scheduler: self.scheduler.clone(),
             execution_context,
+            workspace_tools_dir: Some(self.services.workspace_tools_path.clone()),
         };
-        let executor = build_executor(
+        let mut executor = build_executor(
             &agent,
             handle.agent(),
             handle.id(),
             policy,
             deps,
             &self.services.world_memory_path,
-        );
+        )
+        .with_reload_deps(ReloadDeps {
+            sandbox: self.services.sandbox.clone(),
+            agent_dir: agent.agent_dir.clone(),
+            workspace_tools_dir: Some(self.services.workspace_tools_path.clone()),
+            agent_tool_configs: agent.tools.clone(),
+        });
 
         // Extract tool_refs from agent spec (consistent with run path)
         let tool_refs = ContextBuilder::new()
@@ -239,7 +249,7 @@ impl GatewayMessageHandler {
         // Resume the agentic loop
         let result = match resume_agentic_loop(
             provider,
-            &executor,
+            &mut executor,
             &agent,
             pending,
             tool_result,

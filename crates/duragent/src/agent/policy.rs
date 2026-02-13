@@ -155,7 +155,8 @@ pub enum PolicyDecision {
 }
 
 /// Tool type for pattern matching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ToolType {
     /// Bash/shell commands.
     Bash,
@@ -163,6 +164,8 @@ pub enum ToolType {
     Mcp,
     /// Built-in tools.
     Builtin,
+    /// CLI/discovered tools.
+    Cli,
 }
 
 impl ToolType {
@@ -172,6 +175,7 @@ impl ToolType {
             ToolType::Bash => "bash",
             ToolType::Mcp => "mcp",
             ToolType::Builtin => "builtin",
+            ToolType::Cli => "cli",
         }
     }
 }
@@ -780,5 +784,38 @@ mod tests {
         assert_eq!(ToolType::Bash.as_str(), "bash");
         assert_eq!(ToolType::Mcp.as_str(), "mcp");
         assert_eq!(ToolType::Builtin.as_str(), "builtin");
+        assert_eq!(ToolType::Cli.as_str(), "cli");
+    }
+
+    #[test]
+    fn cli_tool_type_pattern_matching() {
+        let policy = ToolPolicy {
+            mode: PolicyMode::Restrict,
+            allow: vec!["cli:code-search".to_string(), "cli:deploy*".to_string()],
+            deny: vec!["cli:*dangerous*".to_string()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            policy.check(ToolType::Cli, "code-search"),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            policy.check(ToolType::Cli, "deploy-prod"),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            policy.check(ToolType::Cli, "unknown-tool"),
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            policy.check(ToolType::Cli, "dangerous-tool"),
+            PolicyDecision::Deny
+        );
+        // cli patterns don't match builtin tools
+        assert_eq!(
+            policy.check(ToolType::Builtin, "code-search"),
+            PolicyDecision::Deny
+        );
     }
 }

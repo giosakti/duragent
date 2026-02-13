@@ -5,10 +5,13 @@ use std::sync::Arc;
 
 use tracing::debug;
 
+use super::discovery::discover_all_tools;
 use super::error::ToolError;
+use super::factory::{ReloadDeps, create_tools};
 use super::notify::send_notification;
 use super::tool::Tool;
 use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolType};
+use crate::config::DEFAULT_TOOLS_DIR;
 use crate::llm::{ToolCall, ToolDefinition};
 use crate::sandbox::ExecResult;
 
@@ -82,6 +85,8 @@ pub struct ToolExecutor {
     session_id: Option<String>,
     /// Agent name for notifications.
     agent_name: String,
+    /// Dependencies for rebuilding tools mid-session via `reload_tools`.
+    reload_deps: Option<ReloadDeps>,
 }
 
 impl ToolExecutor {
@@ -97,6 +102,7 @@ impl ToolExecutor {
             notify_config,
             session_id: None,
             agent_name,
+            reload_deps: None,
         }
     }
 
@@ -118,6 +124,88 @@ impl ToolExecutor {
     pub fn with_session_id(mut self, session_id: String) -> Self {
         self.session_id = Some(session_id);
         self
+    }
+
+    /// Set the reload dependencies for mid-session tool rebuilds.
+    pub fn with_reload_deps(mut self, deps: ReloadDeps) -> Self {
+        self.reload_deps = Some(deps);
+        self
+    }
+
+    /// Replace all tools, preserving memory tools and `reload_tools`.
+    ///
+    /// Used by the agentic loop after `reload_tools` to rebuild the executor
+    /// with newly discovered tools while keeping session-bound tools intact.
+    pub fn replace_tools(&mut self, new_tools: Vec<Arc<dyn Tool>>) {
+        const PRESERVED_TOOLS: &[&str] = &[
+            "recall",
+            "remember",
+            "reflect",
+            "update_world",
+            "reload_tools",
+        ];
+
+        // Extract preserved tools before clearing
+        let preserved: Vec<Arc<dyn Tool>> = self
+            .tools
+            .values()
+            .filter(|t| PRESERVED_TOOLS.contains(&t.name()))
+            .cloned()
+            .collect();
+
+        self.tools.clear();
+
+        // Re-insert preserved tools
+        for tool in preserved {
+            self.tools.insert(tool.name().to_string(), tool);
+        }
+
+        // Insert new tools (preserved tools win on collision)
+        for tool in new_tools {
+            self.tools.entry(tool.name().to_string()).or_insert(tool);
+        }
+    }
+
+    /// Rebuild tool set using stored `reload_deps`.
+    ///
+    /// Called after `reload_tools` to re-discover tools from directories
+    /// and merge with explicit tools (explicit wins on name collision).
+    /// No-op if `reload_deps` was not set.
+    pub fn rebuild(&mut self) {
+        let Some(ref deps) = self.reload_deps else {
+            return;
+        };
+
+        let tool_deps = super::factory::ToolDependencies {
+            sandbox: deps.sandbox.clone(),
+            agent_dir: deps.agent_dir.clone(),
+            scheduler: None,
+            execution_context: None,
+            workspace_tools_dir: deps.workspace_tools_dir.clone(),
+        };
+        let explicit = create_tools(&deps.agent_tool_configs, &tool_deps);
+
+        let mut discovery_dirs = vec![deps.agent_dir.join(DEFAULT_TOOLS_DIR)];
+        if let Some(ref ws) = deps.workspace_tools_dir {
+            discovery_dirs.push(ws.clone());
+        }
+        let discovered = discover_all_tools(&discovery_dirs, &deps.sandbox);
+
+        // Merge: explicit wins on name collision
+        let explicit_names: HashSet<String> =
+            explicit.iter().map(|t| t.name().to_string()).collect();
+        let mut merged = explicit;
+        for tool in discovered {
+            if !explicit_names.contains(tool.name()) {
+                merged.push(tool);
+            }
+        }
+
+        debug!(
+            tool_count = merged.len(),
+            "Rebuilt executor after reload_tools"
+        );
+        self.replace_tools(merged);
     }
 
     /// Execute a tool call and return the result.
@@ -145,6 +233,7 @@ impl ToolExecutor {
                 return Err(ToolError::ApprovalRequired {
                     call_id: tool_call.id.clone(),
                     command: invocation,
+                    tool_type,
                 });
             }
             PolicyDecision::Allow => {
@@ -184,13 +273,16 @@ impl ToolExecutor {
         tool_name: &str,
         tool_call: &ToolCall,
     ) -> (ToolType, String) {
-        if tool_name == "bash" {
-            // For bash, extract the command from arguments
-            let command = extract_bash_command(&tool_call.function.arguments);
-            (ToolType::Bash, command)
+        let tool = self.tools.get(tool_name);
+        let tool_type = tool.map(|t| t.tool_type()).unwrap_or(ToolType::Builtin);
+
+        let invocation = if tool_type == ToolType::Bash {
+            extract_bash_command(&tool_call.function.arguments)
         } else {
-            (ToolType::Builtin, tool_name.to_string())
-        }
+            tool_name.to_string()
+        };
+
+        (tool_type, invocation)
     }
 
     /// Internal: execute tool and send notifications.
@@ -280,6 +372,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -293,6 +386,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools)
@@ -305,6 +399,7 @@ mod tests {
             agent_dir: dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -542,9 +637,14 @@ mod tests {
         let result = executor.execute(&tool_call).await;
 
         match result {
-            Err(ToolError::ApprovalRequired { call_id, command }) => {
+            Err(ToolError::ApprovalRequired {
+                call_id,
+                command,
+                tool_type,
+            }) => {
                 assert_eq!(call_id, "call_1");
                 assert_eq!(command, "echo hello");
+                assert_eq!(tool_type, ToolType::Bash);
             }
             _ => panic!("Expected ApprovalRequired error"),
         }
@@ -564,6 +664,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {
@@ -598,6 +699,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {

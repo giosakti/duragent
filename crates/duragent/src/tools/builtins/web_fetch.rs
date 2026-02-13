@@ -4,9 +4,9 @@ use async_trait::async_trait;
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// Maximum bytes to read from the response body (1 MB).
 const MAX_BODY_BYTES: usize = 1_048_576;

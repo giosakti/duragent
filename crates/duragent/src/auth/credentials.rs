@@ -40,7 +40,9 @@ impl AuthStorage {
                 "/tmp".to_string()
             }
         };
-        PathBuf::from(home).join(".duragent").join("auth.json")
+        PathBuf::from(home)
+            .join(crate::config::DEFAULT_WORKSPACE)
+            .join("auth.json")
     }
 
     /// Load credentials from disk. Returns empty storage if file doesn't exist.

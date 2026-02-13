@@ -246,6 +246,7 @@ mod tests {
             "bash".to_string(),
             serde_json::json!({"command": "ls -la"}),
             "ls -la".to_string(),
+            crate::agent::ToolType::Bash,
             vec![Message::text(Role::User, "run ls")],
         );
 

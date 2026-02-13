@@ -6,9 +6,9 @@ use async_trait::async_trait;
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// Web search tool backed by Brave Search API.
 pub struct WebSearchTool {

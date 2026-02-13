@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::agent::ToolType;
+
 /// Errors that can occur during tool execution.
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -16,6 +18,8 @@ pub enum ToolError {
         call_id: String,
         /// The command or tool invocation that needs approval.
         command: String,
+        /// The tool type (for saving "Allow Always" patterns).
+        tool_type: ToolType,
     },
 
     /// Command was denied by policy.

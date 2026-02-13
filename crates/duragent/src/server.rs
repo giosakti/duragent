@@ -33,6 +33,7 @@ pub struct RuntimeServices {
     pub policy_store: Arc<dyn PolicyStore>,
     pub world_memory_path: PathBuf,
     pub workspace_directives_path: PathBuf,
+    pub workspace_tools_path: PathBuf,
 }
 
 // ============================================================================

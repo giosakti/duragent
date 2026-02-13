@@ -7,20 +7,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::agent::{AgentSpec, ToolConfig, ToolPolicy};
+use crate::config::DEFAULT_TOOLS_DIR;
 use crate::memory::Memory;
 use crate::sandbox::Sandbox;
 use crate::scheduler::SchedulerHandle;
 
-use super::bash::BashTool;
-use super::cli::CliTool;
-use super::executor::ToolExecutor;
-use super::memory::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
-use super::schedule::{
+use super::builtins::bash::BashTool;
+use super::builtins::cli::CliTool;
+use super::builtins::memory::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
+use super::builtins::reload::ReloadToolsTool;
+use super::builtins::schedule::{
     CancelScheduleTool, ListSchedulesTool, ScheduleTaskTool, ToolExecutionContext,
 };
+use super::builtins::web_fetch::WebFetchTool;
+use super::builtins::web_search::WebSearchTool;
+use super::discovery::discover_all_tools;
+use super::executor::ToolExecutor;
 use super::tool::SharedTool;
-use super::web_fetch::WebFetchTool;
-use super::web_search::WebSearchTool;
 
 /// All recognized builtin tool names.
 ///
@@ -32,6 +35,7 @@ pub const KNOWN_BUILTIN_TOOLS: &[&str] = &[
     "cancel_schedule",
     "web_search",
     "web_fetch",
+    "reload_tools",
 ];
 
 /// Dependencies needed for creating tools.
@@ -44,6 +48,16 @@ pub struct ToolDependencies {
     pub scheduler: Option<SchedulerHandle>,
     /// Execution context for schedule tools (optional).
     pub execution_context: Option<ToolExecutionContext>,
+    /// Workspace-level tools directory for discovery (optional).
+    pub workspace_tools_dir: Option<PathBuf>,
+}
+
+/// Dependencies needed for rebuilding tools mid-session via `reload_tools`.
+pub struct ReloadDeps {
+    pub sandbox: Arc<dyn Sandbox>,
+    pub agent_dir: PathBuf,
+    pub workspace_tools_dir: Option<PathBuf>,
+    pub agent_tool_configs: Vec<ToolConfig>,
 }
 
 /// Create tools from configuration.
@@ -107,6 +121,13 @@ fn create_builtin_tool(name: &str, deps: &ToolDependencies) -> Option<SharedTool
             Some(Arc::new(tool))
         }
         "web_fetch" => Some(Arc::new(WebFetchTool::new())),
+        "reload_tools" => {
+            let mut dirs = vec![deps.agent_dir.join(DEFAULT_TOOLS_DIR)];
+            if let Some(ref ws) = deps.workspace_tools_dir {
+                dirs.push(ws.clone());
+            }
+            Some(Arc::new(ReloadToolsTool::new(dirs, deps.sandbox.clone())))
+        }
         _ => {
             // Unknown builtin - return None to skip
             // The executor will handle this as a missing tool if called
@@ -152,9 +173,18 @@ pub fn build_executor(
     deps: ToolDependencies,
     world_memory_path: &Path,
 ) -> ToolExecutor {
-    let tools = create_tools(&agent.tools, &deps);
+    let explicit_tools = create_tools(&agent.tools, &deps);
+
+    // Discover tools from agent and workspace directories
+    let mut discovery_dirs = vec![deps.agent_dir.join(DEFAULT_TOOLS_DIR)];
+    if let Some(ref ws) = deps.workspace_tools_dir {
+        discovery_dirs.push(ws.clone());
+    }
+    let discovered = discover_all_tools(&discovery_dirs, &deps.sandbox);
+    let merged = merge_tools(explicit_tools, discovered);
+
     let mut executor = ToolExecutor::new(policy, agent_name.to_string())
-        .register_all(tools)
+        .register_all(merged)
         .with_session_id(session_id.to_string());
 
     if agent.memory.is_some() {
@@ -166,6 +196,19 @@ pub fn build_executor(
     }
 
     executor
+}
+
+/// Merge explicit tools with discovered tools. Explicit tools win on name collision.
+fn merge_tools(explicit: Vec<SharedTool>, discovered: Vec<SharedTool>) -> Vec<SharedTool> {
+    let explicit_names: std::collections::HashSet<String> =
+        explicit.iter().map(|t| t.name().to_string()).collect();
+    let mut merged = explicit;
+    for tool in discovered {
+        if !explicit_names.contains(tool.name()) {
+            merged.push(tool);
+        }
+    }
+    merged
 }
 
 #[cfg(test)]
@@ -181,6 +224,7 @@ mod tests {
             agent_dir: temp_dir.path().to_path_buf(),
             scheduler: None,
             execution_context: None,
+            workspace_tools_dir: None,
         };
         (temp_dir, deps)
     }
@@ -291,7 +335,8 @@ mod tests {
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"cancel_schedule"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_search"));
         assert!(KNOWN_BUILTIN_TOOLS.contains(&"web_fetch"));
-        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 6);
+        assert!(KNOWN_BUILTIN_TOOLS.contains(&"reload_tools"));
+        assert_eq!(KNOWN_BUILTIN_TOOLS.len(), 7);
     }
 
     #[test]

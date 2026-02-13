@@ -6,12 +6,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::warn;
 
+use crate::agent::ToolType;
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::sandbox::Sandbox;
 
-use super::error::ToolError;
-use super::executor::ToolResult;
-use super::tool::Tool;
+use crate::tools::error::ToolError;
+use crate::tools::executor::ToolResult;
+use crate::tools::tool::Tool;
 
 /// A CLI tool that executes a custom script.
 pub struct CliTool {
@@ -67,6 +68,10 @@ impl CliTool {
 impl Tool for CliTool {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn tool_type(&self) -> ToolType {
+        ToolType::Cli
     }
 
     fn definition(&self) -> ToolDefinition {
