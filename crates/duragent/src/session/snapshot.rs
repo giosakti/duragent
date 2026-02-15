@@ -116,11 +116,10 @@ impl SessionSnapshot {
 
     /// Get the sequence from which to replay events.
     ///
-    /// For v1 snapshots, this is `last_event_seq` (no replay needed).
+    /// For v1 snapshots, this is `last_event_seq` (no replay needed — all messages are in conversation).
     /// For v2 snapshots, this is `checkpoint_seq` (replay events after checkpoint).
     pub fn replay_from_seq(&self) -> u64 {
-        if self.checkpoint_seq == 0 {
-            // v1 snapshot: checkpoint_seq defaults to 0, replay from last_event_seq
+        if self.schema_version == "1" {
             self.last_event_seq
         } else {
             self.checkpoint_seq
@@ -300,6 +299,26 @@ config:
         // v2 snapshots should replay from checkpoint_seq
         assert_eq!(snapshot.checkpoint_seq, 50);
         assert_eq!(snapshot.replay_from_seq(), 50);
+    }
+
+    #[test]
+    fn replay_from_seq_v2_snapshot_no_checkpoint() {
+        // v2 snapshot where no checkpoint has occurred yet (checkpoint_seq = 0).
+        // Should replay from 0 (all events), NOT from last_event_seq.
+        let snapshot = SessionSnapshot::new(
+            "session".to_string(),
+            "agent".to_string(),
+            SessionStatus::Active,
+            Utc::now(),
+            178, // last_event_seq — 178 events exist
+            0,   // checkpoint_seq — no checkpoint yet
+            vec![],
+            SessionConfig::default(),
+        );
+
+        assert_eq!(snapshot.schema_version, "2");
+        assert_eq!(snapshot.checkpoint_seq, 0);
+        assert_eq!(snapshot.replay_from_seq(), 0); // Must replay ALL events
     }
 
     #[test]

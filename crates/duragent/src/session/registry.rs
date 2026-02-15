@@ -341,6 +341,26 @@ impl SessionRegistry {
                         content,
                     ));
                 }
+                super::events::SessionEventPayload::ToolCall {
+                    call_id,
+                    tool_name,
+                    arguments,
+                } => {
+                    let tool_call = crate::llm::ToolCall {
+                        id: call_id.clone(),
+                        tool_type: "function".to_string(),
+                        function: crate::llm::FunctionCall {
+                            name: tool_name.clone(),
+                            arguments: serde_json::to_string(arguments).unwrap_or_default(),
+                        },
+                    };
+                    pending_messages
+                        .push(crate::llm::Message::assistant_tool_calls(vec![tool_call]));
+                }
+                super::events::SessionEventPayload::ToolResult { call_id, result } => {
+                    pending_messages
+                        .push(crate::llm::Message::tool_result(call_id, &result.content));
+                }
                 super::events::SessionEventPayload::StatusChange { to, .. } => {
                     status = *to;
                 }
@@ -831,7 +851,7 @@ mod tests {
         registry.shutdown().await;
 
         // Verify snapshot was written
-        let snapshot_file = temp_dir.path().join(&session_id).join("state.yaml");
+        let snapshot_file = temp_dir.path().join(&session_id).join("state.json");
         assert!(snapshot_file.exists());
     }
 }

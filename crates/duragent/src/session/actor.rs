@@ -511,6 +511,18 @@ impl SessionActor {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
 
+        // Add tool call to conversation history
+        let tool_call = crate::llm::ToolCall {
+            id: call_id.clone(),
+            tool_type: "function".to_string(),
+            function: crate::llm::FunctionCall {
+                name: tool_name.clone(),
+                arguments: serde_json::to_string(&arguments).unwrap_or_default(),
+            },
+        };
+        self.pending_messages
+            .push(Message::assistant_tool_calls(vec![tool_call]));
+
         self.pending_events.push_back(SessionEvent::new(
             seq,
             SessionEventPayload::ToolCall {
@@ -531,6 +543,10 @@ impl SessionActor {
     ) -> Result<u64, ActorError> {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
+
+        // Add tool result to conversation history
+        self.pending_messages
+            .push(Message::tool_result(&call_id, &content));
 
         self.pending_events.push_back(SessionEvent::new(
             seq,
@@ -968,7 +984,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Verify snapshot exists
-        let snapshot_file = temp_dir.path().join("session_test123").join("state.yaml");
+        let snapshot_file = temp_dir.path().join("session_test123").join("state.json");
         assert!(snapshot_file.exists());
     }
 

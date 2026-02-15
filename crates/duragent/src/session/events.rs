@@ -148,6 +148,24 @@ impl SessionEvent {
             SessionEventPayload::AssistantMessage { content, .. } => {
                 Some(Message::text(Role::Assistant, content))
             }
+            SessionEventPayload::ToolCall {
+                call_id,
+                tool_name,
+                arguments,
+            } => {
+                let tc = crate::llm::ToolCall {
+                    id: call_id.clone(),
+                    tool_type: "function".to_string(),
+                    function: crate::llm::FunctionCall {
+                        name: tool_name.clone(),
+                        arguments: serde_json::to_string(arguments).unwrap_or_default(),
+                    },
+                };
+                Some(Message::assistant_tool_calls(vec![tc]))
+            }
+            SessionEventPayload::ToolResult { call_id, result } => {
+                Some(Message::tool_result(call_id, &result.content))
+            }
             _ => None,
         }
     }
@@ -201,14 +219,14 @@ mod tests {
             3,
             SessionEventPayload::ToolCall {
                 call_id: "call_123".to_string(),
-                tool_name: "web_search".to_string(),
-                arguments: serde_json::json!({"query": "rust async"}),
+                tool_name: "web".to_string(),
+                arguments: serde_json::json!({"action": "search", "query": "rust async"}),
             },
         );
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"tool_call\""));
-        assert!(json.contains("\"tool_name\":\"web_search\""));
+        assert!(json.contains("\"tool_name\":\"web\""));
     }
 
     #[test]
@@ -275,6 +293,39 @@ mod tests {
             },
         );
         assert!(start_event.to_message().is_none());
+
+        // ToolCall -> assistant message with tool_calls
+        let tool_call_event = SessionEvent::new(
+            3,
+            SessionEventPayload::ToolCall {
+                call_id: "call_123".to_string(),
+                tool_name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            },
+        );
+        let msg = tool_call_event.to_message().unwrap();
+        assert_eq!(msg.role, Role::Assistant);
+        assert!(msg.content.is_none());
+        let calls = msg.tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_123");
+        assert_eq!(calls[0].function.name, "bash");
+
+        // ToolResult -> tool message
+        let tool_result_event = SessionEvent::new(
+            4,
+            SessionEventPayload::ToolResult {
+                call_id: "call_123".to_string(),
+                result: ToolResultData {
+                    success: true,
+                    content: "file1.txt\nfile2.txt".to_string(),
+                },
+            },
+        );
+        let msg = tool_result_event.to_message().unwrap();
+        assert_eq!(msg.role, Role::Tool);
+        assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
+        assert_eq!(msg.content_str(), "file1.txt\nfile2.txt");
     }
 
     #[test]
