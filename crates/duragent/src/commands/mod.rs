@@ -8,10 +8,12 @@ use duragent::config::DEFAULT_WORKSPACE;
 
 pub mod attach;
 pub mod chat;
+pub mod doctor;
 pub mod init;
 mod interactive;
 pub mod login;
 pub mod serve;
+pub mod upgrade;
 
 /// Check that a duragent workspace exists.
 ///

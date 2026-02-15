@@ -29,6 +29,10 @@ tokio-util = { workspace = true }
 # CLI
 clap = { workspace = true }
 
+# Compression / archives
+flate2 = { workspace = true }
+tar = { workspace = true }
+
 # Crypto / encoding
 base64 = { workspace = true }
 sha2 = { workspace = true }
@@ -58,6 +62,9 @@ serde-saphyr = { workspace = true }
 # Unix-specific (for prctl on Linux)
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+# Versioning
+semver = { workspace = true }
 
 # Utilities
 chrono = { workspace = true }

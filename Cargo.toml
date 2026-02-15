@@ -30,6 +30,10 @@ tokio-util = "0.7"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Compression / archives
+flate2 = "1"
+tar = "0.4"
+
 # Crypto / encoding
 base64 = "0.22"
 sha2 = "0.10"
@@ -57,6 +61,9 @@ serde-saphyr = "0.0"
 
 # Unix-specific
 libc = "0.2"
+
+# Versioning
+semver = "1"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }

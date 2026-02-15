@@ -64,6 +64,17 @@ enum Commands {
         server: Option<String>,
     },
 
+    /// Diagnose installation and configuration issues
+    Doctor {
+        /// Path to configuration file
+        #[arg(short, long, default_value = "duragent.yaml")]
+        config: String,
+
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
     /// Initialize a new Duragent workspace
     Init {
         /// Directory to initialize (defaults to current directory)
@@ -92,6 +103,33 @@ enum Commands {
     Login {
         /// Provider to authenticate with (e.g., "anthropic")
         provider: String,
+    },
+
+    /// Upgrade duragent to the latest version
+    Upgrade {
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+
+        /// Target version (e.g., "0.6.0" or "v0.6.0")
+        #[arg(long)]
+        version: Option<String>,
+
+        /// Restart a running server after upgrade
+        #[arg(long)]
+        restart: bool,
+
+        /// Path to configuration file (used with --restart)
+        #[arg(short, long, default_value = "duragent.yaml")]
+        config: String,
+
+        /// Port override (used with --restart)
+        #[arg(short, long)]
+        port: Option<u16>,
+
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// Manage the HTTP server
@@ -168,6 +206,7 @@ async fn run() -> Result<()> {
             agents_dir,
             server,
         } => commands::chat::run(&agent, &config, agents_dir.as_deref(), server.as_deref()).await,
+        Commands::Doctor { config, format } => commands::doctor::run(&config, &format).await,
         Commands::Init {
             path,
             agent_name,
@@ -176,6 +215,14 @@ async fn run() -> Result<()> {
             no_interactive,
         } => commands::init::run(&path, agent_name, provider, model, no_interactive).await,
         Commands::Login { provider } => commands::login::run(&provider).await,
+        Commands::Upgrade {
+            check,
+            version,
+            restart,
+            config,
+            port,
+            format,
+        } => commands::upgrade::run(check, version, restart, &config, port, &format).await,
         Commands::Serve {
             action,
             config,

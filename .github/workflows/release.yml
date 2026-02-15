@@ -66,6 +66,12 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts/
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.sha256
+          cat checksums.sha256
+
       - name: Extract changelog for this version
         id: changelog
         run: |

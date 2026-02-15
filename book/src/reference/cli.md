@@ -97,6 +97,15 @@ Flags:
 duragent chat --agent my-assistant
 ```
 
+#### Interactive Commands
+
+Within `duragent chat`, these commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `/quit` or `/exit` | End session |
+| `Ctrl+D` | Detach from session (EOF) |
+
 ### `duragent attach`
 
 Attach to an existing session (like tmux attach).
@@ -119,11 +128,49 @@ duragent attach SESSION_ID
 
 When attaching to a session with `on_disconnect: continue`, you'll see any output that was buffered while you were away.
 
-## Interactive Commands
+## Maintenance
 
-Within `duragent chat`, these commands are available:
+### `duragent doctor`
 
-| Command | Description |
-|---------|-------------|
-| `/quit` or `/exit` | End session |
-| `Ctrl+D` | Detach from session (EOF) |
+Diagnose installation and configuration issues. Checks config files, agents, gateways, provider credentials, and security settings.
+
+```bash
+duragent doctor [flags]
+
+Flags:
+  -c, --config string     Path to config file (default duragent.yaml)
+      --format string     Output format: text or json (default text)
+```
+
+**Examples:**
+```bash
+duragent doctor
+duragent doctor --format json
+```
+
+### `duragent upgrade`
+
+Upgrade duragent to the latest version (or a specific version) by downloading the platform binary from GitHub Releases. Verifies checksums when available and replaces the binary atomically.
+
+```bash
+duragent upgrade [flags]
+
+Flags:
+      --check             Only check for updates, don't install
+      --version string    Target version (e.g., "0.6.0" or "v0.6.0")
+      --restart           Restart a running server after upgrade
+  -c, --config string     Path to config file (default duragent.yaml, used with --restart)
+  -p, --port int          Port override (used with --restart)
+      --format string     Output format: text or json (default text)
+```
+
+**Examples:**
+```bash
+duragent upgrade --check
+duragent upgrade
+duragent upgrade --version 0.4.0
+duragent upgrade --restart
+duragent upgrade --format json
+```
+
+With `--restart`, the command shuts down the running server gracefully, then execs the new binary with the same serve arguments. Sessions are flushed to disk before shutdown and recovered on startup.
