@@ -1,13 +1,13 @@
 //! File-based session storage implementation.
 //!
-//! Stores session events as JSONL files and snapshots as YAML files.
+//! Stores session events as JSONL files and snapshots as JSON files.
 //!
 //! Directory structure:
 //! ```text
 //! {sessions_dir}/
 //!   {session_id}/
 //!     events.jsonl       # Append-only event log
-//!     state.yaml         # Atomic snapshot
+//!     state.json         # Atomic snapshot
 //! ```
 
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use crate::sync::KeyedLocks;
 /// File-based implementation of `SessionStore`.
 ///
 /// Sessions are stored in subdirectories of `sessions_dir`, with each session
-/// having its own `events.jsonl` (append-only event log) and `state.yaml`
+/// having its own `events.jsonl` (append-only event log) and `state.json`
 /// (atomic snapshot).
 ///
 /// A per-session `KeyedLock` serializes `append_events` and `compact_events`
@@ -58,7 +58,7 @@ impl FileSessionStore {
 
     /// Get the snapshot file path for a session.
     fn snapshot_path(&self, session_id: &str) -> PathBuf {
-        self.session_dir(session_id).join("state.yaml")
+        self.session_dir(session_id).join("state.json")
     }
 
     /// Ensure the session directory exists.
@@ -96,8 +96,8 @@ impl SessionStore for FileSessionStore {
                 .map_err(|e| StorageError::file_io(&self.sessions_dir, e))?;
             if file_type.is_dir() {
                 let path = entry.path();
-                // Check if it has a state.yaml (valid session)
-                if tokio::fs::try_exists(path.join("state.yaml"))
+                // Check if it has a state.json (valid session)
+                if tokio::fs::try_exists(path.join("state.json"))
                     .await
                     .unwrap_or(false)
                     && let Some(name) = path.file_name()
@@ -216,7 +216,7 @@ impl SessionStore for FileSessionStore {
             Err(e) => return Err(StorageError::file_io(&path, e)),
         };
 
-        let snapshot: SessionSnapshot = serde_saphyr::from_str(&contents)
+        let snapshot: SessionSnapshot = serde_json::from_str(&contents)
             .map_err(|e| StorageError::file_deserialization(&path, e.to_string()))?;
 
         if !snapshot.is_compatible() {
@@ -239,10 +239,10 @@ impl SessionStore for FileSessionStore {
 
         let final_path = self.snapshot_path(session_id);
 
-        let yaml = serde_saphyr::to_string(snapshot)
+        let json = serde_json::to_string_pretty(snapshot)
             .map_err(|e| StorageError::serialization(e.to_string()))?;
 
-        super::atomic_write_file(&final_path, yaml.as_bytes()).await
+        super::atomic_write_file(&final_path, json.as_bytes()).await
     }
 
     // ========================================================================
