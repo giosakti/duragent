@@ -98,12 +98,14 @@ impl GatewayMessageHandler {
                         let handle = registry
                             .create(
                                 &agent_name,
-                                on_disconnect,
-                                Some(gateway.clone()),
-                                Some(chat_id.clone()),
-                                silent_buffer_cap,
-                                msg_limit,
-                                compaction_override,
+                                crate::session::CreateSessionOpts {
+                                    on_disconnect,
+                                    gateway: Some(gateway.clone()),
+                                    gateway_chat_id: Some(chat_id.clone()),
+                                    silent_buffer_cap,
+                                    actor_message_limit: msg_limit,
+                                    compaction_override,
+                                },
                             )
                             .await?;
 

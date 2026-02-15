@@ -324,10 +324,10 @@ async fn check_agents(sections: &mut Vec<Section>, config: &Config, config_path:
         });
 
         // Check provider credentials
-        if checked_providers.insert(provider.clone()) {
-            if let Some(cred_check) = check_provider_credentials(provider) {
-                checks.push(cred_check);
-            }
+        if checked_providers.insert(provider.clone())
+            && let Some(cred_check) = check_provider_credentials(provider)
+        {
+            checks.push(cred_check);
         }
     }
 

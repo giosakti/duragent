@@ -25,8 +25,8 @@ use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider, Role};
 use crate::server::AppState;
 use crate::session::{
-    AccumulatingStream, AgenticResult, ApprovalDecisionType, SessionHandle, StreamConfig,
-    resume_agentic_loop, run_agentic_loop,
+    AccumulatingStream, AgenticResult, ApprovalDecisionType, ResumeContext, SessionHandle,
+    StreamConfig, resume_agentic_loop, run_agentic_loop,
 };
 use crate::tools::{ReloadDeps, ToolDependencies, ToolResult, build_executor};
 
@@ -78,12 +78,16 @@ pub async fn create_session(
         .session_registry
         .create(
             &req.agent,
-            agent_spec.session.on_disconnect,
-            None,
-            None,
-            crate::session::DEFAULT_SILENT_BUFFER_CAP,
-            crate::session::actor_message_limit(agent_spec.model.effective_max_input_tokens()),
-            agent_spec.session.compaction,
+            crate::session::CreateSessionOpts {
+                on_disconnect: agent_spec.session.on_disconnect,
+                gateway: None,
+                gateway_chat_id: None,
+                silent_buffer_cap: crate::session::DEFAULT_SILENT_BUFFER_CAP,
+                actor_message_limit: crate::session::actor_message_limit(
+                    agent_spec.model.effective_max_input_tokens(),
+                ),
+                compaction_override: agent_spec.session.compaction,
+            },
         )
         .await
     {
@@ -533,8 +537,10 @@ pub async fn approve_command(
         provider,
         &mut executor,
         &agent_spec,
-        pending,
-        tool_result,
+        ResumeContext {
+            pending,
+            tool_result,
+        },
         &handle,
         tool_refs.as_ref(),
         None,

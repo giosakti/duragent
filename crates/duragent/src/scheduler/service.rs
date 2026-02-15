@@ -821,12 +821,14 @@ async fn get_or_create_session(
                     let handle = registry
                         .create(
                             &agent,
-                            crate::agent::OnDisconnect::Continue, // Scheduled tasks continue in background
-                            Some(gateway.clone()),
-                            Some(chat_id.clone()),
-                            crate::session::DEFAULT_SILENT_BUFFER_CAP,
-                            crate::session::DEFAULT_ACTOR_MESSAGE_LIMIT,
-                            compaction_override,
+                            crate::session::CreateSessionOpts {
+                                on_disconnect: crate::agent::OnDisconnect::Continue, // Scheduled tasks continue in background
+                                gateway: Some(gateway.clone()),
+                                gateway_chat_id: Some(chat_id.clone()),
+                                silent_buffer_cap: crate::session::DEFAULT_SILENT_BUFFER_CAP,
+                                actor_message_limit: crate::session::DEFAULT_ACTOR_MESSAGE_LIMIT,
+                                compaction_override,
+                            },
                         )
                         .await?;
                     let session_id = handle.id().to_string();

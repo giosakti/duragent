@@ -51,6 +51,16 @@ pub struct SessionRegistry {
     shutdown_rx: watch::Receiver<bool>,
 }
 
+/// Options for creating a new session.
+pub struct CreateSessionOpts {
+    pub on_disconnect: OnDisconnect,
+    pub gateway: Option<String>,
+    pub gateway_chat_id: Option<String>,
+    pub silent_buffer_cap: usize,
+    pub actor_message_limit: usize,
+    pub compaction_override: Option<CompactionMode>,
+}
+
 /// Result of session recovery on startup.
 #[derive(Debug, Default)]
 pub struct RecoveryResult {
@@ -129,16 +139,10 @@ impl SessionRegistry {
     /// Spawns a new actor and makes it immediately visible in the registry.
     /// Then waits for the initial snapshot to be persisted for crash safety.
     /// If persistence fails, the session is removed and the actor is stopped.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         agent: &str,
-        on_disconnect: OnDisconnect,
-        gateway: Option<String>,
-        gateway_chat_id: Option<String>,
-        silent_buffer_cap: usize,
-        actor_message_limit: usize,
-        compaction_override: Option<CompactionMode>,
+        opts: CreateSessionOpts,
     ) -> Result<SessionHandle, ActorError> {
         let id = format!("{}{}", SESSION_ID_PREFIX, Ulid::new());
 
@@ -146,12 +150,12 @@ impl SessionRegistry {
             id: id.clone(),
             agent: agent.to_string(),
             store: self.store.clone(),
-            on_disconnect,
-            gateway,
-            gateway_chat_id,
-            silent_buffer_cap,
-            actor_message_limit,
-            compaction_mode: compaction_override.unwrap_or(self.compaction_mode),
+            on_disconnect: opts.on_disconnect,
+            gateway: opts.gateway,
+            gateway_chat_id: opts.gateway_chat_id,
+            silent_buffer_cap: opts.silent_buffer_cap,
+            actor_message_limit: opts.actor_message_limit,
+            compaction_mode: opts.compaction_override.unwrap_or(self.compaction_mode),
         };
 
         let (tx, task_handle) = SessionActor::spawn(config, self.shutdown_rx.clone());
@@ -426,9 +430,11 @@ impl SessionRegistry {
             snapshot.agent.clone(),
             final_status,
             snapshot.created_at,
-            last_seq,
-            snapshot.checkpoint_seq,
-            snapshot.conversation,
+            super::snapshot::CheckpointState {
+                last_event_seq: last_seq,
+                checkpoint_seq: snapshot.checkpoint_seq,
+                conversation: snapshot.conversation,
+            },
             snapshot.config,
         );
 
@@ -542,7 +548,7 @@ impl SessionRegistry {
 mod tests {
     use super::*;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SessionSnapshot};
+    use crate::session::{CheckpointState, SessionConfig, SessionSnapshot};
     use crate::store::file::FileSessionStore;
     use chrono::Utc;
     use tempfile::TempDir;
@@ -564,12 +570,14 @@ mod tests {
             "test-agent".to_string(),
             status,
             Utc::now(),
-            1,
-            1, // checkpoint_seq matches last_event_seq
-            vec![
-                Message::text(Role::User, "Hello"),
-                Message::text(Role::Assistant, "Hi there!"),
-            ],
+            CheckpointState {
+                last_event_seq: 1,
+                checkpoint_seq: 1,
+                conversation: vec![
+                    Message::text(Role::User, "Hello"),
+                    Message::text(Role::Assistant, "Hi there!"),
+                ],
+            },
             SessionConfig {
                 on_disconnect,
                 ..Default::default()
@@ -586,12 +594,14 @@ mod tests {
         let handle = registry
             .create(
                 "test-agent",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
@@ -623,24 +633,28 @@ mod tests {
         registry
             .create(
                 "agent1",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
         registry
             .create(
                 "agent2",
-                OnDisconnect::Continue,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Continue,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
@@ -662,12 +676,14 @@ mod tests {
         registry
             .create(
                 "agent1",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
@@ -686,12 +702,14 @@ mod tests {
         let handle = registry
             .create(
                 "test-agent",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
@@ -710,12 +728,14 @@ mod tests {
         let handle = registry
             .create(
                 "test-agent",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();
@@ -830,12 +850,14 @@ mod tests {
         let handle = registry
             .create(
                 "test-agent",
-                OnDisconnect::Pause,
-                None,
-                None,
-                DEFAULT_SILENT_BUFFER_CAP,
-                DEFAULT_ACTOR_MESSAGE_LIMIT,
-                None,
+                CreateSessionOpts {
+                    on_disconnect: OnDisconnect::Pause,
+                    gateway: None,
+                    gateway_chat_id: None,
+                    silent_buffer_cap: DEFAULT_SILENT_BUFFER_CAP,
+                    actor_message_limit: DEFAULT_ACTOR_MESSAGE_LIMIT,
+                    compaction_override: None,
+                },
             )
             .await
             .unwrap();

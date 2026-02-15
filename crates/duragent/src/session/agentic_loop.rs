@@ -118,6 +118,14 @@ fn default_tool_type() -> ToolType {
     ToolType::Bash
 }
 
+/// Context for resuming an agentic loop after a tool approval.
+pub struct ResumeContext {
+    /// The pending approval that was resolved.
+    pub pending: PendingApproval,
+    /// The result of executing (or denying) the tool.
+    pub tool_result: ToolResult,
+}
+
 impl PendingApproval {
     /// Create a new pending approval.
     pub fn new(
@@ -410,13 +418,11 @@ pub async fn run_agentic_loop(
 /// This continues the loop from where it paused, injecting the tool result
 /// (either the actual execution result or a denial message) and continuing
 /// until completion or another approval is needed.
-#[allow(clippy::too_many_arguments)]
 pub async fn resume_agentic_loop(
     provider: Arc<dyn LLMProvider>,
     executor: &mut ToolExecutor,
     agent_spec: &AgentSpec,
-    pending: PendingApproval,
-    tool_result: ToolResult,
+    resume: ResumeContext,
     handle: &SessionHandle,
     tool_filter: Option<&HashSet<String>>,
     steering_rx: Option<SteeringReceiver>,
@@ -424,9 +430,9 @@ pub async fn resume_agentic_loop(
     // Record tool result event
     if let Err(e) = handle
         .enqueue_tool_result(
-            pending.call_id.clone(),
-            tool_result.success,
-            tool_result.content.clone(),
+            resume.pending.call_id.clone(),
+            resume.tool_result.success,
+            resume.tool_result.content.clone(),
         )
         .await
     {
@@ -434,7 +440,7 @@ pub async fn resume_agentic_loop(
     }
 
     // Build messages and continue the loop
-    let messages = pending.into_messages(tool_result.content);
+    let messages = resume.pending.into_messages(resume.tool_result.content);
     run_agentic_loop(
         provider,
         executor,

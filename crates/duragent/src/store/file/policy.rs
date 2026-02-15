@@ -88,13 +88,13 @@ impl PolicyStore for FilePolicyStore {
         let mut inherited_deny: Vec<String> = Vec::new();
         let mut inherited_allow: Vec<String> = Vec::new();
         let mut inherited_notify = NotifyConfig::default();
-        if let Some(ws_path) = self.workspace_path() {
-            if let Some(ws) = Self::load_raw_file(&ws_path).await {
-                inherited_deny.extend(ws.deny);
-                inherited_allow.extend(ws.allow.unwrap_or_default());
-                if let Some(ref notify) = ws.notify {
-                    merge_notify(&mut inherited_notify, notify);
-                }
+        if let Some(ws_path) = self.workspace_path()
+            && let Some(ws) = Self::load_raw_file(&ws_path).await
+        {
+            inherited_deny.extend(ws.deny);
+            inherited_allow.extend(ws.allow.unwrap_or_default());
+            if let Some(ref notify) = ws.notify {
+                merge_notify(&mut inherited_notify, notify);
             }
         }
         if let Some(base) = Self::load_raw_file(&self.base_path(agent_name)).await {

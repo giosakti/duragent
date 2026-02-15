@@ -74,6 +74,16 @@ pub struct SessionConfig {
     pub actor_message_limit: Option<usize>,
 }
 
+/// Checkpoint data for a snapshot: event sequences and conversation state.
+pub struct CheckpointState {
+    /// The sequence number of the last event included in this snapshot.
+    pub last_event_seq: u64,
+    /// The sequence number up to which messages are checkpointed.
+    pub checkpoint_seq: u64,
+    /// The conversation history (up to checkpoint_seq).
+    pub conversation: Vec<Message>,
+}
+
 impl SessionSnapshot {
     /// Current schema version.
     pub const SCHEMA_VERSION: &'static str = "2";
@@ -84,15 +94,12 @@ impl SessionSnapshot {
     /// `checkpoint_seq` indicates the sequence up to which messages are stored.
     /// `conversation` should contain only messages up to that checkpoint.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: String,
         agent: String,
         status: SessionStatus,
         created_at: DateTime<Utc>,
-        last_event_seq: u64,
-        checkpoint_seq: u64,
-        conversation: Vec<Message>,
+        checkpoint: CheckpointState,
         config: SessionConfig,
     ) -> Self {
         Self {
@@ -102,9 +109,9 @@ impl SessionSnapshot {
             status,
             created_at,
             snapshot_at: Utc::now(),
-            last_event_seq,
-            checkpoint_seq,
-            conversation,
+            last_event_seq: checkpoint.last_event_seq,
+            checkpoint_seq: checkpoint.checkpoint_seq,
+            conversation: checkpoint.conversation,
             config,
         }
     }
@@ -139,12 +146,14 @@ mod tests {
             "my-agent".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            42,
-            42, // checkpoint_seq matches last_event_seq
-            vec![
-                Message::text(Role::User, "Hello"),
-                Message::text(Role::Assistant, "Hi there!"),
-            ],
+            CheckpointState {
+                last_event_seq: 42,
+                checkpoint_seq: 42,
+                conversation: vec![
+                    Message::text(Role::User, "Hello"),
+                    Message::text(Role::Assistant, "Hi there!"),
+                ],
+            },
             SessionConfig::default(),
         );
 
@@ -170,9 +179,11 @@ mod tests {
             "background-agent".to_string(),
             SessionStatus::Running,
             Utc::now(),
-            100,
-            100,
-            vec![],
+            CheckpointState {
+                last_event_seq: 100,
+                checkpoint_seq: 100,
+                conversation: vec![],
+            },
             SessionConfig {
                 on_disconnect: OnDisconnect::Continue,
                 ..Default::default()
@@ -219,9 +230,11 @@ mod tests {
             "a".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            0,
-            0,
-            vec![],
+            CheckpointState {
+                last_event_seq: 0,
+                checkpoint_seq: 0,
+                conversation: vec![],
+            },
             SessionConfig::default(),
         );
         assert!(snapshot.is_compatible());
@@ -290,9 +303,11 @@ config:
             "agent".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            100, // last_event_seq
-            50,  // checkpoint_seq (checkpoint is behind)
-            vec![],
+            CheckpointState {
+                last_event_seq: 100,
+                checkpoint_seq: 50,
+                conversation: vec![],
+            },
             SessionConfig::default(),
         );
 
@@ -310,9 +325,11 @@ config:
             "agent".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            178, // last_event_seq — 178 events exist
-            0,   // checkpoint_seq — no checkpoint yet
-            vec![],
+            CheckpointState {
+                last_event_seq: 178,
+                checkpoint_seq: 0,
+                conversation: vec![],
+            },
             SessionConfig::default(),
         );
 
@@ -328,9 +345,11 @@ config:
             "a".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            100,
-            75,
-            vec![],
+            CheckpointState {
+                last_event_seq: 100,
+                checkpoint_seq: 75,
+                conversation: vec![],
+            },
             SessionConfig::default(),
         );
 

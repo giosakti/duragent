@@ -30,7 +30,7 @@ use super::actor_types::{
 use super::actor_types::{DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP};
 use super::agentic_loop::PendingApproval;
 use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
-use super::snapshot::{SessionConfig, SessionSnapshot};
+use super::snapshot::{CheckpointState, SessionConfig, SessionSnapshot};
 
 // ============================================================================
 // Session Actor
@@ -772,9 +772,11 @@ impl SessionActor {
             self.agent.clone(),
             self.status,
             self.created_at,
-            self.last_flushed_seq,
-            self.checkpoint_seq,
-            self.checkpointed_messages.clone(),
+            CheckpointState {
+                last_event_seq: self.last_flushed_seq,
+                checkpoint_seq: self.checkpoint_seq,
+                conversation: self.checkpointed_messages.clone(),
+            },
             SessionConfig {
                 on_disconnect: self.on_disconnect,
                 gateway: self.gateway.clone(),

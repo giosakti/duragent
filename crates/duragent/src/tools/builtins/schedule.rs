@@ -178,13 +178,13 @@ impl ScheduleTool {
                     .to_string(),
             });
         }
-        if let Some(every) = args.every_seconds {
-            if every == 0 {
-                return Ok(ToolResult {
-                    success: false,
-                    content: "Error: every_seconds must be >= 1".to_string(),
-                });
-            }
+        if let Some(every) = args.every_seconds
+            && every == 0
+        {
+            return Ok(ToolResult {
+                success: false,
+                content: "Error: every_seconds must be >= 1".to_string(),
+            });
         }
 
         // Validate: exactly one payload option

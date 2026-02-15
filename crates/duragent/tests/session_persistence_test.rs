@@ -7,7 +7,9 @@ use tempfile::TempDir;
 use duragent::agent::OnDisconnect;
 use duragent::api::SessionStatus;
 use duragent::llm::{Message, Role, Usage};
-use duragent::session::{SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot};
+use duragent::session::{
+    CheckpointState, SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot,
+};
 use duragent::store::SessionStore;
 use duragent::store::file::FileSessionStore;
 
@@ -346,9 +348,11 @@ async fn snapshot_write_load_roundtrip() {
         "math-tutor".to_string(),
         SessionStatus::Active,
         created_at,
-        42,
-        42, // checkpoint_seq
-        conversation.clone(),
+        CheckpointState {
+            last_event_seq: 42,
+            checkpoint_seq: 42,
+            conversation: conversation.clone(),
+        },
         config,
     );
 
@@ -395,9 +399,11 @@ async fn snapshot_preserves_all_statuses() {
             "agent".to_string(),
             *status,
             Utc::now(),
-            0,
-            0, // checkpoint_seq
-            vec![],
+            CheckpointState {
+                last_event_seq: 0,
+                checkpoint_seq: 0,
+                conversation: vec![],
+            },
             SessionConfig::default(),
         );
 
@@ -441,9 +447,11 @@ async fn read_events_from_snapshot_seq() {
         "agent".to_string(),
         SessionStatus::Active,
         Utc::now(),
-        5,
-        5, // checkpoint_seq
-        vec![],
+        CheckpointState {
+            last_event_seq: 5,
+            checkpoint_seq: 5,
+            conversation: vec![],
+        },
         SessionConfig::default(),
     );
 
@@ -512,12 +520,14 @@ async fn events_and_snapshot_coordinate_recovery() {
         "recovery-agent".to_string(),
         SessionStatus::Active,
         Utc::now(),
-        3,
-        3, // checkpoint_seq
-        vec![
-            Message::text(Role::User, "Hello"),
-            Message::text(Role::Assistant, "Hi there!"),
-        ],
+        CheckpointState {
+            last_event_seq: 3,
+            checkpoint_seq: 3,
+            conversation: vec![
+                Message::text(Role::User, "Hello"),
+                Message::text(Role::Assistant, "Hi there!"),
+            ],
+        },
         SessionConfig::default(),
     );
 
@@ -645,9 +655,11 @@ async fn recovery_replays_events_after_snapshot() {
         agent.to_string(),
         SessionStatus::Active,
         Utc::now(),
-        50, // last_event_seq at snapshot time
-        50, // checkpoint_seq
-        snapshot_conversation,
+        CheckpointState {
+            last_event_seq: 50,
+            checkpoint_seq: 50,
+            conversation: snapshot_conversation,
+        },
         SessionConfig::default(),
     );
 
@@ -730,9 +742,11 @@ async fn recovery_uses_latest_snapshot() {
         agent.to_string(),
         SessionStatus::Active,
         Utc::now(),
-        75, // last_event_seq at snapshot time
-        75, // checkpoint_seq
-        snapshot_conversation,
+        CheckpointState {
+            last_event_seq: 75,
+            checkpoint_seq: 75,
+            conversation: snapshot_conversation,
+        },
         SessionConfig::default(),
     );
 
@@ -799,9 +813,11 @@ async fn recovery_with_no_events_after_snapshot() {
         agent.to_string(),
         SessionStatus::Active,
         Utc::now(),
-        10,
-        10, // checkpoint_seq
-        snapshot_conversation,
+        CheckpointState {
+            last_event_seq: 10,
+            checkpoint_seq: 10,
+            conversation: snapshot_conversation,
+        },
         SessionConfig::default(),
     );
 
@@ -973,9 +989,11 @@ async fn load_snapshot_returns_error_for_incompatible_schema() {
         "agent".to_string(),
         SessionStatus::Active,
         Utc::now(),
-        0,
-        0, // checkpoint_seq
-        vec![],
+        CheckpointState {
+            last_event_seq: 0,
+            checkpoint_seq: 0,
+            conversation: vec![],
+        },
         SessionConfig::default(),
     );
 
@@ -1009,9 +1027,11 @@ async fn snapshot_write_is_atomic() {
         "agent".to_string(),
         SessionStatus::Active,
         Utc::now(),
-        42,
-        42, // checkpoint_seq
-        vec![],
+        CheckpointState {
+            last_event_seq: 42,
+            checkpoint_seq: 42,
+            conversation: vec![],
+        },
         SessionConfig::default(),
     );
 
@@ -1046,9 +1066,11 @@ async fn snapshot_overwrite_is_atomic() {
         "agent".to_string(),
         SessionStatus::Active,
         Utc::now(),
-        10,
-        10, // checkpoint_seq
-        vec![],
+        CheckpointState {
+            last_event_seq: 10,
+            checkpoint_seq: 10,
+            conversation: vec![],
+        },
         SessionConfig::default(),
     );
 
@@ -1060,9 +1082,11 @@ async fn snapshot_overwrite_is_atomic() {
         "agent".to_string(),
         SessionStatus::Completed,
         Utc::now(),
-        50,
-        50, // checkpoint_seq
-        vec![],
+        CheckpointState {
+            last_event_seq: 50,
+            checkpoint_seq: 50,
+            conversation: vec![],
+        },
         SessionConfig::default(),
     );
 

@@ -49,14 +49,14 @@ pub use events::{
     ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,
 };
 pub use handle::SessionHandle;
-pub use registry::{RecoveryResult, SessionRegistry};
-pub use snapshot::{SessionConfig, SessionSnapshot};
+pub use registry::{CreateSessionOpts, RecoveryResult, SessionRegistry};
+pub use snapshot::{CheckpointState, SessionConfig, SessionSnapshot};
 
 // Streaming
 pub use sse_stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop
 pub use agentic_loop::{
-    AgenticError, AgenticResult, PendingApproval, SteeringMessage, SteeringReceiver,
+    AgenticError, AgenticResult, PendingApproval, ResumeContext, SteeringMessage, SteeringReceiver,
     SteeringSender, resume_agentic_loop, run_agentic_loop,
 };

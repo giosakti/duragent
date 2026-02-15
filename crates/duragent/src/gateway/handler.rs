@@ -19,7 +19,8 @@ use duragent_gateway_protocol::{
 
 use super::manager::GatewaySender;
 use super::queue::{
-    DrainResult, EnqueueResult, QueuedMessage, SessionMessageQueues, combine_messages,
+    DrainResult, EnqueueResult, QueuedMessage, SessionMessageQueue, SessionMessageQueues,
+    combine_messages,
 };
 use super::routing::{RoutingConfig, is_group_chat};
 use super::{MessageHandler, build_approval_keyboard};
@@ -394,16 +395,8 @@ impl GatewayMessageHandler {
                 } else {
                     text.clone()
                 };
-                self.process_text_message(
-                    gateway,
-                    &routing.chat_id,
-                    handle,
-                    &text,
-                    sender,
-                    routing,
-                    queued.persisted,
-                )
-                .await
+                self.process_text_message(gateway, handle, &text, sender, routing, queued.persisted)
+                    .await
             }
             MessageContent::Media { caption, .. } => {
                 if let Some(caption) = caption
@@ -416,7 +409,6 @@ impl GatewayMessageHandler {
                     };
                     self.process_text_message(
                         gateway,
-                        &routing.chat_id,
                         handle,
                         &text,
                         sender,
@@ -443,7 +435,6 @@ impl GatewayMessageHandler {
     async fn process_text_message(
         &self,
         gateway: &str,
-        chat_id: &str,
         handle: &SessionHandle,
         text: &str,
         sender: &Sender,
@@ -453,24 +444,30 @@ impl GatewayMessageHandler {
         let agent = self.services.agents.get(handle.agent())?;
 
         // Persist user message via actor (with sender attribution for gateway messages)
-        if !already_persisted {
-            if let Err(e) = handle
+        if !already_persisted
+            && let Err(e) = handle
                 .add_user_message_with_sender(
                     text.to_string(),
                     Some(sender.id.clone()),
                     Some(resolve_sender_label(sender)),
                 )
                 .await
-            {
-                error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
-                return None;
-            }
+        {
+            error!(session_id = %handle.id(), error = %e, "Failed to persist user message");
+            return None;
         }
 
         // Route to agentic loop if agent has tools configured
         if !agent.tools.is_empty() {
             return self
-                .process_text_message_agentic(gateway, chat_id, handle, text, &sender.id, routing)
+                .process_text_message_agentic(
+                    gateway,
+                    &routing.chat_id,
+                    handle,
+                    text,
+                    &sender.id,
+                    routing,
+                )
                 .await;
         }
 

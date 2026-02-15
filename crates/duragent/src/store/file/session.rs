@@ -331,7 +331,7 @@ mod tests {
     use crate::agent::OnDisconnect;
     use crate::api::SessionStatus;
     use crate::llm::{Message, Role};
-    use crate::session::{SessionConfig, SessionEventPayload};
+    use crate::session::{CheckpointState, SessionConfig, SessionEventPayload};
     use chrono::Utc;
     use tempfile::TempDir;
 
@@ -356,9 +356,11 @@ mod tests {
             "test-agent".to_string(),
             SessionStatus::Active,
             Utc::now(),
-            last_seq,
-            last_seq, // checkpoint_seq matches last_event_seq
-            vec![Message::text(Role::User, "Hello")],
+            CheckpointState {
+                last_event_seq: last_seq,
+                checkpoint_seq: last_seq,
+                conversation: vec![Message::text(Role::User, "Hello")],
+            },
             SessionConfig::default(),
         )
     }

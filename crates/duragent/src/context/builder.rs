@@ -198,7 +198,9 @@ mod tests {
         assert_eq!(ctx.system_blocks.len(), 4);
 
         let msg = ctx.render_system_message().unwrap();
-        assert!(msg.starts_with("You interact with the world exclusively through tools."));
+        assert!(
+            msg.starts_with("You interact with the world through tools when actions are required.")
+        );
         assert!(msg.contains("I am cheerful."));
         assert!(msg.contains("You are helpful."));
         assert!(msg.contains("Be concise."));

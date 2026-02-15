@@ -10,7 +10,7 @@ use crate::agent::ToolPolicy;
 use crate::api::SessionStatus;
 use crate::context::ContextBuilder;
 use crate::llm::{FunctionCall, ToolCall};
-use crate::session::{AgenticResult, ApprovalDecisionType, resume_agentic_loop};
+use crate::session::{AgenticResult, ApprovalDecisionType, ResumeContext, resume_agentic_loop};
 use crate::tools::{
     ReloadDeps, ToolDependencies, ToolExecutionContext, ToolResult, build_executor,
 };
@@ -263,8 +263,10 @@ impl GatewayMessageHandler {
             provider,
             &mut executor,
             &agent,
-            pending,
-            tool_result,
+            ResumeContext {
+                pending,
+                tool_result,
+            },
             &handle,
             tool_refs.as_ref(),
             None,
