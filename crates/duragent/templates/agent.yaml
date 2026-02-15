@@ -62,10 +62,38 @@ spec:
   #         enabled: true
   #         window_ms: 1500
 
+  # Tool lifecycle hooks (guards & steering)
+  # hooks:
+  #   before_tool:
+  #     - match: "background_process:send_keys"
+  #       type: depends_on
+  #       prior: "background_process:capture"
+  #       match_arg: handle
+  #     - match: "memory:recall"
+  #       type: skip_duplicate
+  #       match_args: [days]
+  #   after_tool:
+  #     - match: "background_process:capture"
+  #       message: "Base your next action on the captured screen output above."
+  #     - match: "background_process:spawn"
+  #       message: "Remember to start a watcher for this process if needed."
+  #       unless:
+  #         wait: true
+
   # Tools
   # tools:
   #   - type: builtin
   #     name: bash
+  #   - type: builtin
+  #     name: web
+  #   - type: builtin
+  #     name: schedule
+  #   - type: builtin
+  #     name: background_process
+  #   - type: builtin
+  #     name: session
+  #   - type: builtin
+  #     name: reload_tools
   #   - type: cli
   #     name: my-tool
   #     command: ./tools/my-tool.sh

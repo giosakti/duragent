@@ -5,24 +5,20 @@
 //! - `{agent_memory_dir}/MEMORY.md` — Agent's curated long-term memory
 //! - `{agent_memory_dir}/daily/*.md` — Agent's daily experiences (append-only)
 
-mod tools;
-
-pub use tools::{RecallTool, ReflectTool, RememberTool, UpdateWorldTool};
-
 use std::path::PathBuf;
 
 /// Default instruction for memory tool access.
-pub const DEFAULT_MEMORY_DIRECTIVE: &str = r#"You have access to a persistent memory system:
-- `recall` - Load your memory (world knowledge, long-term memory, recent experiences)
-- `remember` - Record an experience to today's daily log
-- `reflect` - Read then update your long-term MEMORY.md (call without content to read, then with content to write)
-- `update_world` - Write shared world knowledge for a topic (replaces existing content)
+pub const DEFAULT_MEMORY_DIRECTIVE: &str = r#"You have access to a persistent memory system via the `memory` tool:
+- `memory` action=`recall` - Load your memory (world knowledge, long-term memory, recent experiences)
+- `memory` action=`remember` - Record an experience to today's daily log
+- `memory` action=`reflect` - Read then update your long-term MEMORY.md (call without content to read, then with content to write)
+- `memory` action=`update_world` - Write shared world knowledge for a topic (replaces existing content)
 
 Guidelines:
-- Call `recall` at the start of conversations when context might be helpful
-- Use `remember` after learning something important about the user or project
-- Use `reflect` at the end of substantial sessions to consolidate learnings — always read first, then write
-- Use `update_world` when discovering facts relevant to all agents"#;
+- Call `memory` with action `recall` at the start of conversations when context might be helpful
+- Use `memory` with action `remember` after learning something important about the user or project
+- Use `memory` with action `reflect` at the end of substantial sessions to consolidate learnings — always read first, then write
+- Use `memory` with action `update_world` when discovering facts relevant to all agents"#;
 
 use anyhow::Result;
 use chrono::Local;

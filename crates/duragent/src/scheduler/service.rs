@@ -655,9 +655,10 @@ async fn execute_task_payload(
         scheduler: None, // Schedules don't create nested schedules
         execution_context: None,
         workspace_tools_dir: Some(config.services.workspace_tools_path.clone()),
-        process_registry: None,
+        process_registry: config.process_registry.get().cloned(),
         session_id: Some(handle.id().to_string()),
         agent_name: Some(schedule.agent.clone()),
+        session_registry: Some(config.services.session_registry.clone()),
     };
     let mut executor = build_executor(
         &agent,

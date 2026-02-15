@@ -110,19 +110,13 @@ spec:
     - type: builtin
       name: bash
     - type: builtin
-      name: web_search
+      name: web
     - type: builtin
-      name: web_fetch
+      name: schedule
     - type: builtin
-      name: spawn_process
+      name: background_process
     - type: builtin
-      name: manage_process
-    - type: builtin
-      name: schedule_task
-    - type: builtin
-      name: list_schedules
-    - type: builtin
-      name: cancel_schedule
+      name: session
     - type: builtin
       name: reload_tools
     - type: cli

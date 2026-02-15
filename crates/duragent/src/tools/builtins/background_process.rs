@@ -1,10 +1,13 @@
-//! manage_process tool — interact with running background processes.
+//! Background process tool — spawn and manage background processes.
+//!
+//! Consolidated tool with actions: spawn, list, status, log, capture, send_keys, write, kill.
 
 use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::process::ProcessRegistryHandle;
+use crate::process::registry::{SpawnConfig, SpawnOrWait};
 use crate::tools::error::ToolError;
 use crate::tools::executor::ToolResult;
 use crate::tools::tool::Tool;
@@ -13,16 +16,29 @@ use crate::tools::tool::Tool;
 // Tool struct
 // ============================================================================
 
-pub struct ProcessTool {
+/// Consolidated background process tool.
+pub struct BackgroundProcessTool {
     registry: ProcessRegistryHandle,
     session_id: String,
+    agent: String,
+    gateway: Option<String>,
+    chat_id: Option<String>,
 }
 
-impl ProcessTool {
-    pub fn new(registry: ProcessRegistryHandle, session_id: String) -> Self {
+impl BackgroundProcessTool {
+    pub fn new(
+        registry: ProcessRegistryHandle,
+        session_id: String,
+        agent: String,
+        gateway: Option<String>,
+        chat_id: Option<String>,
+    ) -> Self {
         Self {
             registry,
             session_id,
+            agent,
+            gateway,
+            chat_id,
         }
     }
 }
@@ -32,48 +48,76 @@ impl ProcessTool {
 // ============================================================================
 
 #[async_trait]
-impl Tool for ProcessTool {
+impl Tool for BackgroundProcessTool {
     fn name(&self) -> &str {
-        "manage_process"
+        "background_process"
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
-                name: "manage_process".to_string(),
-                description: "Interact with background processes. Actions: list (all processes), status (check one), log (read output), capture (interactive screen), send_keys (interactive input), write (stdin), kill (terminate).".to_string(),
+                name: "background_process".to_string(),
+                description: "Manage background processes. Actions: 'spawn' (start a command), 'list' (all processes), 'status' (check one), 'log' (read output), 'capture' (interactive screen), 'send_keys' (send tmux key names), 'write' (type literal text), 'kill' (terminate), 'watch' (start screen watcher for tmux process — fires callback when screen stops changing), 'unwatch' (stop screen watcher). After spawning, you will receive a completion notification when the process finishes — do not poll in a loop. Kill an existing process before spawning a replacement.".to_string(),
                 parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["list", "status", "log", "capture", "send_keys", "write", "kill"],
+                            "enum": ["spawn", "list", "status", "log", "capture", "send_keys", "write", "kill", "watch", "unwatch"],
                             "description": "Action to perform"
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "(spawn) Shell command to execute (passed to bash -c)"
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "(spawn) Working directory for the command"
+                        },
+                        "wait": {
+                            "type": "boolean",
+                            "description": "(spawn) If true, block until the process completes and return its output. Default: false"
+                        },
+                        "interactive": {
+                            "type": "boolean",
+                            "description": "(spawn) If true, run in interactive mode (terminal multiplexer). Default: false"
+                        },
+                        "label": {
+                            "type": "string",
+                            "description": "(spawn) Human-readable label for this process"
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "(spawn) Maximum runtime in seconds before the process is killed. Default: 1800"
                         },
                         "handle": {
                             "type": "string",
-                            "description": "Process handle (required for all actions except 'list')"
+                            "description": "(status/log/capture/send_keys/write/kill) Process handle"
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "Line offset for 'log' action (default: 0)"
+                            "description": "(log) Line offset (default: 0)"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Max lines for 'log' action (default: 100)"
+                            "description": "(log) Max lines (default: 100)"
                         },
                         "keys": {
                             "type": "string",
-                            "description": "Keystrokes for 'send_keys' action (key names like 'C-c', 'Enter', etc.)"
+                            "description": "(send_keys) Space-separated tmux key names (e.g., 'Down Enter', 'C-c')"
                         },
                         "press_enter": {
                             "type": "boolean",
-                            "description": "If true, press Enter after sending keys. Default: true"
+                            "description": "(send_keys) If true, press Enter after sending keys. Default: true"
                         },
                         "input": {
                             "type": "string",
-                            "description": "Text for 'write' action (written to stdin)"
+                            "description": "(write) Literal text to write to the process (tmux or stdin). Append '\\n' to press Enter."
+                        },
+                        "interval_seconds": {
+                            "type": "integer",
+                            "description": "(watch) Silence timeout in seconds — fires callback after this long with no new output. Default: 5"
                         }
                     },
                     "required": ["action"]
@@ -87,6 +131,14 @@ impl Tool for ProcessTool {
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         match args.action.as_str() {
+            "spawn" => {
+                let command = args.command.as_deref().ok_or_else(|| {
+                    ToolError::InvalidArguments(
+                        "'command' is required for spawn action".to_string(),
+                    )
+                })?;
+                self.action_spawn(command, &args).await
+            }
             "list" => self.action_list().await,
             "status" => {
                 let handle = require_handle(&args)?;
@@ -123,10 +175,19 @@ impl Tool for ProcessTool {
                 let handle = require_handle(&args)?;
                 self.action_kill(&handle).await
             }
+            "watch" => {
+                let handle = require_handle(&args)?;
+                let interval = args.interval_seconds.unwrap_or(5);
+                self.action_watch(&handle, interval).await
+            }
+            "unwatch" => {
+                let handle = require_handle(&args)?;
+                self.action_unwatch(&handle).await
+            }
             other => Ok(ToolResult {
                 success: false,
                 content: format!(
-                    "Unknown action: '{}'. Use: list, status, log, capture, send_keys, write, kill",
+                    "Unknown action: '{}'. Use: spawn, list, status, log, capture, send_keys, write, kill, watch, unwatch",
                     other
                 ),
             }),
@@ -138,7 +199,49 @@ impl Tool for ProcessTool {
 // Action implementations
 // ============================================================================
 
-impl ProcessTool {
+impl BackgroundProcessTool {
+    async fn action_spawn(
+        &self,
+        command: &str,
+        args: &ProcessArgs,
+    ) -> Result<ToolResult, ToolError> {
+        let wait = args.wait.unwrap_or(false);
+        let interactive = args.interactive.unwrap_or(false);
+        let timeout = args.timeout_seconds.unwrap_or(1800);
+
+        match self
+            .registry
+            .spawn(SpawnConfig {
+                command,
+                workdir: args.workdir.as_deref(),
+                wait,
+                interactive,
+                label: args.label.as_deref(),
+                timeout_seconds: timeout,
+                session_id: &self.session_id,
+                agent: &self.agent,
+                gateway: self.gateway.as_deref(),
+                chat_id: self.chat_id.as_deref(),
+            })
+            .await
+        {
+            Ok(SpawnOrWait::Spawned(result)) => Ok(ToolResult {
+                success: true,
+                content: serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| format!("Process spawned: {}", result.handle)),
+            }),
+            Ok(SpawnOrWait::Waited(result)) => Ok(ToolResult {
+                success: result.exit_code == 0,
+                content: serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| format!("Process finished: exit {}", result.exit_code)),
+            }),
+            Err(e) => Ok(ToolResult {
+                success: false,
+                content: format!("Failed to spawn process: {}", e),
+            }),
+        }
+    }
+
     async fn action_list(&self) -> Result<ToolResult, ToolError> {
         let processes = self.registry.list_by_session(&self.session_id);
         if processes.is_empty() {
@@ -249,12 +352,12 @@ impl ProcessTool {
     async fn action_write(&self, handle: &str, input: &str) -> Result<ToolResult, ToolError> {
         match self
             .registry
-            .write_stdin(handle, &self.session_id, input)
+            .write_input(handle, &self.session_id, input)
             .await
         {
             Ok(()) => Ok(ToolResult {
                 success: true,
-                content: format!("Wrote to stdin of {}", handle),
+                content: format!("Wrote to {}", handle),
             }),
             Err(e) => Ok(ToolResult {
                 success: false,
@@ -275,6 +378,42 @@ impl ProcessTool {
             }),
         }
     }
+
+    async fn action_watch(
+        &self,
+        handle: &str,
+        interval_seconds: u64,
+    ) -> Result<ToolResult, ToolError> {
+        match self
+            .registry
+            .start_watcher(handle, &self.session_id, interval_seconds)
+        {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                content: format!(
+                    "Screen watcher started for {} (silence timeout: {}s)",
+                    handle, interval_seconds
+                ),
+            }),
+            Err(e) => Ok(ToolResult {
+                success: false,
+                content: format!("{}", e),
+            }),
+        }
+    }
+
+    async fn action_unwatch(&self, handle: &str) -> Result<ToolResult, ToolError> {
+        match self.registry.stop_watcher(handle, &self.session_id) {
+            Ok(()) => Ok(ToolResult {
+                success: true,
+                content: format!("Screen watcher stopped for {}", handle),
+            }),
+            Err(e) => Ok(ToolResult {
+                success: false,
+                content: format!("{}", e),
+            }),
+        }
+    }
 }
 
 // ============================================================================
@@ -284,12 +423,19 @@ impl ProcessTool {
 #[derive(Debug, Deserialize)]
 struct ProcessArgs {
     action: String,
+    command: Option<String>,
+    workdir: Option<String>,
+    wait: Option<bool>,
+    interactive: Option<bool>,
+    label: Option<String>,
+    timeout_seconds: Option<u64>,
     handle: Option<String>,
     offset: Option<i64>,
     limit: Option<i64>,
     keys: Option<String>,
     press_enter: Option<bool>,
     input: Option<String>,
+    interval_seconds: Option<u64>,
 }
 
 fn require_handle(args: &ProcessArgs) -> Result<String, ToolError> {

@@ -32,21 +32,18 @@ spec:
 
 ### Built-in Tools
 
-| Name | Description |
-|------|-------------|
-| `bash` | Execute shell commands in sandbox |
-| `reload_tools` | Re-scan tool directories and register newly discovered tools |
-| `web_search` | Search the web (requires `BRAVE_API_KEY`) |
-| `web_fetch` | Fetch a URL and convert to Markdown |
-| `schedule_task` | Create a scheduled task |
-| `list_schedules` | List active schedules |
-| `cancel_schedule` | Cancel a schedule by ID |
-| `spawn_process` | Start a background process (optional tmux) |
-| `manage_process` | Interact with background processes (list, status, log, capture, send_keys, write, kill) |
+| Name | Actions | Description |
+|------|---------|-------------|
+| `bash` | — | Execute shell commands in sandbox |
+| `reload_tools` | — | Re-scan tool directories and register newly discovered tools |
+| `web` | `search`, `fetch` | Web search (requires `BRAVE_API_KEY`) and URL fetching |
+| `schedule` | `create`, `list`, `cancel` | Create, list, and cancel scheduled tasks |
+| `background_process` | `spawn`, `list`, `status`, `log`, `capture`, `send_keys`, `write`, `kill`, `watch`, `unwatch` | Spawn and manage background processes |
+| `session` | `list`, `read` | Peek at other sessions |
 
-Memory tools (`recall`, `remember`, `reflect`, `update_world`) are automatically registered when memory is configured. See [Memory](./memory.md).
+Memory tools (via the `memory` tool with actions `recall`, `remember`, `reflect`, `update_world`) are automatically registered when memory is configured. See [Memory](./memory.md).
 
-Process tools (`spawn_process`, `manage_process`) manage long-running commands. See [Background Processes](./background-processes.md).
+The `background_process` tool manages long-running commands. See [Background Processes](./background-processes.md).
 
 #### reload_tools
 
@@ -63,36 +60,28 @@ spec:
       name: reload_tools
 ```
 
-#### web_search
+#### web
 
-Searches the web using the [Brave Search API](https://brave.com/search/api/).
+A consolidated web tool with two actions: `search` and `fetch`.
 
-- **Parameters:** `query` (string, required), `count` (integer, 1–20, default 5)
-- **Requires:** `BRAVE_API_KEY` environment variable. If not set, the tool is silently skipped when registering.
+**Action: `search`** — Searches the web using the [Brave Search API](https://brave.com/search/api/).
+
+- **Parameters:** `action: "search"`, `query` (string, required), `count` (integer, 1–20, default 5)
+- **Requires:** `BRAVE_API_KEY` environment variable. If not set, the search action returns an error.
 - **Timeout:** 30 seconds
 
-```yaml
-spec:
-  tools:
-    - type: builtin
-      name: web_search
-```
+**Action: `fetch`** — Fetches a web page and converts HTML to Markdown.
 
-#### web_fetch
-
-Fetches a web page and converts HTML to Markdown.
-
-- **Parameters:** `url` (string, required — `http` and `https` only)
+- **Parameters:** `action: "fetch"`, `url` (string, required — `http` and `https` only)
 - **Download limit:** 1 MB response body
 - **Output limit:** 50 KB sent to the LLM (truncated with notice if larger)
 - **Timeout:** 30 seconds
-- **No API key required** — always available as a built-in tool
 
 ```yaml
 spec:
   tools:
     - type: builtin
-      name: web_fetch
+      name: web
 ```
 
 ### CLI Tools
@@ -211,7 +200,7 @@ Patterns use `tool_type:pattern` with glob-style matching.
 | Tool type | Matches | Invocation string |
 |-----------|---------|-------------------|
 | `bash` | The `bash` built-in tool | The shell command (e.g., `cargo test`) |
-| `builtin` | Built-in tools (e.g., `web_search`, `reload_tools`, memory tools) | The tool name (e.g., `web_search`) |
+| `builtin` | Built-in tools (e.g., `web`, `reload_tools`, memory tools) | `tool_name:action` (e.g., `web:search`) or just `tool_name` |
 | `cli` | CLI tools and auto-discovered tools | The tool name (e.g., `code-search`) |
 | `mcp` | MCP server tools *(planned)* | — |
 | `*` | Any tool type | — |
@@ -223,7 +212,9 @@ Patterns use `tool_type:pattern` with glob-style matching.
 | `bash:cargo *` | Bash commands starting with "cargo" |
 | `cli:code-search` | A CLI/discovered tool named "code-search" |
 | `cli:deploy*` | Any CLI tool starting with "deploy" |
-| `builtin:web_*` | Built-in tools starting with "web_" |
+| `builtin:web:search` | The `search` action of the `web` tool |
+| `builtin:web:*` | All actions of the `web` tool |
+| `builtin:schedule:*` | All actions of the `schedule` tool |
 | `*:*secret*` | "secret" in any tool type |
 
 ### Approval Flow (Ask Mode)
@@ -237,14 +228,20 @@ When a command isn't in the allow or deny list:
 
 ### Merge Behavior
 
-When both `policy.yaml` and `policy.local.yaml` exist:
+Policies are loaded from a 3-tier hierarchy:
+
+1. **Workspace** — `.duragent/policy.yaml` — shared across all agents
+2. **Agent base** — `agents/<name>/policy.yaml` — agent-specific, version controlled
+3. **Agent local** — `agents/<name>/policy.local.yaml` — user overrides, gitignored
 
 | Field | Strategy |
 |-------|----------|
-| `mode` | Local overrides base (unless `dangerous`) |
-| `deny` | Lists merged (union) |
-| `allow` | Lists merged (union) |
-| `notify` | Lists merged |
+| `mode` | Most specific explicit tier wins (local > base > workspace) |
+| `deny` | Union across all tiers (security accumulates, cannot be removed) |
+| `allow` | Union across all tiers |
+| `notify` | Union across all tiers |
+
+Deny is always checked before allow — it acts as an air-gap safety mechanism. A workspace deny cannot be overridden by an agent-level allow.
 
 ### Default Behavior
 

@@ -74,7 +74,7 @@ pub fn definition() -> ToolDefinition {
         tool_type: "function".to_string(),
         function: FunctionDefinition {
             name: "bash".to_string(),
-            description: "Execute a bash command. Use this to run shell commands, interact with the filesystem, or execute scripts.".to_string(),
+            description: "Execute a bash command (passed to bash -c). For quick commands that complete in under 30 seconds. For long-running commands (builds, servers, watchers), use background_process instead. Pipe through head/tail/grep to limit excessive output.".to_string(),
             parameters: Some(serde_json::json!({
                 "type": "object",
                 "properties": {

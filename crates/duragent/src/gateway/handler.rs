@@ -555,6 +555,7 @@ impl GatewayMessageHandler {
             process_registry: self.process_registry.clone(),
             session_id: Some(handle.id().to_string()),
             agent_name: Some(handle.agent().to_string()),
+            session_registry: Some(self.services.session_registry.clone()),
         };
         let mut executor = build_executor(
             &agent,
@@ -635,15 +636,19 @@ impl GatewayMessageHandler {
                 iterations: _,
                 tool_calls_made: _,
             } => {
-                // Persist final assistant message via actor
-                if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                    error!(error = %e, "Failed to persist assistant message");
+                // Skip empty responses (e.g. after approving interactive prompts)
+                if content.trim().is_empty() {
+                    None
+                } else {
+                    if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
+                        error!(error = %e, "Failed to persist assistant message");
+                    }
+                    Some(content)
                 }
-                Some(content)
             }
             AgenticResult::AwaitingApproval {
                 mut pending,
-                partial_content: _,
+                partial_content,
                 usage: _,
                 iterations: _,
                 tool_calls_made: _,

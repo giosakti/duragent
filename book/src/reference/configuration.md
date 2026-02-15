@@ -34,7 +34,7 @@ These are read directly from the environment — there is no YAML config equival
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BRAVE_API_KEY` | No | Brave Search API key. Enables the `web_search` built-in tool. |
+| `BRAVE_API_KEY` | No | Brave Search API key. Enables the `search` action of the `web` built-in tool. |
 
 ### Gateway Tokens
 

@@ -18,21 +18,22 @@ Scheduling lets agents handle use cases like:
 | Interval (`every`) | Repeat every N seconds | `3600` (hourly) |
 | Cron | Standard cron expression | `0 9 * * MON-FRI` (9am weekdays) |
 
-## Schedule Tools
+## Schedule Tool
 
-Three built-in tools are available for scheduling:
+A single built-in `schedule` tool handles all scheduling operations via an `action` parameter:
 
-### schedule_task
+| Action | Description |
+|--------|-------------|
+| `create` | Create a new schedule. The agent specifies the timing, destination, and payload. |
+| `list` | List all active schedules for the current agent. |
+| `cancel` | Cancel an active schedule by its ID. |
 
-Create a new schedule. The agent specifies the timing, destination, and payload.
-
-### list_schedules
-
-List all active schedules for the current agent.
-
-### cancel_schedule
-
-Cancel an active schedule by its ID.
+```yaml
+spec:
+  tools:
+    - type: builtin
+      name: schedule
+```
 
 ## Payload Types
 
@@ -46,13 +47,13 @@ Cancel an active schedule by its ID.
 ### One-Time Reminder
 
 1. User: "Remind me to review the PR in 2 hours"
-2. Agent calls `schedule_task` with `at: "2026-01-30T16:00:00Z"`
+2. Agent calls `schedule` with `action: "create"`, `at: "2026-01-30T16:00:00Z"`
 3. Two hours later, user receives: "Reminder: review the PR"
 
 ### Recurring Prompt
 
 1. User: "Send me a daily standup prompt at 9am on weekdays"
-2. Agent calls `schedule_task` with `cron: "0 9 * * MON-FRI"`
+2. Agent calls `schedule` with `action: "create"`, `cron: "0 9 * * MON-FRI"`
 3. Every weekday at 9am, user receives the prompt
 4. User replies, and the conversation continues naturally
 

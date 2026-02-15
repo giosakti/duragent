@@ -137,15 +137,8 @@ impl ToolExecutor {
     /// Used by the agentic loop after `reload_tools` to rebuild the executor
     /// with newly discovered tools while keeping session-bound tools intact.
     pub fn replace_tools(&mut self, new_tools: Vec<Arc<dyn Tool>>) {
-        const PRESERVED_TOOLS: &[&str] = &[
-            "recall",
-            "remember",
-            "reflect",
-            "update_world",
-            "reload_tools",
-            "spawn_process",
-            "manage_process",
-        ];
+        const PRESERVED_TOOLS: &[&str] =
+            &["memory", "reload_tools", "background_process", "session"];
 
         // Extract preserved tools before clearing
         let preserved: Vec<Arc<dyn Tool>> = self
@@ -184,11 +177,12 @@ impl ToolExecutor {
             scheduler: None,
             execution_context: None,
             workspace_tools_dir: deps.workspace_tools_dir.clone(),
-            // Process tools hold session-specific state (registry handle, session_id).
+            // Process and peek tools hold session-specific state.
             // They survive rebuild via PRESERVED_TOOLS in replace_tools().
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let explicit = create_tools(&deps.agent_tool_configs, &tool_deps);
 
@@ -223,10 +217,7 @@ impl ToolExecutor {
     /// - If allowed, executes and optionally sends notifications
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult, ToolError> {
         let tool_name = &tool_call.function.name;
-        let tool = self
-            .tools
-            .get(tool_name)
-            .ok_or_else(|| ToolError::NotFound(tool_name.clone()))?;
+        let tool = self.find_tool(tool_name)?;
 
         // Determine tool type and invocation string for policy check
         let (tool_type, invocation) = self.get_tool_type_and_invocation(tool_name, tool_call);
@@ -262,10 +253,7 @@ impl ToolExecutor {
         tool_call: &ToolCall,
     ) -> Result<ToolResult, ToolError> {
         let tool_name = &tool_call.function.name;
-        let tool = self
-            .tools
-            .get(tool_name)
-            .ok_or_else(|| ToolError::NotFound(tool_name.clone()))?;
+        let tool = self.find_tool(tool_name)?;
 
         // Determine tool type and invocation string (for notifications)
         let (tool_type, invocation) = self.get_tool_type_and_invocation(tool_name, tool_call);
@@ -291,17 +279,47 @@ impl ToolExecutor {
         !self.tools.is_empty()
     }
 
+    /// Look up a tool by name (case-insensitive fallback).
+    fn find_tool(&self, name: &str) -> Result<&Arc<dyn Tool>, ToolError> {
+        if let Some(tool) = self.tools.get(name) {
+            return Ok(tool);
+        }
+        // Case-insensitive fallback: LLMs sometimes capitalize tool names
+        let lower = name.to_lowercase();
+        for (key, tool) in &self.tools {
+            if key.to_lowercase() == lower {
+                return Ok(tool);
+            }
+        }
+        Err(ToolError::NotFound(name.to_string()))
+    }
+
+    /// Look up a tool Arc by name (case-insensitive fallback), returning Option.
+    fn find_tool_arc(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        self.find_tool(name).ok()
+    }
+
     /// Get tool type and invocation string for policy checks.
+    ///
+    /// For builtin tools, extracts the `action` field from JSON arguments
+    /// and returns `tool_name:action` as the invocation string. This enables
+    /// policy patterns like `builtin:schedule:create` or `builtin:web:*`.
     fn get_tool_type_and_invocation(
         &self,
         tool_name: &str,
         tool_call: &ToolCall,
     ) -> (ToolType, String) {
-        let tool = self.tools.get(tool_name);
+        let tool = self.find_tool_arc(tool_name);
         let tool_type = tool.map(|t| t.tool_type()).unwrap_or(ToolType::Builtin);
 
         let invocation = if tool_type == ToolType::Bash {
             extract_bash_command(&tool_call.function.arguments)
+        } else if tool_type == ToolType::Builtin {
+            // For builtin tools, append :action if present in arguments
+            match extract_action(&tool_call.function.arguments) {
+                Some(action) => format!("{}:{}", tool_name, action),
+                None => tool_name.to_string(),
+            }
         } else {
             tool_name.to_string()
         };
@@ -359,6 +377,18 @@ fn extract_bash_command(arguments: &str) -> String {
         .unwrap_or_else(|_| arguments.to_string())
 }
 
+/// Extract the action field from tool arguments, if present.
+pub(crate) fn extract_action(arguments: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct ActionArgs {
+        action: Option<String>,
+    }
+
+    serde_json::from_str::<ActionArgs>(arguments)
+        .ok()
+        .and_then(|args| args.action)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +413,7 @@ mod tests {
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -400,6 +431,7 @@ mod tests {
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(policy, "test-agent".to_string()).register_all(tools)
@@ -416,6 +448,7 @@ mod tests {
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let tools = create_tools(&tools, &deps);
         ToolExecutor::new(ToolPolicy::default(), "test-agent".to_string()).register_all(tools)
@@ -684,6 +717,7 @@ mod tests {
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {
@@ -722,6 +756,7 @@ mod tests {
             process_registry: None,
             session_id: None,
             agent_name: None,
+            session_registry: None,
         };
         let tools = create_tools(
             &[ToolConfig::Builtin {

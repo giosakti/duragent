@@ -10,13 +10,33 @@ Background processes let agents handle use cases like:
 - "Start the dev server so I can test against it"
 - "Compile the project in the background while we keep talking"
 
-## Process Tools
+## Process Tool
 
-Two built-in tools are available for process management:
+A single built-in `background_process` tool handles all process operations via an `action` parameter:
 
-### spawn_process
+```yaml
+spec:
+  tools:
+    - type: builtin
+      name: background_process
+```
 
-Start a background command.
+### Actions
+
+| Action | Description | Required Parameters |
+|--------|-------------|---------------------|
+| `spawn` | Start a background command | `command` |
+| `list` | List all processes for the current session | — |
+| `status` | Get status of a specific process | `handle` |
+| `log` | Read process output | `handle`, optional `offset`/`limit` |
+| `capture` | Capture screen content | `handle` (interactive only) |
+| `send_keys` | Send keystrokes | `handle`, `keys`, optional `press_enter` (interactive only) |
+| `write` | Write to process stdin | `handle`, `input` (non-interactive only) |
+| `kill` | Terminate a process | `handle` |
+| `watch` | Start screen watcher (fires callback when screen stops changing) | `handle`, optional `interval_seconds` (interactive only) |
+| `unwatch` | Stop screen watcher | `handle` |
+
+### Spawn Parameters
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -27,41 +47,13 @@ Start a background command.
 | `label` | string | No | — | Human-readable label |
 | `timeout_seconds` | integer | No | `1800` | Max runtime before the process is killed |
 
-**Returns:** A process handle (e.g., `01hqxyz...`) for use with the `manage_process` tool.
-
-```yaml
-spec:
-  tools:
-    - type: builtin
-      name: spawn_process
-```
-
-### manage_process
-
-Interact with a previously spawned process.
-
-| Action | Description | Required Parameters |
-|--------|-------------|---------------------|
-| `list` | List all processes for the current session | — |
-| `status` | Get status of a specific process | `handle` |
-| `log` | Read process output | `handle`, optional `offset`/`limit` |
-| `capture` | Capture screen content | `handle` (interactive only) |
-| `send_keys` | Send keystrokes | `handle`, `keys`, optional `press_enter` (interactive only) |
-| `write` | Write to process stdin | `handle`, `input` (non-interactive only) |
-| `kill` | Terminate a process | `handle` |
-
-```yaml
-spec:
-  tools:
-    - type: builtin
-      name: manage_process
-```
+**Returns:** A process handle (e.g., `01hqxyz...`) for use with subsequent actions.
 
 ## Execution Modes
 
 ### Async (default)
 
-The process runs in the background. The agent gets a handle immediately and can check on it later with the `manage_process` tool.
+The process runs in the background. The agent gets a handle immediately and can check on it later with the `status` or `log` actions.
 
 When the process finishes, a **completion callback** is injected into the session so the agent can report results back to the user.
 
@@ -87,17 +79,28 @@ tmux availability is detected once at startup. If tmux is not installed, `intera
 ### Run Tests in Background
 
 1. User: "Run the full test suite and let me know the results"
-2. Agent calls `spawn_process` with `command: "cargo test"`, `label: "test suite"`
+2. Agent calls `background_process` with `action: "spawn"`, `command: "cargo test"`, `label: "test suite"`
 3. Agent continues the conversation
 4. When tests finish, the completion callback fires and the agent reports results
 
 ### Interactive Dev Server
 
 1. User: "Start the dev server"
-2. Agent calls `spawn_process` with `command: "npm run dev"`, `interactive: true`
+2. Agent calls `background_process` with `action: "spawn"`, `command: "npm run dev"`, `interactive: true`
 3. Agent (or user via `tmux attach`) can observe the server output
-4. Agent uses `manage_process` with `capture` to check server status
-5. Agent uses `manage_process` with `send_keys` to interact if needed
+4. Agent calls `background_process` with `action: "capture"` to check server status
+5. Agent calls `background_process` with `action: "send_keys"` to interact if needed
+
+### Supervised Process (Watch Pattern)
+
+For processes that need periodic monitoring — like a coding agent that may prompt for input — combine `background_process` with `schedule` to create a watch loop:
+
+1. Agent spawns the process: `background_process` with `action: "spawn"`, `interactive: true`
+2. Agent creates a watch schedule: `schedule` with `action: "create"`, `every_seconds: 30`, `process_handle: "{handle}"`, `task: "Check process {handle}. If it needs input, provide it. Otherwise report current status."`
+3. Every 30 seconds, the schedule fires a task that inspects the process and acts
+4. When the process exits, the schedule is **automatically cancelled** via the `process_handle` link — no manual cleanup needed
+
+The `process_handle` parameter links the schedule to the process lifecycle. When the process completes (or fails/times out/is killed), any schedules with a matching `process_handle` are cancelled before the completion callback fires. This eliminates wasted LLM calls from watch schedules firing after the process is already done.
 
 ## Process Lifecycle
 

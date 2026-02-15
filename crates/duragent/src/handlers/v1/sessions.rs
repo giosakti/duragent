@@ -434,6 +434,7 @@ pub async fn approve_command(
             process_registry: state.process_registry.clone(),
             session_id: Some(session_id.clone()),
             agent_name: Some(agent_name.clone()),
+            session_registry: Some(state.services.session_registry.clone()),
         };
         let executor = build_executor(
             &agent_spec,
@@ -492,6 +493,7 @@ pub async fn approve_command(
         process_registry: state.process_registry.clone(),
         session_id: Some(session_id.clone()),
         agent_name: Some(agent_name.clone()),
+        session_registry: Some(state.services.session_registry.clone()),
     };
     let mut executor = build_executor(
         &agent_spec,
@@ -604,6 +606,7 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
         process_registry: state.process_registry.clone(),
         session_id: Some(session_id.clone()),
         agent_name: Some(agent_name.clone()),
+        session_registry: Some(state.services.session_registry.clone()),
     };
     let mut executor = build_executor(
         &ctx.agent_spec,

@@ -166,6 +166,7 @@ impl GatewayMessageHandler {
                 process_registry: self.process_registry.clone(),
                 session_id: Some(handle.id().to_string()),
                 agent_name: Some(handle.agent().to_string()),
+                session_registry: Some(self.services.session_registry.clone()),
             };
             let executor = build_executor(
                 &agent,
@@ -230,6 +231,7 @@ impl GatewayMessageHandler {
             process_registry: self.process_registry.clone(),
             session_id: Some(handle.id().to_string()),
             agent_name: Some(handle.agent().to_string()),
+            session_registry: Some(self.services.session_registry.clone()),
         };
         let mut executor = build_executor(
             &agent,
