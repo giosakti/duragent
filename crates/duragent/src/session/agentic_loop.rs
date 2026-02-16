@@ -40,8 +40,11 @@ pub struct SteeringMessage {
     pub persisted: bool,
 }
 
-pub type SteeringSender = mpsc::UnboundedSender<SteeringMessage>;
-pub type SteeringReceiver = mpsc::UnboundedReceiver<SteeringMessage>;
+/// Bounded capacity for per-session steering channels.
+pub const STEERING_CHANNEL_CAPACITY: usize = 64;
+
+pub type SteeringSender = mpsc::Sender<SteeringMessage>;
+pub type SteeringReceiver = mpsc::Receiver<SteeringMessage>;
 
 /// Result of running the agentic loop.
 #[derive(Debug)]
@@ -748,15 +751,15 @@ mod tests {
 
     #[test]
     fn drain_steering_collects_pending_messages() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        tx.send(SteeringMessage {
+        let (tx, mut rx) = mpsc::channel(STEERING_CHANNEL_CAPACITY);
+        tx.try_send(SteeringMessage {
             content: "hello".into(),
             sender_id: None,
             sender_label: None,
             persisted: false,
         })
         .unwrap();
-        tx.send(SteeringMessage {
+        tx.try_send(SteeringMessage {
             content: "world".into(),
             sender_id: None,
             sender_label: None,

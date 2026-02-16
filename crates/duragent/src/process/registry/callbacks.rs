@@ -75,7 +75,7 @@ impl ProcessRegistryHandle {
         );
 
         // Try to steer into a running agentic loop first
-        if let Some(tx) = self.services.steering_channels.get(&meta.session_id) {
+        if let Some(tx_ref) = self.services.steering_channels.get(&meta.session_id) {
             let mut persisted = false;
             if let Some(handle) = self.services.session_registry.get(&meta.session_id)
                 && handle
@@ -91,7 +91,9 @@ impl ProcessRegistryHandle {
                 sender_label: None,
                 persisted,
             };
-            if tx.send(steering_msg).is_ok() {
+            let tx = tx_ref.clone();
+            drop(tx_ref);
+            if tx.send(steering_msg).await.is_ok() {
                 return;
             }
 
@@ -156,7 +158,7 @@ impl ProcessRegistryHandle {
         );
 
         // Try to steer into a running agentic loop first
-        if let Some(tx) = self.services.steering_channels.get(&meta.session_id) {
+        if let Some(tx_ref) = self.services.steering_channels.get(&meta.session_id) {
             // Persist the message for durability
             let mut persisted = false;
             if let Some(handle) = self.services.session_registry.get(&meta.session_id)
@@ -170,7 +172,9 @@ impl ProcessRegistryHandle {
                 sender_label: None,
                 persisted,
             };
-            if tx.send(steering_msg).is_ok() {
+            let tx = tx_ref.clone();
+            drop(tx_ref);
+            if tx.send(steering_msg).await.is_ok() {
                 return;
             }
 

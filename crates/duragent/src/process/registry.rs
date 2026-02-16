@@ -16,7 +16,7 @@ use crate::api::SessionStatus;
 use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
 use crate::gateway::{GatewaySender, build_approval_keyboard};
 use crate::server::RuntimeServices;
-use crate::session::{AgenticResult, run_agentic_loop};
+use crate::session::{AgenticResult, STEERING_CHANNEL_CAPACITY, run_agentic_loop};
 use crate::tools::{ReloadDeps, ToolDependencies, build_executor};
 
 use super::backend::{BackendSpawn, ProcessBackends};
@@ -622,7 +622,7 @@ impl ProcessRegistryHandle {
         });
 
         // Create steering channel so user messages can be injected mid-loop
-        let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+        let (steering_tx, steering_rx) = mpsc::channel(STEERING_CHANNEL_CAPACITY);
         self.services
             .steering_channels
             .insert(meta.session_id.clone(), steering_tx);

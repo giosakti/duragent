@@ -37,7 +37,8 @@ use crate::process::ProcessRegistryHandle;
 use crate::scheduler::SchedulerHandle;
 use crate::server::RuntimeServices;
 use crate::session::{
-    AgenticResult, ChatSessionCache, SessionHandle, SteeringMessage, run_agentic_loop,
+    AgenticResult, ChatSessionCache, STEERING_CHANNEL_CAPACITY, SessionHandle, SteeringMessage,
+    run_agentic_loop,
 };
 use crate::sync::KeyedLocks;
 use crate::tools::{ReloadDeps, ToolDependencies, ToolExecutionContext, build_executor};
@@ -325,7 +326,9 @@ impl MessageHandler for GatewayMessageHandler {
                     }
 
                     // Steer into running loop
-                    if let Some(tx) = self.services.steering_channels.get(handle.id()) {
+                    if let Some(tx_ref) = self.services.steering_channels.get(handle.id()) {
+                        let tx = tx_ref.clone();
+                        drop(tx_ref);
                         let steered = tx
                             .send(SteeringMessage {
                                 content,
@@ -333,6 +336,7 @@ impl MessageHandler for GatewayMessageHandler {
                                 sender_label,
                                 persisted,
                             })
+                            .await
                             .is_ok();
                         if steered {
                             queue.mark_steered(&queued).await;
@@ -697,7 +701,7 @@ impl GatewayMessageHandler {
             .messages;
 
         // Create steering channel before acquiring lock
-        let (steering_tx, steering_rx) = mpsc::unbounded_channel();
+        let (steering_tx, steering_rx) = mpsc::channel(STEERING_CHANNEL_CAPACITY);
         self.services
             .steering_channels
             .insert(handle.id().to_string(), steering_tx);

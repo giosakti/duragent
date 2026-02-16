@@ -57,6 +57,6 @@ pub use sse_stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop
 pub use agentic_loop::{
-    AgenticError, AgenticResult, PendingApproval, ResumeContext, SteeringMessage, SteeringReceiver,
-    SteeringSender, resume_agentic_loop, run_agentic_loop,
+    AgenticError, AgenticResult, PendingApproval, ResumeContext, STEERING_CHANNEL_CAPACITY,
+    SteeringMessage, SteeringReceiver, SteeringSender, resume_agentic_loop, run_agentic_loop,
 };
