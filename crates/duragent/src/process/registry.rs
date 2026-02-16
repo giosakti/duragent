@@ -285,9 +285,10 @@ impl ProcessRegistryHandle {
             let _ = tx.send(());
         }
 
-        // Persist updated meta
-        if let Some(entry) = self.entries.get(handle_id) {
-            self.persist_meta(&entry.meta).await;
+        // Persist updated meta (clone before await to avoid DashMap guard)
+        let meta = self.entries.get(handle_id).map(|entry| entry.meta.clone());
+        if let Some(meta) = meta {
+            self.persist_meta(&meta).await;
         }
 
         Ok(())

@@ -327,6 +327,7 @@ impl MessageHandler for GatewayMessageHandler {
 
                     // Steer into running loop
                     if let Some(tx_ref) = self.services.steering_channels.get(handle.id()) {
+                        // Clone sender and drop DashMap guard before awaiting send.
                         let tx = tx_ref.clone();
                         drop(tx_ref);
                         let steered = tx

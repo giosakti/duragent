@@ -209,6 +209,7 @@ impl ProcessRegistryHandle {
                 sender_label: None,
                 persisted,
             };
+            // Clone sender and drop DashMap guard before awaiting send.
             let tx = tx_ref.clone();
             drop(tx_ref);
             if tx.send(steering_msg).await.is_ok() {
@@ -285,6 +286,7 @@ impl ProcessRegistryHandle {
                 sender_label: None,
                 persisted,
             };
+            // Clone sender and drop DashMap guard before awaiting send.
             let tx = tx_ref.clone();
             drop(tx_ref);
             if tx.send(steering_msg).await.is_ok() {
