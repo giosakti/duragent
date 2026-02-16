@@ -16,16 +16,18 @@ Use it as a personal AI assistant, or as the foundation for agent-powered produc
 | **on_disconnect** | `continue` (agent keeps working) or `pause` (waits for reconnect) |
 | **Core gateways** | CLI, HTTP REST, SSE — built into Duragent |
 | **Platform gateways** | Telegram, Discord — subprocess plugins via Gateway Protocol |
+| **Tools** | bash, CLI tools, web search/fetch, scheduled tasks, background processes |
+| **Skills** | Modular Markdown-based capabilities with frontmatter metadata |
+| **Memory** | Per-agent recall/remember/reflect + shared world knowledge |
+| **Context management** | Token budgeting, history truncation, priority-based rendering |
 | **Sandbox** | Trust mode (no isolation) |
 | **Duragent Format** | YAML + Markdown agent definitions |
 
 ### Planned
 
-- TUI (ratatui) for core gateways
-- Slack gateway plugin
 - Sandbox isolation: bubblewrap (Linux), Docker (cross-platform)
 - MCP tool integration
-- A2A Agent Card discovery
+- Structured logging / metrics (OpenTelemetry)
 
 See [Project Status](./docs/PROJECT_STATUS.md) for the full roadmap.
 
@@ -47,7 +49,8 @@ See [Project Status](./docs/PROJECT_STATUS.md) for the full roadmap.
 - HTTP: Axum
 - Streaming: SSE
 - Config/spec: YAML (structured) + Markdown (prose)
-- Tool ecosystem: built-in, CLI tools
+- Persistence: JSONL (events), JSON (snapshots), Markdown (prose)
+- Tool ecosystem: built-in, CLI tools, dynamic discovery from `tools/` directories
 - Sandbox: trust mode
 
 ## Code Conventions

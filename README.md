@@ -23,11 +23,10 @@ Use it as a personal AI assistant, or as the foundation for agent-powered produc
 
 ### 1. Install and initialize
 
-```bash
-git clone https://github.com/giosakti/duragent.git
-cd duragent && make build
+**Download a prebuilt binary** from [GitHub Releases](https://github.com/giosakti/duragent/releases) (Linux x86_64, macOS Intel/ARM), or build from source:
 
-# Or: cargo install --git https://github.com/giosakti/duragent.git
+```bash
+cargo install --git https://github.com/giosakti/duragent.git
 
 duragent init
 # Follow the interactive setup
@@ -60,9 +59,11 @@ duragent attach SESSION_ID   # Reconnect to existing session
 - **Memory** — agents recall past conversations, remember experiences, and reflect on long-term knowledge
 - **Tools** — bash execution, CLI tools, web search/fetch, scheduled tasks, and background processes, with configurable approval policies
 - **Skills** — modular capabilities defined as Markdown files ([Agent Skills](https://agentskills.io) standard)
+- **Context management** — token budgeting, history truncation, and priority-based context rendering
 - **Multiple LLM providers** — Anthropic, OpenAI, OpenRouter, Ollama
-- **Platform gateways** — Telegram and Discord via subprocess plugins
+- **Platform gateways** — Telegram and Discord via subprocess plugins; group chat with mention gating and debouncing
 - **HTTP API** — REST endpoints with SSE streaming
+- **Operational tooling** — `duragent doctor` for diagnostics, `duragent upgrade` for self-update
 
 ## Modular by Design
 
@@ -93,7 +94,7 @@ Use the built-ins, or swap in your own:
 ├── sessions/
 │   └── <session_id>/
 │       ├── events.jsonl     # Append-only event log
-│       └── state.yaml       # Snapshot for fast resume
+│       └── state.json       # Snapshot for fast resume
 ├── tools/                   # Workspace-level auto-discovered tools
 ├── schedules/               # Scheduled tasks and run logs
 ├── processes/               # Background process metadata and logs
