@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
@@ -327,18 +328,25 @@ impl MessageHandler for GatewayMessageHandler {
 
                     // Steer into running loop
                     if let Some(tx_ref) = self.services.steering_channels.get(handle.id()) {
-                        // Clone sender and drop DashMap guard before awaiting send.
+                        // Clone sender and drop DashMap guard before send.
                         let tx = tx_ref.clone();
                         drop(tx_ref);
-                        let steered = tx
-                            .send(SteeringMessage {
-                                content,
-                                sender_id,
-                                sender_label,
-                                persisted,
-                            })
-                            .await
-                            .is_ok();
+                        let steered = match tx.try_send(SteeringMessage {
+                            content,
+                            sender_id,
+                            sender_label,
+                            persisted,
+                        }) {
+                            Ok(()) => true,
+                            Err(TrySendError::Full(_)) => {
+                                warn!(
+                                    session_id = %handle.id(),
+                                    "Steering channel full; leaving message queued"
+                                );
+                                false
+                            }
+                            Err(TrySendError::Closed(_)) => false,
+                        };
                         if steered {
                             queue.mark_steered(&queued).await;
                         }
@@ -625,17 +633,20 @@ impl GatewayMessageHandler {
         if let Some(tx_ref) = self.services.steering_channels.get(handle.id()) {
             let tx = tx_ref.clone();
             drop(tx_ref);
-            let steered = tx
-                .send(SteeringMessage {
-                    content: text.to_string(),
-                    sender_id: Some(sender_id.to_string()),
-                    sender_label,
-                    persisted: true,
-                })
-                .await
-                .is_ok();
-            if steered {
-                return None;
+            match tx.try_send(SteeringMessage {
+                content: text.to_string(),
+                sender_id: Some(sender_id.to_string()),
+                sender_label,
+                persisted: true,
+            }) {
+                Ok(()) => return None,
+                Err(TrySendError::Full(_)) => {
+                    warn!(
+                        session_id = %handle.id(),
+                        "Steering channel full; starting new loop instead"
+                    );
+                }
+                Err(TrySendError::Closed(_)) => {}
             }
         }
 

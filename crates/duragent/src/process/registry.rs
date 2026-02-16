@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashMap;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{error, info, warn};
 
@@ -608,17 +609,20 @@ impl ProcessRegistryHandle {
         if let Some(tx_ref) = self.services.steering_channels.get(&meta.session_id) {
             let tx = tx_ref.clone();
             drop(tx_ref);
-            if tx
-                .send(SteeringMessage {
-                    content: message.to_string(),
-                    sender_id: None,
-                    sender_label: None,
-                    persisted,
-                })
-                .await
-                .is_ok()
-            {
-                return Ok(());
+            match tx.try_send(SteeringMessage {
+                content: message.to_string(),
+                sender_id: None,
+                sender_label: None,
+                persisted,
+            }) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(_)) => {
+                    warn!(
+                        session_id = %meta.session_id,
+                        "Steering channel full; continuing with callback runner"
+                    );
+                }
+                Err(TrySendError::Closed(_)) => {}
             }
         }
 

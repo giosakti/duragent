@@ -8,13 +8,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
 
 /// Default timeout for message handler execution (5 minutes).
 const DEFAULT_MESSAGE_HANDLER_TIMEOUT: Duration = Duration::from_secs(300);
+const GATEWAY_COMMAND_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+const GATEWAY_COMMAND_SEND_WARN_MS: u64 = 200;
 
 use duragent_gateway_protocol::{
     GatewayCommand, GatewayEvent, InlineButton, InlineKeyboard, MessageReceivedData,
@@ -133,7 +136,7 @@ impl GatewaySender {
             inline_keyboard,
         };
 
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        send_gateway_command(&tx, gateway, command, "send_message", false).await
     }
 
     /// Send typing indicator through a gateway.
@@ -152,7 +155,8 @@ impl GatewaySender {
             duration: 5,
         };
 
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        // Typing indicators are best-effort.
+        send_gateway_command(&tx, gateway, command, "send_typing", true).await
     }
 
     /// Answer a callback query with an optional notification text.
@@ -178,7 +182,7 @@ impl GatewaySender {
             text,
         };
 
-        tx.send(command).await.map_err(|_| SendError::ChannelClosed)
+        send_gateway_command(&tx, gateway, command, "answer_callback_query", false).await
     }
 }
 
@@ -644,10 +648,7 @@ pub struct GatewayHandle {
 impl GatewayHandle {
     /// Send a command to the gateway.
     pub async fn send(&self, command: GatewayCommand) -> Result<(), SendError> {
-        self.command_tx
-            .send(command)
-            .await
-            .map_err(|_| SendError::ChannelClosed)
+        send_gateway_command(&self.command_tx, &self.name, command, "send", false).await
     }
 
     /// Check if the gateway supports a capability.
@@ -661,6 +662,8 @@ impl GatewayHandle {
 pub enum SendError {
     #[error("gateway channel closed")]
     ChannelClosed,
+    #[error("gateway command send timed out")]
+    BackpressureTimeout,
 }
 
 /// Build an inline keyboard for approval prompts.
@@ -674,6 +677,54 @@ pub fn build_approval_keyboard() -> InlineKeyboard {
         InlineButton::new("Allow Always", "approve:allow_always"),
         InlineButton::new("Deny", "approve:deny"),
     ])
+}
+
+// ============================================================================
+// Private helpers
+// ============================================================================
+
+async fn send_gateway_command(
+    tx: &mpsc::Sender<GatewayCommand>,
+    gateway: &str,
+    command: GatewayCommand,
+    kind: &str,
+    allow_drop: bool,
+) -> Result<(), SendError> {
+    if allow_drop {
+        return match tx.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                warn!(gateway = %gateway, command = %kind, "Gateway command queue full; dropping");
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => Err(SendError::ChannelClosed),
+        };
+    }
+
+    let start = Instant::now();
+    match tokio::time::timeout(GATEWAY_COMMAND_SEND_TIMEOUT, tx.send(command)).await {
+        Ok(Ok(())) => {
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_millis(GATEWAY_COMMAND_SEND_WARN_MS) {
+                warn!(
+                    gateway = %gateway,
+                    command = %kind,
+                    elapsed_ms = elapsed.as_millis(),
+                    "Gateway command send was slow"
+                );
+            }
+            Ok(())
+        }
+        Ok(Err(_)) => Err(SendError::ChannelClosed),
+        Err(_) => {
+            warn!(
+                gateway = %gateway,
+                command = %kind,
+                "Gateway command send timed out"
+            );
+            Err(SendError::BackpressureTimeout)
+        }
+    }
 }
 
 /// Extract the major version from a Kubernetes-style version string.

@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, warn};
@@ -12,6 +13,8 @@ use super::COMPLETION_LOG_TAIL_BYTES;
 
 const CALLBACK_DEDUPE_WINDOW: Duration = Duration::from_secs(2);
 const CALLBACK_DEDUPE_MAX_ENTRIES: usize = 1024;
+const CALLBACK_SEND_TIMEOUT_SECS: u64 = 2;
+const CALLBACK_SEND_WARN_MS: u64 = 200;
 
 pub(crate) fn spawn_callback_workers(
     registry: ProcessRegistryHandle,
@@ -80,19 +83,13 @@ impl ProcessRegistryHandle {
             return;
         }
 
-        if let Err(e) = self
-            .callback_tx
-            .send(CallbackTask::Completion {
+        self.send_callback_task(
+            CallbackTask::Completion {
                 handle_id: handle_id.to_string(),
-            })
-            .await
-        {
-            warn!(
-                handle = %handle_id,
-                error = %e,
-                "Callback queue closed; dropping completion callback"
-            );
-        }
+            },
+            handle_id,
+        )
+        .await;
     }
 
     /// Fire a screen-halted callback for a process.
@@ -112,18 +109,61 @@ impl ProcessRegistryHandle {
             return;
         }
 
-        if let Err(e) = self
-            .callback_tx
-            .send(CallbackTask::ScreenHalted {
+        self.send_callback_task(
+            CallbackTask::ScreenHalted {
                 handle_id: handle_id.to_string(),
-            })
-            .await
-        {
-            warn!(
-                handle = %handle_id,
-                error = %e,
-                "Callback queue closed; dropping screen halted callback"
-            );
+            },
+            handle_id,
+        )
+        .await;
+    }
+
+    async fn send_callback_task(&self, task: CallbackTask, handle_id: &str) {
+        match self.callback_tx.try_send(task) {
+            Ok(()) => return,
+            Err(TrySendError::Closed(_)) => {
+                warn!(
+                    handle = %handle_id,
+                    "Callback queue closed; dropping callback"
+                );
+                return;
+            }
+            Err(TrySendError::Full(task)) => {
+                warn!(
+                    handle = %handle_id,
+                    "Callback queue full; applying backpressure"
+                );
+                let start = Instant::now();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(CALLBACK_SEND_TIMEOUT_SECS),
+                    self.callback_tx.send(task),
+                )
+                .await;
+                match result {
+                    Ok(Ok(())) => {
+                        let elapsed = start.elapsed();
+                        if elapsed > Duration::from_millis(CALLBACK_SEND_WARN_MS) {
+                            warn!(
+                                handle = %handle_id,
+                                elapsed_ms = elapsed.as_millis(),
+                                "Callback enqueue was slow"
+                            );
+                        }
+                    }
+                    Ok(Err(_)) => {
+                        warn!(
+                            handle = %handle_id,
+                            "Callback queue closed; dropping callback"
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            handle = %handle_id,
+                            "Callback queue send timed out; dropping callback"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -229,11 +269,20 @@ impl ProcessRegistryHandle {
             // Clone sender and drop DashMap guard before awaiting send.
             let tx = tx_ref.clone();
             drop(tx_ref);
-            if tx.send(steering_msg).await.is_ok() {
-                return;
+            match tx.try_send(steering_msg) {
+                Ok(()) => return,
+                Err(TrySendError::Full(_)) => {
+                    warn!(
+                        handle = %handle_id,
+                        "Steering channel full; falling back to callback runner"
+                    );
+                }
+                Err(TrySendError::Closed(_)) => {
+                    debug!(handle = %handle_id, "Steering channel closed; falling back");
+                }
             }
 
-            // Channel closed — loop just ended. Fall through to run_callback.
+            // Channel full or closed — fall through to run_callback.
             let persist_on_fallback = !persisted;
             if let Err(e) = self
                 .run_callback(
@@ -306,11 +355,20 @@ impl ProcessRegistryHandle {
             // Clone sender and drop DashMap guard before awaiting send.
             let tx = tx_ref.clone();
             drop(tx_ref);
-            if tx.send(steering_msg).await.is_ok() {
-                return;
+            match tx.try_send(steering_msg) {
+                Ok(()) => return,
+                Err(TrySendError::Full(_)) => {
+                    warn!(
+                        handle = %handle_id,
+                        "Steering channel full; falling back to callback runner"
+                    );
+                }
+                Err(TrySendError::Closed(_)) => {
+                    debug!(handle = %handle_id, "Steering channel closed; falling back");
+                }
             }
 
-            // Channel closed — loop just ended. Fall through to run_callback.
+            // Channel full or closed — fall through to run_callback.
             let persist_on_fallback = !persisted;
             if let Err(e) = self
                 .run_callback(

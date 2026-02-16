@@ -7,7 +7,7 @@
 //! Both modes use the same Gateway Protocol for communication.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use duragent_gateway_protocol::{
     CallbackQueryData, GatewayCommand, GatewayEvent, InlineKeyboard, MessageContent,
@@ -17,6 +17,9 @@ use teloxide::prelude::*;
 use teloxide::types::{MediaKind, MessageKind};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+const EVENT_SEND_TIMEOUT_SECS: u64 = 2;
+const EVENT_SEND_WARN_MS: u64 = 200;
 
 // ============================================================================
 // Configuration
@@ -83,13 +86,16 @@ impl TelegramGateway {
         {
             Ok(client) => client,
             Err(e) => {
-                let _ = event_tx
-                    .send(GatewayEvent::Error {
+                let _ = send_event(
+                    &event_tx,
+                    GatewayEvent::Error {
                         code: "init_failed".to_string(),
                         message: format!("Failed to build HTTP client: {e}"),
                         fatal: true,
-                    })
-                    .await;
+                    },
+                    "init_failed",
+                )
+                .await;
                 return;
             }
         };
@@ -128,7 +134,7 @@ impl TelegramGateway {
                 capabilities::INLINE_KEYBOARD.to_string(),
             ],
         };
-        if event_tx.send(ready_event).await.is_err() {
+        if send_event(&event_tx, ready_event, "ready").await.is_err() {
             error!("failed to send ready event");
             return;
         }
@@ -244,8 +250,11 @@ async fn dispatch_commands(
                     },
                 };
 
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "send_message").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send send_message event");
                 }
             }
 
@@ -279,8 +288,11 @@ async fn dispatch_commands(
                     },
                 };
 
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "edit_message").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send edit_message event");
                 }
             }
 
@@ -303,8 +315,11 @@ async fn dispatch_commands(
                     },
                 };
 
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "delete_message").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send delete_message event");
                 }
             }
 
@@ -314,8 +329,11 @@ async fn dispatch_commands(
                     uptime_seconds: started_at.elapsed().as_secs(),
                     connected: true,
                 };
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "pong").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send pong event");
                 }
             }
 
@@ -338,8 +356,11 @@ async fn dispatch_commands(
                     },
                 };
 
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "answer_callback_query").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send answer_callback_query event");
                 }
             }
 
@@ -348,11 +369,20 @@ async fn dispatch_commands(
                 if let Err(e) = shutdown_token.shutdown() {
                     warn!(error = ?e, "Dispatcher already shut down");
                 }
-                let _ = event_tx
-                    .send(GatewayEvent::Shutdown {
+                if let Err(err) = send_event(
+                    &event_tx,
+                    GatewayEvent::Shutdown {
                         reason: "shutdown requested".to_string(),
-                    })
-                    .await;
+                    },
+                    "shutdown",
+                )
+                .await
+                {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send shutdown event");
+                }
                 break;
             }
 
@@ -363,8 +393,11 @@ async fn dispatch_commands(
                     code: "not_implemented".to_string(),
                     message: "Media sending not yet implemented".to_string(),
                 };
-                if event_tx.send(event).await.is_err() {
-                    break;
+                if let Err(err) = send_event(&event_tx, event, "send_media").await {
+                    if should_break_on_send_error(err.as_ref()) {
+                        break;
+                    }
+                    warn!(error = %err, "Failed to send send_media event");
                 }
             }
         }
@@ -407,8 +440,50 @@ async fn handle_message(
         metadata: serde_json::json!({}),
     }));
 
-    event_tx.send(event).await?;
+    send_event(event_tx, event, "message_received").await?;
     Ok(())
+}
+
+async fn send_event(
+    event_tx: &mpsc::Sender<GatewayEvent>,
+    event: GatewayEvent,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let start = Instant::now();
+    match tokio::time::timeout(
+        Duration::from_secs(EVENT_SEND_TIMEOUT_SECS),
+        event_tx.send(event),
+    )
+    .await
+    {
+        Ok(Ok(())) => {
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_millis(EVENT_SEND_WARN_MS) {
+                warn!(
+                    context = %context,
+                    elapsed_ms = elapsed.as_millis(),
+                    "Gateway event send was slow"
+                );
+            }
+            Ok(())
+        }
+        Ok(Err(_)) => Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            format!("gateway event channel closed ({context})"),
+        ))),
+        Err(_) => {
+            warn!(context = %context, "Gateway event send timed out; dropping event");
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("gateway event send timed out ({context})"),
+            )))
+        }
+    }
+}
+
+fn should_break_on_send_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 /// Detect if the bot was @mentioned or replied to in a message.
@@ -483,7 +558,7 @@ async fn handle_callback_query(
         data: data.clone(),
     }));
 
-    event_tx.send(event).await?;
+    send_event(event_tx, event, "callback_query").await?;
     Ok(())
 }
 

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use duragent_gateway_protocol::{
     CallbackQueryData, GatewayCommand, GatewayEvent, InlineKeyboard, MessageContent,
@@ -25,6 +25,9 @@ use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+const EVENT_SEND_TIMEOUT_SECS: u64 = 2;
+const EVENT_SEND_WARN_MS: u64 = 200;
 
 /// Discord message character limit.
 const MAX_MESSAGE_LENGTH: usize = 2000;
@@ -93,13 +96,16 @@ impl DiscordGateway {
             Ok(client) => client,
             Err(e) => {
                 error!(error = %e, "Failed to create Discord client");
-                let _ = event_tx
-                    .send(GatewayEvent::Error {
+                let _ = send_event(
+                    &event_tx,
+                    GatewayEvent::Error {
                         code: "client_error".to_string(),
                         message: e.to_string(),
                         fatal: true,
-                    })
-                    .await;
+                    },
+                    "client_error",
+                )
+                .await;
                 return;
             }
         };
@@ -116,7 +122,7 @@ impl DiscordGateway {
                 capabilities::INLINE_KEYBOARD.to_string(),
             ],
         };
-        if event_tx.send(ready_event).await.is_err() {
+        if send_event(&event_tx, ready_event, "ready").await.is_err() {
             error!("failed to send ready event");
             return;
         }
@@ -162,8 +168,13 @@ impl DiscordGateway {
                             },
                         };
 
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) =
+                            send_event(&event_tx_for_commands, event, "send_message").await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send send_message event");
                         }
                     }
 
@@ -195,8 +206,13 @@ impl DiscordGateway {
                             },
                         };
 
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) =
+                            send_event(&event_tx_for_commands, event, "edit_message").await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send edit_message event");
                         }
                     }
 
@@ -219,8 +235,13 @@ impl DiscordGateway {
                             },
                         };
 
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) =
+                            send_event(&event_tx_for_commands, event, "delete_message").await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send delete_message event");
                         }
                     }
 
@@ -230,8 +251,11 @@ impl DiscordGateway {
                             uptime_seconds: started_at.elapsed().as_secs(),
                             connected: true,
                         };
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) = send_event(&event_tx_for_commands, event, "pong").await {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send pong event");
                         }
                     }
 
@@ -242,19 +266,33 @@ impl DiscordGateway {
                             request_id,
                             message_id: None,
                         };
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) =
+                            send_event(&event_tx_for_commands, event, "answer_callback_query").await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send answer_callback_query event");
                         }
                     }
 
                     GatewayCommand::Shutdown => {
                         info!("Discord gateway received shutdown command");
                         shard_manager.shutdown_all().await;
-                        let _ = event_tx_for_commands
-                            .send(GatewayEvent::Shutdown {
+                        if let Err(err) = send_event(
+                            &event_tx_for_commands,
+                            GatewayEvent::Shutdown {
                                 reason: "shutdown requested".to_string(),
-                            })
-                            .await;
+                            },
+                            "shutdown",
+                        )
+                        .await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send shutdown event");
+                        }
                         break;
                     }
 
@@ -264,8 +302,13 @@ impl DiscordGateway {
                             code: "not_implemented".to_string(),
                             message: "Media sending not yet implemented".to_string(),
                         };
-                        if event_tx_for_commands.send(event).await.is_err() {
-                            break;
+                        if let Err(err) =
+                            send_event(&event_tx_for_commands, event, "send_media").await
+                        {
+                            if should_break_on_send_error(err.as_ref()) {
+                                break;
+                            }
+                            warn!(error = %err, "Failed to send send_media event");
                         }
                     }
                 }
@@ -334,7 +377,7 @@ impl EventHandler for Handler {
             metadata: serde_json::json!({}),
         }));
 
-        if let Err(e) = self.event_tx.send(event).await {
+        if let Err(e) = send_event(&self.event_tx, event, "message_received").await {
             warn!(error = %e, "Failed to send message event");
         }
     }
@@ -383,9 +426,51 @@ async fn handle_component_interaction(
         data: component.data.custom_id.clone(),
     }));
 
-    if let Err(e) = event_tx.send(event).await {
+    if let Err(e) = send_event(event_tx, event, "callback_query").await {
         warn!(error = %e, "Failed to send callback query event");
     }
+}
+
+async fn send_event(
+    event_tx: &mpsc::Sender<GatewayEvent>,
+    event: GatewayEvent,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let start = Instant::now();
+    match tokio::time::timeout(
+        Duration::from_secs(EVENT_SEND_TIMEOUT_SECS),
+        event_tx.send(event),
+    )
+    .await
+    {
+        Ok(Ok(())) => {
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_millis(EVENT_SEND_WARN_MS) {
+                warn!(
+                    context = %context,
+                    elapsed_ms = elapsed.as_millis(),
+                    "Gateway event send was slow"
+                );
+            }
+            Ok(())
+        }
+        Ok(Err(_)) => Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            format!("gateway event channel closed ({context})"),
+        ))),
+        Err(_) => {
+            warn!(context = %context, "Gateway event send timed out; dropping event");
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("gateway event send timed out ({context})"),
+            )))
+        }
+    }
+}
+
+fn should_break_on_send_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 // ============================================================================
