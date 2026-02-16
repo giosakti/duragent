@@ -3,13 +3,14 @@
 //! Manages the lifecycle of background processes: spawning, monitoring,
 //! completion callbacks, crash recovery, and cleanup.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use dashmap::DashMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use crate::api::SessionStatus;
@@ -22,7 +23,10 @@ use crate::tools::{ReloadDeps, ToolDependencies, build_executor};
 use super::backend::{BackendSpawn, ProcessBackends};
 use super::monitor;
 use super::tmux;
-use super::{ProcessEntry, ProcessError, ProcessMeta, ProcessRegistryHandle, ProcessStatus};
+use super::{
+    CallbackKey, CallbackKind, ProcessEntry, ProcessError, ProcessMeta, ProcessRegistryHandle,
+    ProcessStatus,
+};
 use super::{SpawnResult, WaitResult};
 
 mod callbacks;
@@ -111,6 +115,7 @@ impl ProcessRegistryHandle {
             backends: Arc::new(ProcessBackends::new(tmux_available)),
             scheduler,
             callback_tx,
+            callback_dedupe: Arc::new(Mutex::new(HashMap::new())),
         };
 
         callbacks::spawn_callback_workers(registry.clone(), callback_rx, CALLBACK_WORKER_COUNT);

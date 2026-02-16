@@ -1,12 +1,16 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, warn};
 
-use crate::process::{CallbackTask, ProcessRegistryHandle};
+use crate::process::{CallbackKey, CallbackKind, CallbackTask, ProcessRegistryHandle};
 use crate::session::SteeringMessage;
 
 use super::COMPLETION_LOG_TAIL_BYTES;
+
+const CALLBACK_DEDUPE_WINDOW: Duration = Duration::from_secs(2);
+const CALLBACK_DEDUPE_MAX_ENTRIES: usize = 1024;
 
 pub(crate) fn spawn_callback_workers(
     registry: ProcessRegistryHandle,
@@ -48,6 +52,17 @@ impl ProcessRegistryHandle {
     /// inject user message into session, build executor, run agentic loop,
     /// send response via gateway.
     pub(crate) async fn fire_completion_callback(&self, handle_id: &str) {
+        if !self
+            .should_enqueue_callback(CallbackKey {
+                kind: CallbackKind::Completion,
+                handle_id: handle_id.to_string(),
+            })
+            .await
+        {
+            debug!(handle = %handle_id, "Dropping duplicate completion callback");
+            return;
+        }
+
         if let Err(e) = self
             .callback_tx
             .send(CallbackTask::Completion {
@@ -69,6 +84,17 @@ impl ProcessRegistryHandle {
     /// Tries to steer the message into a running agentic loop first. If no loop
     /// is running, acquires the lock and runs its own agentic loop.
     pub(crate) async fn fire_screen_halted_callback(&self, handle_id: &str) {
+        if !self
+            .should_enqueue_callback(CallbackKey {
+                kind: CallbackKind::ScreenHalted,
+                handle_id: handle_id.to_string(),
+            })
+            .await
+        {
+            debug!(handle = %handle_id, "Dropping duplicate screen halted callback");
+            return;
+        }
+
         if let Err(e) = self
             .callback_tx
             .send(CallbackTask::ScreenHalted {
@@ -82,6 +108,21 @@ impl ProcessRegistryHandle {
                 "Callback queue closed; dropping screen halted callback"
             );
         }
+    }
+
+    async fn should_enqueue_callback(&self, key: CallbackKey) -> bool {
+        let now = Instant::now();
+        let mut map = self.callback_dedupe.lock().await;
+        if let Some(last) = map.get(&key) {
+            if now.duration_since(*last) < CALLBACK_DEDUPE_WINDOW {
+                return false;
+            }
+        }
+        map.insert(key, now);
+        if map.len() > CALLBACK_DEDUPE_MAX_ENTRIES {
+            map.retain(|_, ts| now.duration_since(*ts) < CALLBACK_DEDUPE_WINDOW);
+        }
+        true
     }
 
     // ========================================================================

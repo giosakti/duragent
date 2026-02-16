@@ -10,14 +10,16 @@ pub mod registry;
 pub mod tmux;
 pub mod watcher;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::gateway::GatewaySender;
 use crate::process::backend::ProcessBackends;
@@ -47,6 +49,8 @@ pub struct ProcessRegistryHandle {
     pub(crate) scheduler: Option<SchedulerHandle>,
     /// Queue for callback tasks (completion + screen-halted).
     pub(crate) callback_tx: mpsc::Sender<CallbackTask>,
+    /// Deduplication for callback bursts.
+    pub(crate) callback_dedupe: Arc<Mutex<HashMap<CallbackKey, Instant>>>,
 }
 
 // ============================================================================
@@ -206,4 +210,16 @@ pub struct ProcessEntry {
 pub(crate) enum CallbackTask {
     Completion { handle_id: String },
     ScreenHalted { handle_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CallbackKind {
+    Completion,
+    ScreenHalted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CallbackKey {
+    pub(crate) kind: CallbackKind,
+    pub(crate) handle_id: String,
 }
