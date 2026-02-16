@@ -10,11 +10,12 @@
 //!     state.json         # Atomic snapshot
 //! ```
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::fs::{self, File};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::session::{SessionEvent, SessionSnapshot};
 use crate::store::error::{StorageError, StorageResult};
@@ -44,29 +45,6 @@ impl FileSessionStore {
             sessions_dir: sessions_dir.into(),
             session_locks: KeyedLocks::new(),
         }
-    }
-
-    /// Get the directory path for a session.
-    fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir.join(session_id)
-    }
-
-    /// Get the events file path for a session.
-    fn events_path(&self, session_id: &str) -> PathBuf {
-        self.session_dir(session_id).join("events.jsonl")
-    }
-
-    /// Get the snapshot file path for a session.
-    fn snapshot_path(&self, session_id: &str) -> PathBuf {
-        self.session_dir(session_id).join("state.json")
-    }
-
-    /// Ensure the session directory exists.
-    async fn ensure_session_dir(&self, session_id: &str) -> StorageResult<()> {
-        let dir = self.session_dir(session_id);
-        fs::create_dir_all(&dir)
-            .await
-            .map_err(|e| StorageError::file_io(&dir, e))
     }
 }
 
@@ -169,20 +147,7 @@ impl SessionStore for FileSessionStore {
             return Ok(());
         }
 
-        let lock = self.session_locks.get(session_id);
-        let _guard = lock.lock().await;
-
-        self.ensure_session_dir(session_id).await?;
-        let path = self.events_path(session_id);
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
-
-        // Serialize all events to a single buffer for efficiency
+        // Serialize before acquiring the lock — no I/O, no contention
         let mut buffer = String::new();
         for event in events {
             let line = serde_json::to_string(event)
@@ -191,16 +156,29 @@ impl SessionStore for FileSessionStore {
             buffer.push('\n');
         }
 
-        file.write_all(buffer.as_bytes())
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
+        // ensure_session_dir is idempotent (create_dir_all)
+        self.ensure_session_dir(session_id).await?;
 
-        // fsync for durability
-        file.sync_all()
-            .await
-            .map_err(|e| StorageError::file_io(&path, e))?;
+        let path = self.events_path(session_id);
+        let lock = self.session_locks.get(session_id);
+        let _guard = lock.lock().await;
 
-        Ok(())
+        // Single spawn_blocking for all file I/O
+        let path_clone = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path_clone)
+                .map_err(|e| StorageError::file_io(&path_clone, e))?;
+            file.write_all(buffer.as_bytes())
+                .map_err(|e| StorageError::file_io(&path_clone, e))?;
+            file.sync_all()
+                .map_err(|e| StorageError::file_io(&path_clone, e))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::file_io(&path, std::io::Error::other(e)))?
     }
 
     // ========================================================================
@@ -255,73 +233,100 @@ impl SessionStore for FileSessionStore {
         up_to_seq: u64,
         archive: bool,
     ) -> StorageResult<()> {
+        let path = self.events_path(session_id);
+        let archive_path = self.session_dir(session_id).join("events.archive.jsonl");
+
         let lock = self.session_locks.get(session_id);
         let _guard = lock.lock().await;
 
-        let path = self.events_path(session_id);
+        // Single spawn_blocking for the entire read-modify-write cycle
+        let path_clone = path.clone();
+        tokio::task::spawn_blocking(move || {
+            let contents = match std::fs::read_to_string(&path_clone) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(StorageError::file_io(&path_clone, e)),
+            };
 
-        let contents = match fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(StorageError::file_io(&path, e)),
-        };
+            let mut old_lines = Vec::new();
+            let mut retained_lines = Vec::new();
 
-        let mut old_lines = Vec::new();
-        let mut retained_lines = Vec::new();
-
-        for line in contents.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Try to parse seq; keep unparseable lines in retained (safe default)
-            match serde_json::from_str::<SessionEvent>(trimmed) {
-                Ok(event) if event.seq <= up_to_seq => {
-                    old_lines.push(line);
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
                 }
-                _ => {
-                    retained_lines.push(line);
+                match serde_json::from_str::<SessionEvent>(trimmed) {
+                    Ok(event) if event.seq <= up_to_seq => {
+                        old_lines.push(line);
+                    }
+                    _ => {
+                        retained_lines.push(line);
+                    }
                 }
             }
-        }
 
-        if old_lines.is_empty() {
-            return Ok(());
-        }
-
-        // Write retained lines first (crash-safe: events.jsonl is always correct)
-        let mut retained_buf = String::new();
-        for line in &retained_lines {
-            retained_buf.push_str(line);
-            retained_buf.push('\n');
-        }
-
-        super::atomic_write_file(&path, retained_buf.as_bytes()).await?;
-
-        // Archive old events if requested (best-effort; may be lost on crash)
-        if archive {
-            let archive_path = self.session_dir(session_id).join("events.archive.jsonl");
-            let mut archive_buf = String::new();
-            for line in &old_lines {
-                archive_buf.push_str(line);
-                archive_buf.push('\n');
+            if old_lines.is_empty() {
+                return Ok(());
             }
 
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&archive_path)
-                .await
-                .map_err(|e| StorageError::file_io(&archive_path, e))?;
-            file.write_all(archive_buf.as_bytes())
-                .await
-                .map_err(|e| StorageError::file_io(&archive_path, e))?;
-            file.sync_all()
-                .await
-                .map_err(|e| StorageError::file_io(&archive_path, e))?;
-        }
+            // Write retained lines first (crash-safe: events.jsonl is always correct)
+            let mut retained_buf = String::new();
+            for line in &retained_lines {
+                retained_buf.push_str(line);
+                retained_buf.push('\n');
+            }
 
-        Ok(())
+            super::atomic_write_file_sync(&path_clone, retained_buf.as_bytes())?;
+
+            // Archive old events if requested (best-effort; may be lost on crash)
+            if archive {
+                let mut archive_buf = String::new();
+                for line in &old_lines {
+                    archive_buf.push_str(line);
+                    archive_buf.push('\n');
+                }
+
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&archive_path)
+                    .map_err(|e| StorageError::file_io(&archive_path, e))?;
+                file.write_all(archive_buf.as_bytes())
+                    .map_err(|e| StorageError::file_io(&archive_path, e))?;
+                file.sync_all()
+                    .map_err(|e| StorageError::file_io(&archive_path, e))?;
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| StorageError::file_io(&path, std::io::Error::other(e)))?
+    }
+}
+
+// ============================================================================
+// Private helpers
+// ============================================================================
+
+impl FileSessionStore {
+    fn session_dir(&self, session_id: &str) -> PathBuf {
+        self.sessions_dir.join(session_id)
+    }
+
+    fn events_path(&self, session_id: &str) -> PathBuf {
+        self.session_dir(session_id).join("events.jsonl")
+    }
+
+    fn snapshot_path(&self, session_id: &str) -> PathBuf {
+        self.session_dir(session_id).join("state.json")
+    }
+
+    async fn ensure_session_dir(&self, session_id: &str) -> StorageResult<()> {
+        let dir = self.session_dir(session_id);
+        fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| StorageError::file_io(&dir, e))
     }
 }
 

@@ -6,6 +6,7 @@
 //!
 //! All writes use atomic operations (temp file + rename) to prevent corruption.
 
+use std::io::Write;
 use std::path::Path;
 
 use tokio::fs;
@@ -48,5 +49,23 @@ pub(super) async fn atomic_write_file(final_path: &Path, data: &[u8]) -> Storage
     fs::rename(&temp_path, final_path)
         .await
         .map_err(|e| StorageError::file_io(final_path, e))?;
+    Ok(())
+}
+
+/// Sync version of [`atomic_write_file`] for use inside `spawn_blocking`.
+pub(super) fn atomic_write_file_sync(final_path: &Path, data: &[u8]) -> StorageResult<()> {
+    let file_name = final_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let temp_path = final_path.with_file_name(format!("{}.{}.tmp", file_name, ulid::Ulid::new()));
+
+    let mut file =
+        std::fs::File::create(&temp_path).map_err(|e| StorageError::file_io(&temp_path, e))?;
+    file.write_all(data)
+        .map_err(|e| StorageError::file_io(&temp_path, e))?;
+    file.sync_all()
+        .map_err(|e| StorageError::file_io(&temp_path, e))?;
+    std::fs::rename(&temp_path, final_path).map_err(|e| StorageError::file_io(final_path, e))?;
     Ok(())
 }
