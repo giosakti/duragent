@@ -6,6 +6,7 @@ use crate::agent::AgentSpec;
 use crate::agent::skill::SkillMetadata;
 use crate::llm::Message;
 
+use super::template::interpolate_template_vars;
 use super::{BlockSource, DirectiveEntry, StructuredContext, SystemBlock, priority};
 
 /// Builder for constructing a StructuredContext.
@@ -48,7 +49,7 @@ impl ContextBuilder {
 
         if let Some(ref soul) = spec.soul {
             self.context.add_block(SystemBlock {
-                content: soul.clone(),
+                content: interpolate_template_vars(soul, spec),
                 label: "soul".to_string(),
                 source: BlockSource::AgentSpec,
                 priority: priority::SOUL,
@@ -57,7 +58,7 @@ impl ContextBuilder {
 
         if let Some(ref system_prompt) = spec.system_prompt {
             self.context.add_block(SystemBlock {
-                content: system_prompt.clone(),
+                content: interpolate_template_vars(system_prompt, spec),
                 label: "system_prompt".to_string(),
                 source: BlockSource::AgentSpec,
                 priority: priority::SYSTEM_PROMPT,
@@ -66,7 +67,7 @@ impl ContextBuilder {
 
         if let Some(ref instructions) = spec.instructions {
             self.context.add_block(SystemBlock {
-                content: instructions.clone(),
+                content: interpolate_template_vars(instructions, spec),
                 label: "instructions".to_string(),
                 source: BlockSource::AgentSpec,
                 priority: priority::INSTRUCTIONS,

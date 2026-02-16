@@ -8,11 +8,13 @@
 mod builder;
 mod directives;
 mod prime;
+mod template;
 mod tokens;
 mod truncation;
 
 pub use builder::ContextBuilder;
 pub use directives::load_all_directives;
+pub use template::interpolate_template_vars;
 pub use tokens::*;
 pub use truncation::*;
 
