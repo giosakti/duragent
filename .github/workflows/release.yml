@@ -35,20 +35,35 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build core
+        run: cargo build --release -p duragent --target ${{ matrix.target }}
 
-      - name: Package (Unix)
+      - name: Package core
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../duragent-${{ matrix.target }}.${{ matrix.archive }} duragent
+          tar -czvf ../../../duragent-core-${{ matrix.target }}.${{ matrix.archive }} duragent
           cd ../../..
 
-      - name: Upload artifact
+      - name: Build full
+        run: cargo build --release -p duragent --all-features --target ${{ matrix.target }}
+
+      - name: Package full
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../duragent-full-${{ matrix.target }}.${{ matrix.archive }} duragent
+          cd ../../..
+
+      - name: Upload core artifact
         uses: actions/upload-artifact@v4
         with:
-          name: duragent-${{ matrix.target }}
-          path: duragent-${{ matrix.target }}.${{ matrix.archive }}
+          name: duragent-core-${{ matrix.target }}
+          path: duragent-core-${{ matrix.target }}.${{ matrix.archive }}
+
+      - name: Upload full artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duragent-full-${{ matrix.target }}
+          path: duragent-full-${{ matrix.target }}.${{ matrix.archive }}
 
   release:
     name: Create Release

@@ -115,6 +115,14 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
 
+        /// Download full variant (includes gateway binaries)
+        #[arg(long, conflicts_with = "core")]
+        full: bool,
+
+        /// Download core variant only (no gateway binaries)
+        #[arg(long, conflicts_with = "full")]
+        core: bool,
+
         /// Restart a running server after upgrade
         #[arg(long)]
         restart: bool,
@@ -218,11 +226,25 @@ async fn run() -> Result<()> {
         Commands::Upgrade {
             check,
             version,
+            full,
+            core,
             restart,
             config,
             port,
             format,
-        } => commands::upgrade::run(check, version, restart, &config, port, &format).await,
+        } => {
+            commands::upgrade::run(commands::upgrade::UpgradeOpts {
+                check_only: check,
+                target_version: version,
+                full,
+                core,
+                restart,
+                config_path: &config,
+                port,
+                format: &format,
+            })
+            .await
+        }
         Commands::Serve {
             action,
             config,

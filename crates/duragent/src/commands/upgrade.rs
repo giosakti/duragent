@@ -47,14 +47,28 @@ struct UpgradeResult {
 // Entry Point
 // ============================================================================
 
-pub async fn run(
-    check_only: bool,
-    target_version: Option<String>,
-    restart: bool,
-    config_path: &str,
-    port: Option<u16>,
-    format: &str,
-) -> Result<()> {
+pub struct UpgradeOpts<'a> {
+    pub check_only: bool,
+    pub target_version: Option<String>,
+    pub full: bool,
+    pub core: bool,
+    pub restart: bool,
+    pub config_path: &'a str,
+    pub port: Option<u16>,
+    pub format: &'a str,
+}
+
+pub async fn run(opts: UpgradeOpts<'_>) -> Result<()> {
+    let UpgradeOpts {
+        check_only,
+        target_version,
+        full,
+        core,
+        restart,
+        config_path,
+        port,
+        format,
+    } = opts;
     let current = parse_version(build_info::VERSION)?;
     let release = fetch_release(target_version.as_deref()).await?;
     let release_version = parse_release_version(&release.tag_name)?;
@@ -88,7 +102,8 @@ pub async fn run(
 
     // Download and install
     let target_triple = detect_target()?;
-    download_and_install(&release, target_triple, format).await?;
+    let is_full = resolve_full(full, core);
+    download_and_install(&release, target_triple, is_full, format).await?;
 
     let action = if release_version > current {
         "upgraded"
@@ -148,12 +163,24 @@ fn detect_target() -> Result<&'static str> {
     }
 }
 
-fn asset_name(target: &str) -> String {
-    format!("duragent-{target}.tar.gz")
+fn resolve_full(full: bool, core: bool) -> bool {
+    if full {
+        return true;
+    }
+    if core {
+        return false;
+    }
+    // Auto-detect: match the current binary's compiled variant
+    build_info::VARIANT == "full"
 }
 
-fn find_asset<'a>(release: &'a GitHubRelease, target: &str) -> Result<&'a GitHubAsset> {
-    let name = asset_name(target);
+fn asset_name(target: &str, full: bool) -> String {
+    let variant = if full { "full" } else { "core" };
+    format!("duragent-{variant}-{target}.tar.gz")
+}
+
+fn find_asset<'a>(release: &'a GitHubRelease, target: &str, full: bool) -> Result<&'a GitHubAsset> {
+    let name = asset_name(target, full);
     release
         .assets
         .iter()
@@ -225,8 +252,13 @@ async fn fetch_release(target_version: Option<&str>) -> Result<GitHubRelease> {
 // Download and Install
 // ============================================================================
 
-async fn download_and_install(release: &GitHubRelease, target: &str, format: &str) -> Result<()> {
-    let asset = find_asset(release, target)?;
+async fn download_and_install(
+    release: &GitHubRelease,
+    target: &str,
+    full: bool,
+    format: &str,
+) -> Result<()> {
+    let asset = find_asset(release, target, full)?;
     let current_exe = std::env::current_exe().context("Failed to determine current binary path")?;
     let binary_dir = current_exe
         .parent()
@@ -234,18 +266,19 @@ async fn download_and_install(release: &GitHubRelease, target: &str, format: &st
     let archive_path = binary_dir.join("duragent.upgrade.tar.gz");
     let tmp_binary = binary_dir.join("duragent.upgrade.tmp");
 
+    let variant_label = if full { "full" } else { "core" };
     if format == "text" {
         println!(
-            "Downloading duragent {} for {}...",
-            release.tag_name, target
+            "Downloading duragent {} ({}) for {}...",
+            release.tag_name, variant_label, target
         );
     }
 
     // Download archive
     download_file(&asset.browser_download_url, &archive_path).await?;
 
-    // Verify checksum if available
-    verify_checksum_if_available(release, &archive_path, format).await?;
+    // Verify checksum if available (use asset name, not local filename)
+    verify_checksum_if_available(release, &archive_path, &asset.name, format).await?;
 
     // Extract binary from tar.gz
     extract_binary(&archive_path, &tmp_binary).await?;
@@ -316,6 +349,7 @@ async fn download_text(url: &str) -> Result<String> {
 async fn verify_checksum_if_available(
     release: &GitHubRelease,
     archive_path: &Path,
+    asset_name: &str,
     format: &str,
 ) -> Result<()> {
     let checksum_asset = release.assets.iter().find(|a| a.name == "checksums.sha256");
@@ -331,15 +365,10 @@ async fn verify_checksum_if_available(
         print!("Verifying checksum... ");
     }
 
-    let archive_name = archive_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("duragent.upgrade.tar.gz");
-
     match verify_checksum(
         &checksum_asset.browser_download_url,
         archive_path,
-        archive_name,
+        asset_name,
     )
     .await
     {
@@ -624,37 +653,87 @@ mod tests {
     }
 
     #[test]
+    fn asset_name_core() {
+        assert_eq!(
+            asset_name("x86_64-unknown-linux-gnu", false),
+            "duragent-core-x86_64-unknown-linux-gnu.tar.gz"
+        );
+    }
+
+    #[test]
+    fn asset_name_full() {
+        assert_eq!(
+            asset_name("aarch64-apple-darwin", true),
+            "duragent-full-aarch64-apple-darwin.tar.gz"
+        );
+    }
+
+    #[test]
+    fn resolve_full_flag_overrides() {
+        assert!(resolve_full(true, false));
+        assert!(!resolve_full(false, true));
+    }
+
+    #[test]
+    fn resolve_full_auto_detects_from_variant() {
+        // With no flags, falls back to build_info::VARIANT.
+        // In test builds (default features only), that's "core".
+        let result = resolve_full(false, false);
+        assert_eq!(result, build_info::VARIANT == "full");
+    }
+
+    #[test]
     fn parse_checksum_finds_matching_file() {
         let content =
-            "abc123  other-file.tar.gz\ndef456  duragent-x86_64-unknown-linux-gnu.tar.gz\n";
-        let result = parse_checksum(content, "duragent-x86_64-unknown-linux-gnu.tar.gz").unwrap();
+            "abc123  other-file.tar.gz\ndef456  duragent-core-x86_64-unknown-linux-gnu.tar.gz\n";
+        let result =
+            parse_checksum(content, "duragent-core-x86_64-unknown-linux-gnu.tar.gz").unwrap();
         assert_eq!(result, "def456");
     }
 
     #[test]
     fn parse_checksum_missing_file_errors() {
         let content = "abc123  other-file.tar.gz\n";
-        let result = parse_checksum(content, "duragent-x86_64-unknown-linux-gnu.tar.gz");
+        let result = parse_checksum(content, "duragent-core-x86_64-unknown-linux-gnu.tar.gz");
         assert!(result.is_err());
     }
 
     #[test]
-    fn find_asset_matches_target() {
+    fn find_asset_matches_core() {
         let release = GitHubRelease {
             tag_name: "v0.6.0".to_string(),
             assets: vec![
                 GitHubAsset {
-                    name: "duragent-x86_64-unknown-linux-gnu.tar.gz".to_string(),
-                    browser_download_url: "https://example.com/linux.tar.gz".to_string(),
+                    name: "duragent-core-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/core-linux.tar.gz".to_string(),
                 },
                 GitHubAsset {
-                    name: "duragent-aarch64-apple-darwin.tar.gz".to_string(),
-                    browser_download_url: "https://example.com/mac-arm.tar.gz".to_string(),
+                    name: "duragent-full-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/full-linux.tar.gz".to_string(),
                 },
             ],
         };
-        let asset = find_asset(&release, "x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(asset.name, "duragent-x86_64-unknown-linux-gnu.tar.gz");
+        let asset = find_asset(&release, "x86_64-unknown-linux-gnu", false).unwrap();
+        assert_eq!(asset.name, "duragent-core-x86_64-unknown-linux-gnu.tar.gz");
+    }
+
+    #[test]
+    fn find_asset_matches_full() {
+        let release = GitHubRelease {
+            tag_name: "v0.6.0".to_string(),
+            assets: vec![
+                GitHubAsset {
+                    name: "duragent-core-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/core-linux.tar.gz".to_string(),
+                },
+                GitHubAsset {
+                    name: "duragent-full-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                    browser_download_url: "https://example.com/full-linux.tar.gz".to_string(),
+                },
+            ],
+        };
+        let asset = find_asset(&release, "x86_64-unknown-linux-gnu", true).unwrap();
+        assert_eq!(asset.name, "duragent-full-x86_64-unknown-linux-gnu.tar.gz");
     }
 
     #[test]
@@ -662,11 +741,11 @@ mod tests {
         let release = GitHubRelease {
             tag_name: "v0.6.0".to_string(),
             assets: vec![GitHubAsset {
-                name: "duragent-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+                name: "duragent-core-x86_64-unknown-linux-gnu.tar.gz".to_string(),
                 browser_download_url: "https://example.com/linux.tar.gz".to_string(),
             }],
         };
-        let result = find_asset(&release, "aarch64-apple-darwin");
+        let result = find_asset(&release, "aarch64-apple-darwin", false);
         assert!(result.is_err());
     }
 

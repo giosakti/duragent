@@ -14,6 +14,16 @@ pub const BUILD_DATE: &str = match option_env!("BUILD_DATE") {
     None => "unknown",
 };
 
+/// Build variant: "full" when all gateway features are compiled in, "core" otherwise.
+pub const VARIANT: &str = if cfg!(all(
+    feature = "gateway-discord",
+    feature = "gateway-telegram"
+)) {
+    "full"
+} else {
+    "core"
+};
+
 /// Version string built at compile time.
 ///
 /// Note: Due to const limitations, this is built dynamically in `version_string()`.
@@ -33,6 +43,7 @@ pub struct BuildInfo {
     pub version: &'static str,
     pub commit: &'static str,
     pub build_date: &'static str,
+    pub variant: &'static str,
 }
 
 impl BuildInfo {
@@ -42,6 +53,7 @@ impl BuildInfo {
             version: VERSION,
             commit: COMMIT,
             build_date: BUILD_DATE,
+            variant: VARIANT,
         }
     }
 }
