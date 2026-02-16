@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use thiserror::Error;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, error, info, warn};
@@ -658,7 +659,7 @@ impl GatewayHandle {
 }
 
 /// Error sending a command to a gateway.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum SendError {
     #[error("gateway channel closed")]
     ChannelClosed,

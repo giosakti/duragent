@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::agent::{AgentSpec, ContextConfig, HooksConfig, ToolType};
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
@@ -78,7 +79,7 @@ pub enum AgenticResult {
 }
 
 /// Error from the agentic loop.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum AgenticError {
     #[error("llm error: {0}")]
     Llm(#[from] crate::llm::LLMError),
