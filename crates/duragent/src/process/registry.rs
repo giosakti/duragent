@@ -215,11 +215,22 @@ impl ProcessRegistryHandle {
             }
 
             // Pipe stdout/stderr to log file, keep stdin for write action
-            let log_file = std::fs::File::create(&log_path)
-                .map_err(|e| ProcessError::SpawnFailed(format!("failed to create log: {}", e)))?;
-            let log_file_err = log_file
-                .try_clone()
-                .map_err(|e| ProcessError::SpawnFailed(format!("failed to clone log fd: {}", e)))?;
+            let (log_file, log_file_err) = tokio::task::spawn_blocking({
+                let log_path = log_path.clone();
+                move || -> Result<(std::fs::File, std::fs::File), ProcessError> {
+                    let log_file = std::fs::File::create(&log_path).map_err(|e| {
+                        ProcessError::SpawnFailed(format!("failed to create log: {}", e))
+                    })?;
+                    let log_file_err = log_file.try_clone().map_err(|e| {
+                        ProcessError::SpawnFailed(format!("failed to clone log fd: {}", e))
+                    })?;
+                    Ok((log_file, log_file_err))
+                }
+            })
+            .await
+            .map_err(|e| {
+                ProcessError::SpawnFailed(format!("log file setup join error: {}", e))
+            })??;
 
             cmd.stdout(log_file);
             cmd.stderr(log_file_err);
