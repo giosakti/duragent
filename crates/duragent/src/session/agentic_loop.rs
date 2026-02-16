@@ -42,6 +42,8 @@ pub struct SteeringMessage {
 
 /// Bounded capacity for per-session steering channels.
 pub const STEERING_CHANNEL_CAPACITY: usize = 64;
+/// Timeout (seconds) when waiting for the per-session agentic loop lock.
+pub const AGENTIC_LOOP_LOCK_TIMEOUT_SECS: u64 = 2;
 
 pub type SteeringSender = mpsc::Sender<SteeringMessage>;
 pub type SteeringReceiver = mpsc::Receiver<SteeringMessage>;

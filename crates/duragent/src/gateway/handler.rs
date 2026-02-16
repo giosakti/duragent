@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
 use duragent_gateway_protocol::{
@@ -37,8 +37,8 @@ use crate::process::ProcessRegistryHandle;
 use crate::scheduler::SchedulerHandle;
 use crate::server::RuntimeServices;
 use crate::session::{
-    AgenticResult, ChatSessionCache, STEERING_CHANNEL_CAPACITY, SessionHandle, SteeringMessage,
-    run_agentic_loop,
+    AGENTIC_LOOP_LOCK_TIMEOUT_SECS, AgenticResult, ChatSessionCache, STEERING_CHANNEL_CAPACITY,
+    SessionHandle, SteeringMessage, run_agentic_loop,
 };
 use crate::sync::KeyedLocks;
 use crate::tools::{ReloadDeps, ToolDependencies, ToolExecutionContext, build_executor_async};
@@ -447,6 +447,7 @@ impl GatewayMessageHandler {
         already_persisted: bool,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
+        let sender_label = resolve_sender_label(sender);
 
         // Persist user message via actor (with sender attribution for gateway messages)
         if !already_persisted
@@ -454,7 +455,7 @@ impl GatewayMessageHandler {
                 .add_user_message_with_sender(
                     text.to_string(),
                     Some(sender.id.clone()),
-                    Some(resolve_sender_label(sender)),
+                    Some(sender_label.clone()),
                 )
                 .await
         {
@@ -471,6 +472,7 @@ impl GatewayMessageHandler {
                     handle,
                     text,
                     &sender.id,
+                    Some(sender_label),
                     routing,
                 )
                 .await;
@@ -612,11 +614,30 @@ impl GatewayMessageHandler {
         gateway: &str,
         chat_id: &str,
         handle: &SessionHandle,
-        _text: &str,
+        text: &str,
         sender_id: &str,
+        sender_label: Option<String>,
         routing: &RoutingContext,
     ) -> Option<String> {
         let agent = self.services.agents.get(handle.agent())?;
+
+        // If a loop is already running, steer and return immediately.
+        if let Some(tx_ref) = self.services.steering_channels.get(handle.id()) {
+            let tx = tx_ref.clone();
+            drop(tx_ref);
+            let steered = tx
+                .send(SteeringMessage {
+                    content: text.to_string(),
+                    sender_id: Some(sender_id.to_string()),
+                    sender_label,
+                    persisted: true,
+                })
+                .await
+                .is_ok();
+            if steered {
+                return None;
+            }
+        }
 
         let provider = self
             .services
@@ -719,7 +740,22 @@ impl GatewayMessageHandler {
 
         // Acquire per-session agentic loop lock to prevent concurrent loops
         let loop_lock = self.services.agentic_loop_locks.get(handle.id());
-        let _loop_guard = loop_lock.lock().await;
+        let _loop_guard = match tokio::time::timeout(
+            Duration::from_secs(AGENTIC_LOOP_LOCK_TIMEOUT_SECS),
+            loop_lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                self.services.steering_channels.remove(handle.id());
+                warn!(
+                    session_id = %handle.id(),
+                    "Timed out waiting for agentic loop lock"
+                );
+                return Some("Session busy. Please retry in a moment.".to_string());
+            }
+        };
 
         // Run agentic loop
         let result = match run_agentic_loop(

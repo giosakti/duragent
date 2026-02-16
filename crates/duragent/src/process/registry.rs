@@ -17,7 +17,10 @@ use crate::api::SessionStatus;
 use crate::context::{ContextBuilder, TokenBudget, load_all_directives_async};
 use crate::gateway::{GatewaySender, build_approval_keyboard};
 use crate::server::RuntimeServices;
-use crate::session::{AgenticResult, STEERING_CHANNEL_CAPACITY, run_agentic_loop};
+use crate::session::{
+    AGENTIC_LOOP_LOCK_TIMEOUT_SECS, AgenticResult, STEERING_CHANNEL_CAPACITY, SteeringMessage,
+    run_agentic_loop,
+};
 use crate::tools::{ReloadDeps, ToolDependencies, build_executor_async};
 
 use super::backend::{BackendSpawn, ProcessBackends};
@@ -595,15 +598,49 @@ impl ProcessRegistryHandle {
             .ok_or_else(|| anyhow::anyhow!("Session not found: {}", meta.session_id))?;
 
         // Persist the callback message (unless already persisted upstream)
+        let mut persisted = false;
         if persist_message {
             handle.add_user_message(message.to_string()).await?;
+            persisted = true;
+        }
+
+        // If a loop is already running, steer and return immediately.
+        if let Some(tx_ref) = self.services.steering_channels.get(&meta.session_id) {
+            let tx = tx_ref.clone();
+            drop(tx_ref);
+            if tx
+                .send(SteeringMessage {
+                    content: message.to_string(),
+                    sender_id: None,
+                    sender_label: None,
+                    persisted,
+                })
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
         }
 
         // Acquire per-session agentic loop lock (blocks until available).
         // We acquire BEFORE building context so we always have fresh state —
         // if another loop was running, we'll see its events in our context.
         let loop_lock = self.services.agentic_loop_locks.get(&meta.session_id);
-        let _loop_guard = loop_lock.lock().await;
+        let _loop_guard = match tokio::time::timeout(
+            Duration::from_secs(AGENTIC_LOOP_LOCK_TIMEOUT_SECS),
+            loop_lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                warn!(
+                    session_id = %meta.session_id,
+                    "Timed out waiting for agentic loop lock"
+                );
+                return Ok(());
+            }
+        };
 
         // Build tool executor (after lock to pick up latest policy)
         let policy = self.services.policy_store.load(&meta.agent).await;
