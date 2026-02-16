@@ -1,17 +1,16 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::{Semaphore, oneshot};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::process::{
     ProcessBackendKind, ProcessEntry, ProcessMeta, ProcessRegistryHandle, ProcessStatus,
 };
 
+use super::DEFAULT_CLEANUP_AGE_SECS;
 use super::monitor;
 use super::tmux;
-use super::{DEFAULT_CLEANUP_AGE_SECS, RECOVERY_CALLBACK_CONCURRENCY};
 
 /// Spawn a periodic cleanup task. Returns its handle for shutdown.
 pub fn spawn_cleanup_task(registry: ProcessRegistryHandle) -> tokio::task::JoinHandle<()> {
@@ -141,22 +140,8 @@ impl ProcessRegistryHandle {
             }
         }
 
-        if !lost_handles.is_empty() {
-            let semaphore = Arc::new(Semaphore::new(RECOVERY_CALLBACK_CONCURRENCY));
-            for handle_id in lost_handles {
-                let semaphore = semaphore.clone();
-                let registry = self.clone();
-                tokio::spawn(async move {
-                    if let Ok(_permit) = semaphore.acquire().await {
-                        registry.fire_completion_callback(&handle_id).await;
-                    } else {
-                        warn!(
-                            handle = %handle_id,
-                            "Recovery callback semaphore closed; skipping"
-                        );
-                    }
-                });
-            }
+        for handle_id in lost_handles {
+            self.fire_completion_callback(&handle_id).await;
         }
 
         if recovered > 0 || lost > 0 {

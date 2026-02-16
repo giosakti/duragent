@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::gateway::GatewaySender;
 use crate::process::backend::ProcessBackends;
@@ -45,6 +45,8 @@ pub struct ProcessRegistryHandle {
     pub(crate) backends: Arc<ProcessBackends>,
     /// Scheduler handle for auto-cancelling linked schedules on process exit.
     pub(crate) scheduler: Option<SchedulerHandle>,
+    /// Queue for callback tasks (completion + screen-halted).
+    pub(crate) callback_tx: mpsc::Sender<CallbackTask>,
 }
 
 // ============================================================================
@@ -194,4 +196,14 @@ pub struct ProcessEntry {
     pub stdin: Option<tokio::process::ChildStdin>,
     /// Cancel sender for the screen watcher. None if no watcher is active.
     pub watcher_cancel_tx: Option<oneshot::Sender<()>>,
+}
+
+// ============================================================================
+// Callback task queue
+// ============================================================================
+
+#[derive(Debug)]
+pub(crate) enum CallbackTask {
+    Completion { handle_id: String },
+    ScreenHalted { handle_id: String },
 }

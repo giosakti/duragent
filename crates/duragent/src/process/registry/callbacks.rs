@@ -1,9 +1,45 @@
-use tracing::{debug, error};
+use std::sync::Arc;
 
-use crate::process::ProcessRegistryHandle;
+use tokio::sync::{Mutex, mpsc};
+use tracing::{debug, error, warn};
+
+use crate::process::{CallbackTask, ProcessRegistryHandle};
 use crate::session::SteeringMessage;
 
 use super::COMPLETION_LOG_TAIL_BYTES;
+
+pub(crate) fn spawn_callback_workers(
+    registry: ProcessRegistryHandle,
+    receiver: mpsc::Receiver<CallbackTask>,
+    worker_count: usize,
+) {
+    let receiver = Arc::new(Mutex::new(receiver));
+    for _ in 0..worker_count {
+        let registry = registry.clone();
+        let receiver = Arc::clone(&receiver);
+        tokio::spawn(async move {
+            loop {
+                let task = {
+                    let mut rx = receiver.lock().await;
+                    rx.recv().await
+                };
+
+                let Some(task) = task else {
+                    break;
+                };
+
+                match task {
+                    CallbackTask::Completion { handle_id } => {
+                        registry.run_completion_callback(&handle_id).await;
+                    }
+                    CallbackTask::ScreenHalted { handle_id } => {
+                        registry.run_screen_halted_callback(&handle_id).await;
+                    }
+                }
+            }
+        });
+    }
+}
 
 impl ProcessRegistryHandle {
     /// Fire a completion callback for a finished process.
@@ -12,6 +48,47 @@ impl ProcessRegistryHandle {
     /// inject user message into session, build executor, run agentic loop,
     /// send response via gateway.
     pub(crate) async fn fire_completion_callback(&self, handle_id: &str) {
+        if let Err(e) = self
+            .callback_tx
+            .send(CallbackTask::Completion {
+                handle_id: handle_id.to_string(),
+            })
+            .await
+        {
+            warn!(
+                handle = %handle_id,
+                error = %e,
+                "Callback queue closed; dropping completion callback"
+            );
+        }
+    }
+
+    /// Fire a screen-halted callback for a process.
+    ///
+    /// Called by the screen watcher when it detects the screen has stabilized.
+    /// Tries to steer the message into a running agentic loop first. If no loop
+    /// is running, acquires the lock and runs its own agentic loop.
+    pub(crate) async fn fire_screen_halted_callback(&self, handle_id: &str) {
+        if let Err(e) = self
+            .callback_tx
+            .send(CallbackTask::ScreenHalted {
+                handle_id: handle_id.to_string(),
+            })
+            .await
+        {
+            warn!(
+                handle = %handle_id,
+                error = %e,
+                "Callback queue closed; dropping screen halted callback"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Private — callback runners (called by worker pool)
+    // ========================================================================
+
+    async fn run_completion_callback(&self, handle_id: &str) {
         let meta = match self.entries.get(handle_id) {
             Some(entry) => entry.meta.clone(),
             None => return,
@@ -131,12 +208,7 @@ impl ProcessRegistryHandle {
         }
     }
 
-    /// Fire a screen-halted callback for a process.
-    ///
-    /// Called by the screen watcher when it detects the screen has stabilized.
-    /// Tries to steer the message into a running agentic loop first. If no loop
-    /// is running, acquires the lock and runs its own agentic loop.
-    pub async fn fire_screen_halted_callback(&self, handle_id: &str) {
+    async fn run_screen_halted_callback(&self, handle_id: &str) {
         let meta = match self.entries.get(handle_id) {
             Some(entry) => entry.meta.clone(),
             None => return,

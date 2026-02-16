@@ -40,8 +40,10 @@ const WAIT_LOG_TAIL_BYTES: usize = 8 * 1024;
 const DEFAULT_CLEANUP_AGE_SECS: u64 = 30 * 60;
 /// Default timeout for stdin writes to child processes (seconds).
 const STDIN_WRITE_TIMEOUT_SECS: u64 = 10;
-/// Maximum concurrent recovery callbacks for lost processes.
-const RECOVERY_CALLBACK_CONCURRENCY: usize = 4;
+/// Worker count for processing callback tasks.
+const CALLBACK_WORKER_COUNT: usize = 4;
+/// Capacity for the callback task queue.
+const CALLBACK_QUEUE_CAPACITY: usize = 128;
 
 // ============================================================================
 // Public types
@@ -98,7 +100,9 @@ impl ProcessRegistryHandle {
             info!("tmux not available, background processes will use plain subprocesses");
         }
 
-        Self {
+        let (callback_tx, callback_rx) = mpsc::channel(CALLBACK_QUEUE_CAPACITY);
+
+        let registry = Self {
             entries: Arc::new(DashMap::new()),
             processes_dir,
             services,
@@ -106,7 +110,12 @@ impl ProcessRegistryHandle {
             stdin_locks: crate::sync::KeyedLocks::new(),
             backends: Arc::new(ProcessBackends::new(tmux_available)),
             scheduler,
-        }
+            callback_tx,
+        };
+
+        callbacks::spawn_callback_workers(registry.clone(), callback_rx, CALLBACK_WORKER_COUNT);
+
+        registry
     }
 
     /// Spawn a new background process.
