@@ -3,7 +3,7 @@
 > **Purpose:** Living status document. The stable vision and principles live in the [Project Charter](./internal/specs/202601111100.project-charter.md).
 
 ## Last Updated
-2026-02-08
+2026-02-16
 
 ## Strategic Direction
 
@@ -36,7 +36,7 @@ Key specs and design docs:
 
 ## Current Focus
 
-**v0.5.0 — Context & Observability**: Context window management, structured logging, metrics, and tracing.
+**v0.6.0 — Observability & Sandbox**: Structured logging, metrics, tracing, and sandboxed tool execution.
 
 ## Roadmap
 
@@ -80,13 +80,33 @@ Key specs and design docs:
 - [x] Typing indicator during message processing
 - [x] Memory tool robustness improvements
 
-### v0.5.0 — Context & Observability
-- [ ] Context window management
+### v0.5.0 — Autonomy & Hardening ✓
+- [x] Context window management (token budgeting, history truncation, priority-based context)
+- [x] Session lifecycle management (idle timeout, explicit close)
+- [x] Background process management (`spawn_process`, `manage_process` tools; tmux integration)
+- [x] Web tools (`web_search` via Brave API, `web_fetch` with HTML-to-Markdown)
+- [x] Dynamic tool discovery (convention-based auto-discovery from `tools/` directories)
+- [x] `reload_tools` built-in for runtime tool registration
+- [x] Skills system (modular Markdown-based capabilities, Agent Skills standard)
+- [x] Tool hooks and steering queue for mid-loop message injection
+- [x] Prime directives system (agent-level persistent instructions)
+- [x] `duragent init` interactive setup command
+- [x] `duragent doctor` workspace diagnostics
+- [x] `duragent upgrade` self-update with SHA256 verification
+- [x] OAuth PKCE authentication flow
+- [x] Agent hot-reload via Admin API
+- [x] Group chat support (mention gating, debouncing, per-requester approval)
+- [x] Gateway protocol versioning
+- [x] Session snapshots switched from YAML to JSON
+- [x] Security hardening (constant-time token comparison, CSRF fix, connection limits, request body size limits, LLM call timeouts)
+- [x] Persistence hardening (atomic writes with fsync, per-session locking, session store I/O off async lock path, memory write reliability)
+- [x] Concurrency hardening (channel send timeouts, backpressure, narrowed lock scopes, stream-based callbacks, DashMap guard safety)
+- [x] Stability fixes (UTF-8 panic prevention, empty messages handling, bounded line reading, actor message timeouts, KeyedLocks race fix, stdin/process cleanup race)
+
+### v0.6.0 — Observability & Sandbox
 - [ ] Structured logging improvements
 - [ ] Metrics (OpenTelemetry)
 - [ ] Tracing
-
-### v0.6.0 — Sandbox
 - [ ] Sandbox interface + auto-selection
 - [ ] bubblewrap backend (Linux)
 - [ ] Docker backend (cross-platform fallback)
