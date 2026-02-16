@@ -4,6 +4,7 @@
 //! background processes. Supports optional tmux integration for human
 //! observation and agent interaction.
 
+pub mod backend;
 pub mod monitor;
 pub mod registry;
 pub mod tmux;
@@ -19,6 +20,7 @@ use thiserror::Error;
 use tokio::sync::oneshot;
 
 use crate::gateway::GatewaySender;
+use crate::process::backend::ProcessBackends;
 use crate::scheduler::SchedulerHandle;
 use crate::server::RuntimeServices;
 use crate::sync::KeyedLocks;
@@ -35,11 +37,12 @@ use crate::sync::KeyedLocks;
 pub struct ProcessRegistryHandle {
     pub(crate) entries: Arc<DashMap<String, ProcessEntry>>,
     pub(crate) processes_dir: PathBuf,
-    pub(crate) tmux_available: bool,
     pub(crate) services: RuntimeServices,
     pub(crate) gateway_sender: GatewaySender,
     /// Per-process lock for serializing stdin writes.
     pub(crate) stdin_locks: KeyedLocks,
+    /// Backend implementations for process management.
+    pub(crate) backends: Arc<ProcessBackends>,
     /// Scheduler handle for auto-cancelling linked schedules on process exit.
     pub(crate) scheduler: Option<SchedulerHandle>,
 }
@@ -118,6 +121,19 @@ pub enum ProcessStatus {
     Killed,
 }
 
+// ============================================================================
+// ProcessBackendKind
+// ============================================================================
+
+/// Backend type for a process.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessBackendKind {
+    #[default]
+    Local,
+    Tmux,
+}
+
 impl ProcessStatus {
     pub fn is_terminal(&self) -> bool {
         !matches!(self, ProcessStatus::Running)
@@ -152,6 +168,8 @@ pub struct ProcessMeta {
     pub session_id: String,
     pub agent: String,
     pub tmux_session: Option<String>,
+    #[serde(default)]
+    pub backend: ProcessBackendKind,
     pub status: ProcessStatus,
     pub log_path: PathBuf,
     pub spawned_at: DateTime<Utc>,
