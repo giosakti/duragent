@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-02-16
+
+### Added
+- Core/full release variants — release workflow now produces `duragent-core-*` (default features) and `duragent-full-*` (all gateway features compiled in) archives
+- `duragent upgrade --full` / `--core` flags to choose variant (auto-detects current variant by default)
+- `build_info::VARIANT` constant and `variant` field in `/version` endpoint for runtime variant detection
+
+### Fixed
+- `duragent upgrade` checksum verification now matches against the release asset name instead of the local filename
+
 ## [0.5.0] - 2026-02-16 — Autonomy & Hardening
 
 ### Added
@@ -211,7 +221,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project documentation (architecture, API reference, deployment guide)
 - Duragent Format specification
 
-[Unreleased]: https://github.com/giosakti/duragent/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/giosakti/duragent/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/giosakti/duragent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/giosakti/duragent/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/giosakti/duragent/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/giosakti/duragent/compare/v0.3.0...v0.4.0

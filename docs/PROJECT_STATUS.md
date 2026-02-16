@@ -103,6 +103,12 @@ Key specs and design docs:
 - [x] Concurrency hardening (channel send timeouts, backpressure, narrowed lock scopes, stream-based callbacks, DashMap guard safety)
 - [x] Stability fixes (UTF-8 panic prevention, empty messages handling, bounded line reading, actor message timeouts, KeyedLocks race fix, stdin/process cleanup race)
 
+### v0.5.1 — Release Variants ✓
+- [x] Core/full release variants (core = default features, full = all gateway features)
+- [x] Variant-aware `duragent upgrade` (`--full` / `--core` flags, auto-detection)
+- [x] Build variant exposed in `build_info::VARIANT` and `/version` endpoint
+- [x] Checksum verification bugfix in `duragent upgrade`
+
 ### v0.6.0 — Observability & Sandbox
 - [ ] Structured logging improvements
 - [ ] Metrics (OpenTelemetry)
