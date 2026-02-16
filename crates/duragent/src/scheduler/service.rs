@@ -12,13 +12,13 @@ use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
-use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
+use crate::context::{ContextBuilder, TokenBudget, load_all_directives_async};
 use crate::gateway::GatewaySender;
 use crate::process::ProcessRegistryHandle;
 use crate::server::RuntimeServices;
 use crate::session::{AgenticResult, ChatSessionCache, SessionHandle, run_agentic_loop};
 use crate::store::{RunLogStore, ScheduleStore as ScheduleStoreTrait};
-use crate::tools::{ReloadDeps, ToolDependencies, build_executor};
+use crate::tools::{ReloadDeps, ToolDependencies, build_executor_async};
 
 use super::error::{Result, SchedulerError};
 use super::schedule::{
@@ -693,14 +693,16 @@ async fn execute_task_payload(
         agent_name: Some(schedule.agent.clone()),
         session_registry: Some(config.services.session_registry.clone()),
     };
-    let mut executor = build_executor(
-        &agent,
-        &schedule.agent,
-        handle.id(),
+    let mut executor = build_executor_async(
+        agent.clone(),
+        schedule.agent.clone(),
+        handle.id().to_string(),
         policy,
         deps,
-        &config.services.world_memory_path,
+        config.services.world_memory_path.clone(),
     )
+    .await
+    .map_err(|e| SchedulerError::ExecutionFailed(format!("Failed to build executor: {}", e)))?
     .with_reload_deps(ReloadDeps {
         sandbox: config.services.sandbox.clone(),
         agent_dir: agent.agent_dir.clone(),
@@ -710,11 +712,12 @@ async fn execute_task_payload(
 
     // Build messages using StructuredContext
     let history = handle.get_messages().await.unwrap_or_default();
-    let directives = load_all_directives(
-        &config.services.workspace_directives_path,
-        &agent.agent_dir,
-        &agent,
-    );
+    let directives = load_all_directives_async(
+        config.services.workspace_directives_path.clone(),
+        agent.agent_dir.clone(),
+        agent.clone(),
+    )
+    .await;
     let budget = TokenBudget {
         max_input_tokens: agent.model.effective_max_input_tokens(),
         max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),

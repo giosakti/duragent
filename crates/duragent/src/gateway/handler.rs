@@ -31,7 +31,7 @@ use crate::agent::{
 };
 use crate::api::SessionStatus;
 use crate::context::{
-    BlockSource, ContextBuilder, SystemBlock, TokenBudget, load_all_directives, priority,
+    BlockSource, ContextBuilder, SystemBlock, TokenBudget, load_all_directives_async, priority,
 };
 use crate::process::ProcessRegistryHandle;
 use crate::scheduler::SchedulerHandle;
@@ -41,7 +41,7 @@ use crate::session::{
     run_agentic_loop,
 };
 use crate::sync::KeyedLocks;
-use crate::tools::{ReloadDeps, ToolDependencies, ToolExecutionContext, build_executor};
+use crate::tools::{ReloadDeps, ToolDependencies, ToolExecutionContext, build_executor_async};
 
 // ============================================================================
 // Gateway Message Handler
@@ -492,11 +492,12 @@ impl GatewayMessageHandler {
         };
 
         // Build structured context and render to ChatRequest
-        let directives = load_all_directives(
-            &self.services.workspace_directives_path,
-            &agent.agent_dir,
-            &agent,
-        );
+        let directives = load_all_directives_async(
+            self.services.workspace_directives_path.clone(),
+            agent.agent_dir.clone(),
+            agent.clone(),
+        )
+        .await;
         let mut builder = ContextBuilder::new()
             .from_agent_spec(&agent)
             .with_messages(history)
@@ -644,14 +645,22 @@ impl GatewayMessageHandler {
             agent_name: Some(handle.agent().to_string()),
             session_registry: Some(self.services.session_registry.clone()),
         };
-        let mut executor = build_executor(
-            &agent,
-            handle.agent(),
-            handle.id(),
+        let mut executor = match build_executor_async(
+            agent.clone(),
+            handle.agent().to_string(),
+            handle.id().to_string(),
             policy,
             deps,
-            &self.services.world_memory_path,
+            self.services.world_memory_path.clone(),
         )
+        .await
+        {
+            Ok(executor) => executor,
+            Err(e) => {
+                error!(error = %e, "Failed to build tool executor");
+                return Some("Error: failed to initialize tools".to_string());
+            }
+        }
         .with_reload_deps(ReloadDeps {
             sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
@@ -667,11 +676,12 @@ impl GatewayMessageHandler {
                 return Some(format!("Error: {}", e));
             }
         };
-        let directives = load_all_directives(
-            &self.services.workspace_directives_path,
-            &agent.agent_dir,
-            &agent,
-        );
+        let directives = load_all_directives_async(
+            self.services.workspace_directives_path.clone(),
+            agent.agent_dir.clone(),
+            agent.clone(),
+        )
+        .await;
         let mut builder = ContextBuilder::new()
             .from_agent_spec(&agent)
             .with_messages(history)

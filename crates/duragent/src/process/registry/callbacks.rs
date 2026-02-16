@@ -113,10 +113,10 @@ impl ProcessRegistryHandle {
     async fn should_enqueue_callback(&self, key: CallbackKey) -> bool {
         let now = Instant::now();
         let mut map = self.callback_dedupe.lock().await;
-        if let Some(last) = map.get(&key) {
-            if now.duration_since(*last) < CALLBACK_DEDUPE_WINDOW {
-                return false;
-            }
+        if let Some(last) = map.get(&key)
+            && now.duration_since(*last) < CALLBACK_DEDUPE_WINDOW
+        {
+            return false;
         }
         map.insert(key, now);
         if map.len() > CALLBACK_DEDUPE_MAX_ENTRIES {

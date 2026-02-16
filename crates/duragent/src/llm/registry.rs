@@ -113,6 +113,57 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Async initialization for registry (loads OAuth credentials off-thread).
+    pub async fn from_env_async() -> Self {
+        let mut registry = Self::new();
+
+        if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+            registry.api_keys.insert(Provider::Anthropic, api_key);
+            info!("Found Anthropic API key");
+        }
+
+        // Ollama doesn't need an API key
+        registry.api_keys.insert(Provider::Ollama, String::new());
+        info!("Ollama provider available (no API key required)");
+
+        if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+            registry.api_keys.insert(Provider::OpenAI, api_key);
+            info!("Found OpenAI API key");
+        }
+
+        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
+            registry.api_keys.insert(Provider::OpenRouter, api_key);
+            info!("Found OpenRouter API key");
+        }
+
+        // Load OAuth credentials from disk
+        let auth_path = AuthStorage::default_path();
+        match AuthStorage::load_async(auth_path).await {
+            Ok(storage) => {
+                if storage.get_anthropic().is_some() {
+                    info!("Found Anthropic OAuth credentials");
+                    if registry.api_keys.contains_key(&Provider::Anthropic) {
+                        debug!("Anthropic API key also found; OAuth takes precedence");
+                    }
+                }
+                registry.auth_storage = Arc::new(Mutex::new(storage));
+            }
+            Err(e) => {
+                debug!(error = %e, "Failed to load auth credentials");
+            }
+        }
+
+        if !registry.has_cloud_provider() {
+            warn!(
+                "No cloud LLM providers configured. \
+                Set OPENROUTER_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY, \
+                or run `duragent login anthropic`."
+            );
+        }
+
+        registry
+    }
+
     /// Check if any cloud provider is configured.
     fn has_cloud_provider(&self) -> bool {
         self.api_keys.contains_key(&Provider::Anthropic)

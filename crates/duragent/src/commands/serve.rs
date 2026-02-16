@@ -380,7 +380,7 @@ async fn load_agents(
     let scan = agent::AgentStore::from_catalog(&catalog).await;
     agent::log_scan_warnings(&scan.warnings);
 
-    let providers = ProviderRegistry::from_env();
+    let providers = ProviderRegistry::from_env_async().await;
     let policy_store: Arc<dyn duragent::store::PolicyStore> =
         Arc::new(FilePolicyStore::new(agents_dir.to_path_buf(), workspace));
 

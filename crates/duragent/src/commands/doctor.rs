@@ -325,7 +325,7 @@ async fn check_agents(sections: &mut Vec<Section>, config: &Config, config_path:
 
         // Check provider credentials
         if checked_providers.insert(provider.clone())
-            && let Some(cred_check) = check_provider_credentials(provider)
+            && let Some(cred_check) = check_provider_credentials(provider).await
         {
             checks.push(cred_check);
         }
@@ -344,7 +344,7 @@ async fn check_agents(sections: &mut Vec<Section>, config: &Config, config_path:
     });
 }
 
-fn check_provider_credentials(provider: &Provider) -> Option<CheckResult> {
+async fn check_provider_credentials(provider: &Provider) -> Option<CheckResult> {
     match provider {
         Provider::Anthropic => {
             if std::env::var("ANTHROPIC_API_KEY").is_ok() {
@@ -352,7 +352,7 @@ fn check_provider_credentials(provider: &Provider) -> Option<CheckResult> {
             }
             // Check OAuth credentials file
             let auth_path = AuthStorage::default_path();
-            if let Ok(storage) = AuthStorage::load(&auth_path)
+            if let Ok(storage) = AuthStorage::load_async(auth_path).await
                 && storage.get_anthropic().is_some()
             {
                 return None; // OAuth present

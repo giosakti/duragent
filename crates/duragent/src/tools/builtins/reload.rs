@@ -3,6 +3,9 @@
 //! The `reload_tools` tool scans tool directories and reports what tools were
 //! discovered. The actual executor rebuild happens in the agentic loop after
 //! this tool returns — this tool signals intent and provides the scan report.
+//!
+//! Note: discovery runs off-thread (spawn_blocking) to avoid blocking the
+//! async runtime.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +15,7 @@ use async_trait::async_trait;
 use crate::llm::{FunctionDefinition, ToolDefinition};
 use crate::sandbox::Sandbox;
 
-use crate::tools::discovery::discover_all_tools;
+use crate::tools::discovery::discover_all_tools_async;
 use crate::tools::error::ToolError;
 use crate::tools::executor::ToolResult;
 use crate::tools::tool::Tool;
@@ -60,7 +63,8 @@ impl Tool for ReloadToolsTool {
     }
 
     async fn execute(&self, _arguments: &str) -> Result<ToolResult, ToolError> {
-        let tools = discover_all_tools(&self.discovery_dirs, &self.sandbox);
+        let tools =
+            discover_all_tools_async(self.discovery_dirs.clone(), self.sandbox.clone()).await;
 
         let tool_list: Vec<serde_json::Value> = tools
             .iter()

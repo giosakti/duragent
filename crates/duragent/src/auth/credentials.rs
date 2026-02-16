@@ -61,6 +61,13 @@ impl AuthStorage {
         Ok(storage)
     }
 
+    /// Load credentials from disk without blocking the async runtime.
+    pub async fn load_async(path: PathBuf) -> Result<Self> {
+        tokio::task::spawn_blocking(move || AuthStorage::load(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("auth storage load task failed: {}", e))?
+    }
+
     /// Save credentials to disk with restricted permissions.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -98,6 +105,14 @@ impl AuthStorage {
         }
 
         Ok(())
+    }
+
+    /// Save credentials to disk without blocking the async runtime.
+    pub async fn save_async(&self, path: PathBuf) -> Result<()> {
+        let storage = self.clone();
+        tokio::task::spawn_blocking(move || storage.save(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("auth storage save task failed: {}", e))?
     }
 
     /// Get the Anthropic credential, if any.

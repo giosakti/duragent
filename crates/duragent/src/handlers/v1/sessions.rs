@@ -20,7 +20,7 @@ use crate::api::{
     PendingApprovalResponse, SendMessageRequest, SendMessageResponse, SessionStatus,
     SessionSummary,
 };
-use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
+use crate::context::{ContextBuilder, TokenBudget, load_all_directives_async};
 use crate::handlers::problem_details;
 use crate::llm::{ChatRequest, LLMProvider, Role};
 use crate::server::AppState;
@@ -28,7 +28,7 @@ use crate::session::{
     AccumulatingStream, AgenticResult, ApprovalDecisionType, ResumeContext, SessionHandle,
     StreamConfig, resume_agentic_loop, run_agentic_loop,
 };
-use crate::tools::{ReloadDeps, ToolDependencies, ToolResult, build_executor};
+use crate::tools::{ReloadDeps, ToolDependencies, ToolResult, build_executor_async};
 
 // ============================================================================
 // Query Types
@@ -443,14 +443,22 @@ pub async fn approve_command(
             agent_name: Some(agent_name.clone()),
             session_registry: Some(state.services.session_registry.clone()),
         };
-        let executor = build_executor(
-            &agent_spec,
-            &agent_name,
-            &session_id,
+        let executor = match build_executor_async(
+            agent_spec.clone(),
+            agent_name.clone(),
+            session_id.clone(),
             policy.clone(),
             deps,
-            &state.services.world_memory_path,
-        );
+            state.services.world_memory_path.clone(),
+        )
+        .await
+        {
+            Ok(executor) => executor,
+            Err(e) => {
+                error!(error = %e, "Failed to build tool executor");
+                return problem_details::internal_error("executor init failed").into_response();
+            }
+        };
 
         // Build tool call from pending approval
         let tool_call = crate::llm::ToolCall {
@@ -502,14 +510,22 @@ pub async fn approve_command(
         agent_name: Some(agent_name.clone()),
         session_registry: Some(state.services.session_registry.clone()),
     };
-    let mut executor = build_executor(
-        &agent_spec,
-        &agent_name,
-        &session_id,
+    let mut executor = match build_executor_async(
+        agent_spec.clone(),
+        agent_name.clone(),
+        session_id.clone(),
         policy,
         deps,
-        &state.services.world_memory_path,
+        state.services.world_memory_path.clone(),
     )
+    .await
+    {
+        Ok(executor) => executor,
+        Err(e) => {
+            error!(error = %e, "Failed to build tool executor");
+            return problem_details::internal_error("executor init failed").into_response();
+        }
+    }
     .with_reload_deps(ReloadDeps {
         sandbox: state.services.sandbox.clone(),
         agent_dir: agent_spec.agent_dir.clone(),
@@ -622,14 +638,22 @@ async fn send_message_agentic(state: &AppState, ctx: ChatContext) -> Response {
         agent_name: Some(agent_name.clone()),
         session_registry: Some(state.services.session_registry.clone()),
     };
-    let mut executor = build_executor(
-        &ctx.agent_spec,
-        &agent_name,
-        &session_id,
+    let mut executor = match build_executor_async(
+        ctx.agent_spec.clone(),
+        agent_name.clone(),
+        session_id.clone(),
         policy,
         deps,
-        &state.services.world_memory_path,
+        state.services.world_memory_path.clone(),
     )
+    .await
+    {
+        Ok(executor) => executor,
+        Err(e) => {
+            error!(error = %e, "Failed to build tool executor");
+            return problem_details::internal_error("executor init failed").into_response();
+        }
+    }
     .with_reload_deps(ReloadDeps {
         sandbox: state.services.sandbox.clone(),
         agent_dir: ctx.agent_dir.clone(),
@@ -705,11 +729,12 @@ async fn prepare_chat_context(
     };
 
     // Build structured context from agent spec and history
-    let directives = load_all_directives(
-        &state.services.workspace_directives_path,
-        &agent.agent_dir,
-        &agent,
-    );
+    let directives = load_all_directives_async(
+        state.services.workspace_directives_path.clone(),
+        agent.agent_dir.clone(),
+        agent.clone(),
+    )
+    .await;
     let structured_context = ContextBuilder::new()
         .from_agent_spec(&agent)
         .with_messages(history)

@@ -6,6 +6,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Result;
+
 use crate::agent::{AgentSpec, ToolConfig, ToolPolicy};
 use crate::config::DEFAULT_TOOLS_DIR;
 use crate::memory::Memory;
@@ -208,6 +210,29 @@ pub fn build_executor(
     }
 
     executor
+}
+
+/// Async wrapper for building a tool executor without blocking the runtime.
+pub async fn build_executor_async(
+    agent: Arc<AgentSpec>,
+    agent_name: String,
+    session_id: String,
+    policy: ToolPolicy,
+    deps: ToolDependencies,
+    world_memory_path: PathBuf,
+) -> Result<ToolExecutor> {
+    tokio::task::spawn_blocking(move || {
+        build_executor(
+            &agent,
+            &agent_name,
+            &session_id,
+            policy,
+            deps,
+            &world_memory_path,
+        )
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("build_executor task failed: {}", e))
 }
 
 /// Merge explicit tools with discovered tools. Explicit tools win on name collision.

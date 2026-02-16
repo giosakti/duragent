@@ -12,7 +12,7 @@ use crate::context::ContextBuilder;
 use crate::llm::{FunctionCall, ToolCall};
 use crate::session::{AgenticResult, ApprovalDecisionType, ResumeContext, resume_agentic_loop};
 use crate::tools::{
-    ReloadDeps, ToolDependencies, ToolExecutionContext, ToolResult, build_executor,
+    ReloadDeps, ToolDependencies, ToolExecutionContext, ToolResult, build_executor_async,
 };
 
 // ============================================================================
@@ -168,14 +168,22 @@ impl GatewayMessageHandler {
                 agent_name: Some(handle.agent().to_string()),
                 session_registry: Some(self.services.session_registry.clone()),
             };
-            let executor = build_executor(
-                &agent,
-                handle.agent(),
-                handle.id(),
+            let executor = match build_executor_async(
+                agent.clone(),
+                handle.agent().to_string(),
+                handle.id().to_string(),
                 policy.clone(),
                 deps,
-                &self.services.world_memory_path,
-            );
+                self.services.world_memory_path.clone(),
+            )
+            .await
+            {
+                Ok(executor) => executor,
+                Err(e) => {
+                    error!(error = %e, "Failed to build tool executor");
+                    return Some("Tool execution failed: executor init failed".to_string());
+                }
+            };
 
             // Build tool call from pending approval
             let tool_call = ToolCall {
@@ -233,14 +241,22 @@ impl GatewayMessageHandler {
             agent_name: Some(handle.agent().to_string()),
             session_registry: Some(self.services.session_registry.clone()),
         };
-        let mut executor = build_executor(
-            &agent,
-            handle.agent(),
-            handle.id(),
+        let mut executor = match build_executor_async(
+            agent.clone(),
+            handle.agent().to_string(),
+            handle.id().to_string(),
             policy,
             deps,
-            &self.services.world_memory_path,
+            self.services.world_memory_path.clone(),
         )
+        .await
+        {
+            Ok(executor) => executor,
+            Err(e) => {
+                error!(error = %e, "Failed to build tool executor");
+                return Some("Executor init failed".to_string());
+            }
+        }
         .with_reload_deps(ReloadDeps {
             sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),

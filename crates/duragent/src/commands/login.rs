@@ -68,13 +68,13 @@ async fn login_anthropic() -> Result<()> {
 
     // Save credentials
     let auth_path = AuthStorage::default_path();
-    let mut storage = AuthStorage::load(&auth_path)?;
+    let mut storage = AuthStorage::load_async(auth_path.clone()).await?;
     storage.set_anthropic(AuthCredential::OAuth {
         access: tokens.access_token,
         refresh: tokens.refresh_token,
         expires: tokens.expires_at,
     });
-    storage.save(&auth_path)?;
+    storage.save_async(auth_path.clone()).await?;
 
     println!(
         "Authentication successful! Credentials saved to {}",

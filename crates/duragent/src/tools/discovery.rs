@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::sandbox::Sandbox;
 
@@ -45,6 +45,20 @@ pub fn discover_all_tools(dirs: &[PathBuf], sandbox: &Arc<dyn Sandbox>) -> Vec<S
     }
 
     tools
+}
+
+/// Async wrapper for tool discovery that avoids blocking the runtime.
+pub async fn discover_all_tools_async(
+    dirs: Vec<PathBuf>,
+    sandbox: Arc<dyn Sandbox>,
+) -> Vec<SharedTool> {
+    match tokio::task::spawn_blocking(move || discover_all_tools(&dirs, &sandbox)).await {
+        Ok(tools) => tools,
+        Err(e) => {
+            warn!(error = %e, "Tool discovery task failed");
+            Vec::new()
+        }
+    }
 }
 
 /// Scan a single directory for tool subdirectories.

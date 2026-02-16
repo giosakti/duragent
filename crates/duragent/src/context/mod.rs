@@ -13,7 +13,7 @@ mod tokens;
 mod truncation;
 
 pub use builder::ContextBuilder;
-pub use directives::load_all_directives;
+pub use directives::{load_all_directives, load_all_directives_async};
 pub use template::interpolate_template_vars;
 pub use tokens::*;
 pub use truncation::*;

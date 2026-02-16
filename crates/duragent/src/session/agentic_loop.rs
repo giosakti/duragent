@@ -409,7 +409,7 @@ pub async fn run_agentic_loop(
 
         // Rebuild executor if reload_tools was called
         if reload_requested {
-            executor.rebuild();
+            executor.rebuild_async().await;
         }
 
         // Continue loop with updated messages

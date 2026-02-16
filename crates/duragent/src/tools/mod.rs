@@ -18,7 +18,8 @@ pub use error::ToolError;
 pub(crate) use executor::extract_action;
 pub use executor::{ToolExecutor, ToolResult};
 pub use factory::{
-    KNOWN_BUILTIN_TOOLS, ReloadDeps, ToolDependencies, build_executor, create_tools,
+    KNOWN_BUILTIN_TOOLS, ReloadDeps, ToolDependencies, build_executor, build_executor_async,
+    create_tools,
 };
 pub use notify::send_notification;
 pub use tool::{SharedTool, Tool};

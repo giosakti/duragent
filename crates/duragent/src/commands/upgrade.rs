@@ -248,16 +248,17 @@ async fn download_and_install(release: &GitHubRelease, target: &str, format: &st
     verify_checksum_if_available(release, &archive_path, format).await?;
 
     // Extract binary from tar.gz
-    extract_binary(&archive_path, &tmp_binary)?;
+    extract_binary(&archive_path, &tmp_binary).await?;
 
     // Clean up archive
-    let _ = std::fs::remove_file(&archive_path);
+    let _ = tokio::fs::remove_file(&archive_path).await;
 
     // Set executable permissions on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_binary, std::fs::Permissions::from_mode(0o755))
+        tokio::fs::set_permissions(&tmp_binary, std::fs::Permissions::from_mode(0o755))
+            .await
             .context("Failed to set executable permissions")?;
     }
 
@@ -265,20 +266,19 @@ async fn download_and_install(release: &GitHubRelease, target: &str, format: &st
     if format == "text" {
         println!("Verifying new binary...");
     }
-    test_binary(&tmp_binary)?;
+    test_binary(&tmp_binary).await?;
 
     // Atomic replace
     if format == "text" {
         println!("Replacing binary at {}...", current_exe.display());
     }
-    std::fs::rename(&tmp_binary, &current_exe).with_context(|| {
-        // Clean up tmp on failure
-        let _ = std::fs::remove_file(&tmp_binary);
-        format!(
+    if let Err(e) = tokio::fs::rename(&tmp_binary, &current_exe).await {
+        let _ = tokio::fs::remove_file(&tmp_binary).await;
+        return Err(anyhow::Error::new(e).context(format!(
             "Failed to replace binary at {}. Permission denied? Try: sudo duragent upgrade",
             current_exe.display()
-        )
-    })?;
+        )));
+    }
 
     Ok(())
 }
@@ -292,7 +292,9 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
     }
 
     let bytes = response.bytes().await.context("Failed to read download")?;
-    std::fs::write(dest, &bytes).with_context(|| format!("Failed to write {}", dest.display()))?;
+    tokio::fs::write(dest, &bytes)
+        .await
+        .with_context(|| format!("Failed to write {}", dest.display()))?;
     Ok(())
 }
 
@@ -363,7 +365,7 @@ async fn verify_checksum(
 ) -> Result<()> {
     let checksum_content = download_text(checksum_url).await?;
     let expected = parse_checksum(&checksum_content, archive_filename)?;
-    let actual = compute_sha256(archive_path)?;
+    let actual = compute_sha256(archive_path).await?;
 
     if actual != expected {
         bail!(
@@ -374,8 +376,10 @@ async fn verify_checksum(
     Ok(())
 }
 
-fn compute_sha256(path: &Path) -> Result<String> {
-    let data = std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+async fn compute_sha256(path: &Path) -> Result<String> {
+    let data = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let hash = Sha256::digest(&data);
     Ok(format!("{:x}", hash))
 }
@@ -398,7 +402,16 @@ fn parse_checksum(content: &str, filename: &str) -> Result<String> {
 // Archive Extraction
 // ============================================================================
 
-fn extract_binary(archive_path: &Path, dest: &Path) -> Result<()> {
+async fn extract_binary(archive_path: &Path, dest: &Path) -> Result<()> {
+    let archive_path = archive_path.to_path_buf();
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || extract_binary_sync(&archive_path, &dest))
+        .await
+        .map_err(|e| anyhow::anyhow!("extract_binary task failed: {}", e))??;
+    Ok(())
+}
+
+fn extract_binary_sync(archive_path: &Path, dest: &Path) -> Result<()> {
     let file = std::fs::File::open(archive_path)
         .with_context(|| format!("Failed to open archive {}", archive_path.display()))?;
     let decoder = flate2::read::GzDecoder::new(file);
@@ -430,7 +443,15 @@ fn extract_binary(archive_path: &Path, dest: &Path) -> Result<()> {
 // Binary Verification
 // ============================================================================
 
-fn test_binary(path: &Path) -> Result<()> {
+async fn test_binary(path: &Path) -> Result<()> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || test_binary_sync(&path))
+        .await
+        .map_err(|e| anyhow::anyhow!("test_binary task failed: {}", e))??;
+    Ok(())
+}
+
+fn test_binary_sync(path: &Path) -> Result<()> {
     let output = std::process::Command::new(path)
         .arg("--version")
         .output()

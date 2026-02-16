@@ -3,11 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::discovery::discover_all_tools;
 use super::error::ToolError;
-use super::factory::{ReloadDeps, create_tools};
+use super::factory::{ReloadDeps, ToolDependencies, create_tools};
 use super::notify::send_notification;
 use super::tool::Tool;
 use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolType};
@@ -166,7 +166,9 @@ impl ToolExecutor {
     /// Called after `reload_tools` to re-discover tools from directories
     /// and merge with explicit tools (explicit wins on name collision).
     /// No-op if `reload_deps` was not set.
-    pub fn rebuild(&mut self) {
+    ///
+    /// Blocking; use `rebuild_async` in async contexts.
+    pub fn rebuild_blocking(&mut self) {
         let Some(ref deps) = self.reload_deps else {
             return;
         };
@@ -201,6 +203,64 @@ impl ToolExecutor {
                 merged.push(tool);
             }
         }
+
+        debug!(
+            tool_count = merged.len(),
+            "Rebuilt executor after reload_tools"
+        );
+        self.replace_tools(merged);
+    }
+
+    /// Async rebuild that offloads discovery to a blocking thread.
+    pub async fn rebuild_async(&mut self) {
+        let Some(ref deps) = self.reload_deps else {
+            return;
+        };
+
+        let sandbox = deps.sandbox.clone();
+        let agent_dir = deps.agent_dir.clone();
+        let workspace_tools_dir = deps.workspace_tools_dir.clone();
+        let agent_tool_configs = deps.agent_tool_configs.clone();
+
+        let merged = match tokio::task::spawn_blocking(move || {
+            let tool_deps = ToolDependencies {
+                sandbox: sandbox.clone(),
+                agent_dir: agent_dir.clone(),
+                scheduler: None,
+                execution_context: None,
+                workspace_tools_dir: workspace_tools_dir.clone(),
+                process_registry: None,
+                session_id: None,
+                agent_name: None,
+                session_registry: None,
+            };
+            let explicit = create_tools(&agent_tool_configs, &tool_deps);
+
+            let mut discovery_dirs = vec![agent_dir.join(DEFAULT_TOOLS_DIR)];
+            if let Some(ws) = workspace_tools_dir {
+                discovery_dirs.push(ws);
+            }
+            let discovered = discover_all_tools(&discovery_dirs, &sandbox);
+
+            // Merge: explicit wins on name collision
+            let explicit_names: HashSet<String> =
+                explicit.iter().map(|t| t.name().to_string()).collect();
+            let mut merged = explicit;
+            for tool in discovered {
+                if !explicit_names.contains(tool.name()) {
+                    merged.push(tool);
+                }
+            }
+            merged
+        })
+        .await
+        {
+            Ok(merged) => merged,
+            Err(e) => {
+                warn!(error = %e, "Failed to rebuild tools");
+                return;
+            }
+        };
 
         debug!(
             tool_count = merged.len(),

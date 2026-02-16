@@ -14,19 +14,16 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{error, info, warn};
 
 use crate::api::SessionStatus;
-use crate::context::{ContextBuilder, TokenBudget, load_all_directives};
+use crate::context::{ContextBuilder, TokenBudget, load_all_directives_async};
 use crate::gateway::{GatewaySender, build_approval_keyboard};
 use crate::server::RuntimeServices;
 use crate::session::{AgenticResult, STEERING_CHANNEL_CAPACITY, run_agentic_loop};
-use crate::tools::{ReloadDeps, ToolDependencies, build_executor};
+use crate::tools::{ReloadDeps, ToolDependencies, build_executor_async};
 
 use super::backend::{BackendSpawn, ProcessBackends};
 use super::monitor;
 use super::tmux;
-use super::{
-    CallbackKey, CallbackKind, ProcessEntry, ProcessError, ProcessMeta, ProcessRegistryHandle,
-    ProcessStatus,
-};
+use super::{ProcessEntry, ProcessError, ProcessMeta, ProcessRegistryHandle, ProcessStatus};
 use super::{SpawnResult, WaitResult};
 
 mod callbacks;
@@ -621,14 +618,15 @@ impl ProcessRegistryHandle {
             agent_name: Some(meta.agent.clone()),
             session_registry: Some(self.services.session_registry.clone()),
         };
-        let mut executor = build_executor(
-            &agent,
-            &meta.agent,
-            &meta.session_id,
+        let mut executor = build_executor_async(
+            agent.clone(),
+            meta.agent.clone(),
+            meta.session_id.clone(),
             policy,
             deps,
-            &self.services.world_memory_path,
+            self.services.world_memory_path.clone(),
         )
+        .await?
         .with_reload_deps(ReloadDeps {
             sandbox: self.services.sandbox.clone(),
             agent_dir: agent.agent_dir.clone(),
@@ -644,11 +642,12 @@ impl ProcessRegistryHandle {
 
         // Build messages (after lock — always reflects latest state)
         let history = handle.get_messages().await.unwrap_or_default();
-        let directives = load_all_directives(
-            &self.services.workspace_directives_path,
-            &agent.agent_dir,
-            &agent,
-        );
+        let directives = load_all_directives_async(
+            self.services.workspace_directives_path.clone(),
+            agent.agent_dir.clone(),
+            agent.clone(),
+        )
+        .await;
         let budget = TokenBudget {
             max_input_tokens: agent.model.effective_max_input_tokens(),
             max_output_tokens: agent.model.max_output_tokens.unwrap_or(4096),

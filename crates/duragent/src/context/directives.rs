@@ -8,7 +8,8 @@
 //! File-based directives override runtime defaults when the `source` name matches.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::Utc;
 use tracing::warn;
@@ -34,6 +35,25 @@ pub fn load_all_directives(
     ));
     let defaults = default_directives(agent);
     merge_directives(file_directives, defaults)
+}
+
+/// Load directives using a blocking filesystem call in a dedicated thread.
+pub async fn load_all_directives_async(
+    workspace_directives: PathBuf,
+    agent_dir: PathBuf,
+    agent: Arc<AgentSpec>,
+) -> Vec<DirectiveEntry> {
+    match tokio::task::spawn_blocking(move || {
+        load_all_directives(&workspace_directives, &agent_dir, &agent)
+    })
+    .await
+    {
+        Ok(directives) => directives,
+        Err(e) => {
+            warn!(error = %e, "Failed to load directives");
+            Vec::new()
+        }
+    }
 }
 
 /// Generate runtime default directives based on agent configuration.
