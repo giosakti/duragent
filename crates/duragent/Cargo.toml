@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["server"]
+default = ["server", "cli"]
+cli = ["dep:duragent-cli"]
 server = ["dep:axum", "dep:tower", "dep:tower-http", "dep:duragent-gateway-protocol"]
 gateway-discord = ["server", "dep:duragent-gateway-discord"]
 gateway-telegram = ["server", "dep:duragent-gateway-telegram"]
@@ -15,7 +16,7 @@ gateway-telegram = ["server", "dep:duragent-gateway-telegram"]
 [dependencies]
 # Workspace crates
 duragent-client = { workspace = true }
-duragent-cli = { workspace = true }
+duragent-cli = { workspace = true, optional = true }
 duragent-gateway-protocol = { workspace = true, optional = true }
 duragent-gateway-discord = { workspace = true, optional = true }
 duragent-gateway-telegram = { workspace = true, optional = true }

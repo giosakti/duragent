@@ -7,7 +7,9 @@ use anyhow::{Result, bail};
 use duragent::config::DEFAULT_WORKSPACE;
 
 pub mod agent;
+#[cfg(feature = "cli")]
 pub mod attach;
+#[cfg(feature = "cli")]
 pub mod chat;
 pub mod doctor;
 pub mod init;

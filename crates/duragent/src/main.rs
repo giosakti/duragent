@@ -29,6 +29,7 @@ enum Commands {
     },
 
     /// Attach to an existing session
+    #[cfg(feature = "cli")]
     Attach {
         /// Session ID to attach to (omit to list attachable sessions)
         #[arg(value_name = "SESSION_ID")]
@@ -52,6 +53,7 @@ enum Commands {
     },
 
     /// Start an interactive chat session with an agent
+    #[cfg(feature = "cli")]
     Chat {
         /// Name of the agent to chat with
         #[arg(short, long)]
@@ -238,6 +240,7 @@ async fn run() -> Result<()> {
                 no_interactive,
             } => commands::agent::create(&config, &name, provider, model, no_interactive).await,
         },
+        #[cfg(feature = "cli")]
         Commands::Attach {
             session_id,
             list,
@@ -250,6 +253,7 @@ async fn run() -> Result<()> {
             }
             _ => commands::attach::list(&config, agents_dir.as_deref(), server.as_deref()).await,
         },
+        #[cfg(feature = "cli")]
         Commands::Chat {
             agent,
             config,
