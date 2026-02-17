@@ -20,6 +20,7 @@ use crate::api::{SESSION_ID_PREFIX, SessionStatus};
 use crate::config::CompactionMode;
 use crate::store::SessionStore;
 
+use super::SessionSnapshotEval;
 use super::actor::SessionActor;
 use super::actor_types::{
     ActorConfig, ActorError, DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP, RecoverConfig,

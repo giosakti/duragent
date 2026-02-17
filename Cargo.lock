@@ -801,6 +801,7 @@ dependencies = [
  "duragent-gateway-discord",
  "duragent-gateway-protocol",
  "duragent-gateway-telegram",
+ "duragent-types",
  "flate2",
  "futures",
  "html-to-markdown-rs",
@@ -844,6 +845,7 @@ name = "duragent-client"
 version = "0.5.2"
 dependencies = [
  "bytes",
+ "duragent-types",
  "futures",
  "reqwest 0.13.2",
  "serde",
@@ -889,6 +891,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "duragent-types"
+version = "0.5.2"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

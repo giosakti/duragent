@@ -25,11 +25,11 @@ use super::queue::{
 };
 use super::routing::{RoutingConfig, is_group_chat};
 use super::{MessageHandler, build_approval_keyboard};
-use crate::agent::access::{check_access, resolve_sender_disposition};
 use crate::agent::{
-    ActivationMode, AgentSpec, ContextBufferConfig, ContextBufferMode, PolicyLocks, QueueConfig,
-    SenderDisposition,
+    ActivationMode, AgentSpec, ContextBufferConfig, ContextBufferMode, ModelConfigEval,
+    PolicyLocks, QueueConfig, SenderDisposition,
 };
+use crate::agent::{check_access, resolve_sender_disposition};
 use crate::api::SessionStatus;
 use crate::context::{
     BlockSource, ContextBuilder, SystemBlock, TokenBudget, load_all_directives_async, priority,

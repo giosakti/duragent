@@ -1,8 +1,11 @@
-//! Skill metadata types and SKILL.md frontmatter parser.
+//! SKILL.md frontmatter parser.
 //!
 //! Implements the [Agent Skills](https://agentskills.io) open standard:
 //! SKILL.md files with YAML frontmatter containing `name`, `description`,
 //! `allowed-tools`, and optional `metadata`.
+//!
+//! The `SkillMetadata` type lives in `duragent-types` and is re-exported
+//! from `crate::agent`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,20 +13,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use thiserror::Error;
 
-/// Parsed skill metadata from a SKILL.md file.
-#[derive(Debug, Clone)]
-pub struct SkillMetadata {
-    /// Skill name (lowercase, hyphens only, ≤64 chars).
-    pub name: String,
-    /// Human-readable description.
-    pub description: String,
-    /// Path to the skill directory containing SKILL.md.
-    pub skill_path: PathBuf,
-    /// Tool names this skill uses (from `allowed-tools` frontmatter).
-    pub allowed_tools: Vec<String>,
-    /// Arbitrary key-value metadata from frontmatter.
-    pub metadata: HashMap<String, String>,
-}
+use crate::agent::SkillMetadata;
 
 /// Error parsing SKILL.md frontmatter.
 #[derive(Debug, Error)]

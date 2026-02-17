@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::session::{SessionEvent, SessionSnapshot};
+use crate::session::{SessionEvent, SessionSnapshot, SessionSnapshotEval};
 use crate::store::error::{StorageError, StorageResult};
 use crate::store::session::SessionStore;
 use crate::sync::KeyedLocks;

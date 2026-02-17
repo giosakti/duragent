@@ -15,6 +15,7 @@ gateway-telegram = ["server", "dep:duragent-gateway-telegram"]
 
 [dependencies]
 # Workspace crates
+duragent-types = { workspace = true }
 duragent-client = { workspace = true }
 duragent-cli = { workspace = true, optional = true }
 duragent-gateway-protocol = { workspace = true, optional = true }

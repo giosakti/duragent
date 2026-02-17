@@ -1,6 +1,6 @@
 //! LLM provider client for chat completions.
 
-// Re-export client-side LLM types (api types, error, streaming)
+// Re-export LLM data types from duragent-types (via duragent-client re-export)
 pub use duragent_client::llm::*;
 
 #[cfg(feature = "server")]
@@ -17,6 +17,6 @@ pub use anthropic::{AnthropicAuth, AnthropicProvider};
 #[cfg(feature = "server")]
 pub use openai::OpenAICompatibleProvider;
 #[cfg(feature = "server")]
-pub use provider::{LLMProvider, Provider};
+pub use provider::LLMProvider;
 #[cfg(feature = "server")]
 pub use registry::ProviderRegistry;

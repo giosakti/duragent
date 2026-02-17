@@ -10,7 +10,7 @@ use super::error::ToolError;
 use super::factory::{ReloadDeps, ToolDependencies, create_tools};
 use super::notify::send_notification;
 use super::tool::Tool;
-use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolType};
+use crate::agent::{NotifyConfig, PolicyDecision, ToolPolicy, ToolPolicyEval, ToolType};
 use crate::config::DEFAULT_TOOLS_DIR;
 use crate::llm::{ToolCall, ToolDefinition};
 use crate::sandbox::ExecResult;

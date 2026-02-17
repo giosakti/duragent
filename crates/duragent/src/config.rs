@@ -364,18 +364,8 @@ impl Default for SessionsConfig {
     }
 }
 
-/// How old events are handled after a snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionMode {
-    /// Remove old events (default — keeps things simple).
-    #[default]
-    Discard,
-    /// Move old events to events.archive.jsonl before truncating.
-    Archive,
-    /// No compaction (events.jsonl grows unbounded, existing behavior).
-    Disabled,
-}
+// Re-export CompactionMode from duragent-types
+pub use duragent_types::session::CompactionMode;
 
 // ============================================================================
 // Private Helpers (Serde Defaults)

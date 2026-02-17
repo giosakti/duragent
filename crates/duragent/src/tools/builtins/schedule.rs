@@ -260,7 +260,7 @@ impl ScheduleTool {
 
         // Create schedule
         let schedule = Schedule {
-            id: Schedule::generate_id(),
+            id: crate::scheduler::generate_schedule_id(),
             agent: self.ctx.agent.clone(),
             created_by_session: self.ctx.session_id.clone(),
             destination: ScheduleDestination {

@@ -10,7 +10,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use super::error::{Result, SchedulerError};
-use super::schedule::{Schedule, ScheduleId, ScheduleState, ScheduleStatus};
+use super::{Schedule, ScheduleId, ScheduleState, ScheduleStatus};
 use crate::store::ScheduleStore as ScheduleStoreTrait;
 
 /// In-memory cache for schedules with persistence.
@@ -203,7 +203,7 @@ pub struct LoadResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::schedule::{ScheduleDestination, SchedulePayload, ScheduleTiming};
+    use crate::scheduler::{ScheduleDestination, SchedulePayload, ScheduleTiming};
     use crate::store::file::FileScheduleStore;
     use chrono::Utc;
     use tempfile::TempDir;

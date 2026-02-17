@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/duragent",
+    "crates/duragent-types",
     "crates/duragent-client",
     "crates/duragent-cli",
     "crates/duragent-gateway-protocol",
@@ -17,6 +18,7 @@ repository = "https://github.com/giosakti/duragent"
 
 [workspace.dependencies]
 # Workspace crates
+duragent-types = { path = "crates/duragent-types" }
 duragent-client = { path = "crates/duragent-client" }
 duragent-cli = { path = "crates/duragent-cli" }
 duragent-gateway-protocol = { path = "crates/duragent-gateway-protocol" }

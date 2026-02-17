@@ -19,10 +19,11 @@ use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::agent::{AgentSpec, ContextConfig, HooksConfig, ToolType};
+use super::PendingApproval;
+use super::PendingApprovalEval;
+use crate::agent::{AgentSpec, ContextConfig, HooksConfig, ModelConfigEval};
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMError, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
 use crate::session::handle::SessionHandle;
@@ -94,71 +95,12 @@ pub enum AgenticError {
     LlmTimeout(u64),
 }
 
-/// A pending approval waiting for user decision.
-///
-/// Approvals have no timeout — they wait indefinitely until the user
-/// approves, denies, or sends a new message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingApproval {
-    /// The tool call ID that needs approval.
-    pub call_id: String,
-    /// The tool name (e.g., "bash").
-    pub tool_name: String,
-    /// The tool call arguments.
-    pub arguments: serde_json::Value,
-    /// The command being approved (for display).
-    pub command: String,
-    /// The tool type (for saving "Allow Always" patterns).
-    #[serde(default = "default_tool_type")]
-    pub tool_type: ToolType,
-    /// Accumulated messages to restore when resuming the loop.
-    pub messages: Vec<Message>,
-    /// Platform sender ID of the user who triggered this approval.
-    /// Used in group chats to ensure only the requester can approve.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requester_id: Option<String>,
-}
-
-/// Default tool type for backwards compatibility with persisted approvals.
-fn default_tool_type() -> ToolType {
-    ToolType::Bash
-}
-
 /// Context for resuming an agentic loop after a tool approval.
 pub struct ResumeContext {
     /// The pending approval that was resolved.
     pub pending: PendingApproval,
     /// The result of executing (or denying) the tool.
     pub tool_result: ToolResult,
-}
-
-impl PendingApproval {
-    /// Create a new pending approval.
-    pub fn new(
-        call_id: String,
-        tool_name: String,
-        arguments: serde_json::Value,
-        command: String,
-        tool_type: ToolType,
-        messages: Vec<Message>,
-    ) -> Self {
-        Self {
-            call_id,
-            tool_name,
-            arguments,
-            command,
-            tool_type,
-            messages,
-            requester_id: None,
-        }
-    }
-
-    /// Convert into initial messages for resuming the loop, appending the tool result.
-    pub fn into_messages(self, tool_result_content: String) -> Vec<Message> {
-        let mut messages = self.messages;
-        messages.push(Message::tool_result(&self.call_id, tool_result_content));
-        messages
-    }
 }
 
 /// Outcome of executing a single tool call.
@@ -718,6 +660,7 @@ fn accumulate_usage(existing: Option<Usage>, new: Option<Usage>) -> Option<Usage
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ToolType;
 
     #[test]
     fn agentic_result_complete_debug() {

@@ -8,7 +8,8 @@ use duragent::agent::OnDisconnect;
 use duragent::api::SessionStatus;
 use duragent::llm::{Message, Role, Usage};
 use duragent::session::{
-    CheckpointState, SessionConfig, SessionEvent, SessionEventPayload, SessionSnapshot,
+    CheckpointState, SessionConfig, SessionEvent, SessionEventEval, SessionEventPayload,
+    SessionSnapshot, SessionSnapshotEval,
 };
 use duragent::store::SessionStore;
 use duragent::store::file::FileSessionStore;

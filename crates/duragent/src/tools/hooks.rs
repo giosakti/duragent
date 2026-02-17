@@ -3,7 +3,7 @@
 //! Before-tool hooks can reject a tool call (e.g., missing dependency, duplicate).
 //! After-tool hooks inject steering messages into the conversation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use tracing::warn;
 
@@ -85,35 +85,6 @@ pub fn default_hooks(tool_names: &[&str]) -> HooksConfig {
     HooksConfig {
         before_tool,
         after_tool,
-    }
-}
-
-impl HooksConfig {
-    /// Merge with default hooks. Agent-configured hooks override defaults
-    /// when they share the same `tool_match` pattern.
-    pub fn with_defaults(mut self, defaults: HooksConfig) -> Self {
-        let agent_before_patterns: HashSet<String> = self
-            .before_tool
-            .iter()
-            .map(|h| h.tool_match.clone())
-            .collect();
-        let agent_after_patterns: HashSet<String> = self
-            .after_tool
-            .iter()
-            .map(|h| h.tool_match.clone())
-            .collect();
-
-        for hook in defaults.before_tool {
-            if !agent_before_patterns.contains(&hook.tool_match) {
-                self.before_tool.push(hook);
-            }
-        }
-        for hook in defaults.after_tool {
-            if !agent_after_patterns.contains(&hook.tool_match) {
-                self.after_tool.push(hook);
-            }
-        }
-        self
     }
 }
 
@@ -419,7 +390,9 @@ fn matches_hook_pattern(pattern: &str, invocation: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{AfterToolHook, BeforeToolHook, BeforeToolType, HooksConfig};
+    use crate::agent::{
+        AfterToolHook, BeforeToolHook, BeforeToolType, HooksConfig, HooksConfigEval,
+    };
     use crate::llm::{FunctionCall, Message, Role, ToolCall};
     use crate::tools::ToolResult;
 

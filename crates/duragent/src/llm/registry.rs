@@ -9,9 +9,10 @@ use tracing::{debug, info, warn};
 
 use super::anthropic::{AnthropicAuth, AnthropicProvider};
 use super::openai::OpenAICompatibleProvider;
-use super::provider::{LLMProvider, Provider};
+use super::provider::LLMProvider;
 use crate::auth::anthropic_oauth;
 use crate::auth::credentials::{AuthCredential, AuthStorage};
+use crate::llm::Provider;
 
 /// TCP connect timeout for LLM HTTP requests.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

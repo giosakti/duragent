@@ -2,13 +2,16 @@
 //!
 //! Events are appended to a JSONL file for crash-safe persistence.
 //! Each event has a monotonic sequence number for replay ordering.
+//!
+//! Evaluation methods (`to_message`, `into_messages`) live in
+//! `duragent::session::events_eval`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::OnDisconnect;
+use crate::agent::{OnDisconnect, ToolType};
 use crate::api::SessionStatus;
-use crate::llm::{Message, Role, Usage};
+use crate::llm::{Message, Usage};
 
 /// A session event that can be persisted to the event log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,35 +141,56 @@ impl SessionEvent {
             payload,
         }
     }
+}
 
-    /// Convert this event to a Message if it represents a chat message.
-    pub fn to_message(&self) -> Option<Message> {
-        match &self.payload {
-            SessionEventPayload::UserMessage { content, .. } => {
-                Some(Message::text(Role::User, content))
-            }
-            SessionEventPayload::AssistantMessage { content, .. } => {
-                Some(Message::text(Role::Assistant, content))
-            }
-            SessionEventPayload::ToolCall {
-                call_id,
-                tool_name,
-                arguments,
-            } => {
-                let tc = crate::llm::ToolCall {
-                    id: call_id.clone(),
-                    tool_type: "function".to_string(),
-                    function: crate::llm::FunctionCall {
-                        name: tool_name.clone(),
-                        arguments: serde_json::to_string(arguments).unwrap_or_default(),
-                    },
-                };
-                Some(Message::assistant_tool_calls(vec![tc]))
-            }
-            SessionEventPayload::ToolResult { call_id, result } => {
-                Some(Message::tool_result(call_id, &result.content))
-            }
-            _ => None,
+/// A pending approval waiting for user decision.
+///
+/// Approvals have no timeout — they wait indefinitely until the user
+/// approves, denies, or sends a new message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApproval {
+    /// The tool call ID that needs approval.
+    pub call_id: String,
+    /// The tool name (e.g., "bash").
+    pub tool_name: String,
+    /// The tool call arguments.
+    pub arguments: serde_json::Value,
+    /// The command being approved (for display).
+    pub command: String,
+    /// The tool type (for saving "Allow Always" patterns).
+    #[serde(default = "default_tool_type")]
+    pub tool_type: ToolType,
+    /// Accumulated messages to restore when resuming the loop.
+    pub messages: Vec<Message>,
+    /// Platform sender ID of the user who triggered this approval.
+    /// Used in group chats to ensure only the requester can approve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requester_id: Option<String>,
+}
+
+/// Default tool type for backwards compatibility with persisted approvals.
+fn default_tool_type() -> ToolType {
+    ToolType::Bash
+}
+
+impl PendingApproval {
+    /// Create a new pending approval.
+    pub fn new(
+        call_id: String,
+        tool_name: String,
+        arguments: serde_json::Value,
+        command: String,
+        tool_type: ToolType,
+        messages: Vec<Message>,
+    ) -> Self {
+        Self {
+            call_id,
+            tool_name,
+            arguments,
+            command,
+            tool_type,
+            messages,
+            requester_id: None,
         }
     }
 }
@@ -259,76 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn event_to_message() {
-        let user_event = SessionEvent::new(
-            1,
-            SessionEventPayload::UserMessage {
-                content: "Hello".to_string(),
-                sender_id: None,
-                sender_name: None,
-            },
-        );
-        let msg = user_event.to_message().unwrap();
-        assert_eq!(msg.role, Role::User);
-        assert_eq!(msg.content_str(), "Hello");
-
-        let assistant_event = SessionEvent::new(
-            2,
-            SessionEventPayload::AssistantMessage {
-                agent: "test-agent".to_string(),
-                content: "Hi".to_string(),
-                usage: None,
-            },
-        );
-        let msg = assistant_event.to_message().unwrap();
-        assert_eq!(msg.role, Role::Assistant);
-
-        let start_event = SessionEvent::new(
-            0,
-            SessionEventPayload::SessionStart {
-                agent: "a".to_string(),
-                on_disconnect: OnDisconnect::Pause,
-                gateway: None,
-                gateway_chat_id: None,
-            },
-        );
-        assert!(start_event.to_message().is_none());
-
-        // ToolCall -> assistant message with tool_calls
-        let tool_call_event = SessionEvent::new(
-            3,
-            SessionEventPayload::ToolCall {
-                call_id: "call_123".to_string(),
-                tool_name: "bash".to_string(),
-                arguments: serde_json::json!({"command": "ls"}),
-            },
-        );
-        let msg = tool_call_event.to_message().unwrap();
-        assert_eq!(msg.role, Role::Assistant);
-        assert!(msg.content.is_none());
-        let calls = msg.tool_calls.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_123");
-        assert_eq!(calls[0].function.name, "bash");
-
-        // ToolResult -> tool message
-        let tool_result_event = SessionEvent::new(
-            4,
-            SessionEventPayload::ToolResult {
-                call_id: "call_123".to_string(),
-                result: ToolResultData {
-                    success: true,
-                    content: "file1.txt\nfile2.txt".to_string(),
-                },
-            },
-        );
-        let msg = tool_result_event.to_message().unwrap();
-        assert_eq!(msg.role, Role::Tool);
-        assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
-        assert_eq!(msg.content_str(), "file1.txt\nfile2.txt");
-    }
-
-    #[test]
     fn silent_message_serialization_roundtrip() {
         let event = SessionEvent::new(
             5,
@@ -357,19 +311,6 @@ mod tests {
             }
             _ => panic!("Wrong event type"),
         }
-    }
-
-    #[test]
-    fn silent_message_to_message_returns_none() {
-        let event = SessionEvent::new(
-            1,
-            SessionEventPayload::SilentMessage {
-                content: "ignored content".to_string(),
-                sender_id: "123".to_string(),
-                sender_name: None,
-            },
-        );
-        assert!(event.to_message().is_none());
     }
 
     #[test]

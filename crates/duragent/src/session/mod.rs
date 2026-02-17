@@ -29,14 +29,17 @@
 //! - **ChatSessionCache** — maps (gateway, chat_id, agent) tuples to session IDs
 //!   so gateway messages route to the correct long-lived session.
 
+// Re-export session domain types from duragent-types
+pub use duragent_types::session::*;
+
 mod actor;
 mod actor_types;
 mod agentic_loop;
 mod chat_session_cache;
-mod events;
+mod events_eval;
 mod handle;
 mod registry;
-mod snapshot;
+mod snapshot_eval;
 mod sse_stream;
 
 // Types and errors
@@ -45,19 +48,17 @@ pub use actor_types::{
     SilentMessageEntry, actor_message_limit,
 };
 pub use chat_session_cache::ChatSessionCache;
-pub use events::{
-    ApprovalDecisionType, SessionEndReason, SessionEvent, SessionEventPayload, ToolResultData,
-};
+pub use events_eval::{PendingApprovalEval, SessionEventEval};
 pub use handle::SessionHandle;
 pub use registry::{CreateSessionOpts, RecoveryResult, SessionRegistry};
-pub use snapshot::{CheckpointState, SessionConfig, SessionSnapshot};
+pub use snapshot_eval::SessionSnapshotEval;
 
 // Streaming
 pub use sse_stream::{AccumulatingStream, StreamConfig};
 
 // Agentic loop
 pub use agentic_loop::{
-    AGENTIC_LOOP_LOCK_TIMEOUT, AgenticError, AgenticResult, PendingApproval, ResumeContext,
+    AGENTIC_LOOP_LOCK_TIMEOUT, AgenticError, AgenticResult, ResumeContext,
     STEERING_CHANNEL_CAPACITY, SteeringMessage, SteeringReceiver, SteeringSender,
     resume_agentic_loop, run_agentic_loop,
 };

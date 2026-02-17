@@ -8,8 +8,11 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use super::policy::FilePolicyStore;
-use crate::agent::skill::{SkillMetadata, parse_skill_frontmatter};
-use crate::agent::{AgentLoadWarning, AgentSpec, LoadedAgentFiles};
+use crate::agent::SkillMetadata;
+use crate::agent::skill::parse_skill_frontmatter;
+use crate::agent::{
+    AgentLoadWarning, AgentSpec, LoadedAgentFiles, parse_agent_file_refs, parse_agent_yaml,
+};
 use crate::store::PolicyStore;
 use crate::store::agent::{AgentCatalog, AgentScanResult, ScanWarning};
 use crate::store::error::{StorageError, StorageResult};
@@ -173,7 +176,7 @@ async fn load_agent_from_dir(
     let yaml_content = fs::read_to_string(&yaml_path).await?;
 
     // Parse file references from YAML
-    let refs = AgentSpec::parse_file_refs(&yaml_content)?;
+    let refs = parse_agent_file_refs(&yaml_content)?;
 
     // Load optional files, collecting warnings for missing ones
     let mut warnings = Vec::new();
@@ -207,7 +210,7 @@ async fn load_agent_from_dir(
     let skills_path = agent_dir.join(skills_dir);
     let skills = load_skills_from_dir(&skills_path, agent_name, &mut warnings).await;
 
-    let agent = AgentSpec::from_yaml(
+    let agent = parse_agent_yaml(
         &yaml_content,
         files,
         skills,

@@ -6,27 +6,24 @@
 pub const API_VERSION_V1ALPHA1: &str = "duragent/v1alpha1";
 pub const KIND_AGENT: &str = "Agent";
 
-pub mod access;
+// Re-export all domain types from duragent-types
+pub use duragent_types::agent::*;
+
+// Local modules (server-only logic that can't move to duragent-types)
+mod access_eval;
 mod error;
-mod policy;
+mod parsing;
+mod policy_eval;
+mod policy_ext;
 pub mod skill;
-mod spec;
+mod spec_eval;
 mod store;
 
-pub use access::{
-    AccessConfig, ActivationMode, ContextBufferConfig, ContextBufferMode, DebounceConfig,
-    DmAccessConfig, DmPolicy, GroupAccessConfig, GroupPolicy, OverflowStrategy, QueueConfig,
-    QueueMode, SenderDisposition,
-};
+pub use access_eval::{check_access, resolve_sender_disposition};
 pub use error::{AgentLoadError, AgentLoadWarning};
-pub use policy::{
-    Delivery, NotifyConfig, PolicyDecision, PolicyLocks, PolicyMode, ToolPolicy, ToolType,
-};
-pub use skill::{SkillMetadata, SkillParseError};
-pub use spec::{
-    AfterToolHook, AgentFileRefs, AgentMemoryConfig, AgentMetadata, AgentSessionConfig, AgentSpec,
-    BeforeToolHook, BeforeToolType, ContextConfig, DEFAULT_MAX_TOOL_ITERATIONS, HooksConfig,
-    LoadedAgentFiles, ModelConfig, OnDisconnect, ToolConfig, ToolResultTruncation,
-    validate_builtin_tools,
-};
+pub use parsing::{parse_agent_file_refs, parse_agent_yaml, validate_builtin_tools};
+pub use policy_eval::ToolPolicyEval;
+pub use policy_ext::{PolicyLocks, add_policy_pattern_and_save};
+pub use skill::SkillParseError;
+pub use spec_eval::{HooksConfigEval, ModelConfigEval};
 pub use store::{AgentStore, log_scan_warnings};

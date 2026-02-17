@@ -28,9 +28,10 @@ use super::actor_types::{
 };
 #[cfg(test)]
 use super::actor_types::{DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP};
-use super::agentic_loop::PendingApproval;
-use super::events::{SessionEvent, SessionEventPayload, ToolResultData};
-use super::snapshot::{CheckpointState, SessionConfig, SessionSnapshot};
+use super::{
+    CheckpointState, PendingApproval, SessionConfig, SessionEvent, SessionEventPayload,
+    SessionSnapshot, ToolResultData,
+};
 
 // ============================================================================
 // Session Actor

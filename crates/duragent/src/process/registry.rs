@@ -14,6 +14,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{error, info, warn};
 
+use crate::agent::ModelConfigEval;
 use crate::api::SessionStatus;
 use crate::context::{ContextBuilder, TokenBudget, load_all_directives_async};
 use crate::gateway::{GatewaySender, build_approval_keyboard};

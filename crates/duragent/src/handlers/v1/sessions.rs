@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 use ulid::Ulid;
 
-use crate::agent::{AgentSpec, OnDisconnect};
+use crate::agent::{AgentSpec, ModelConfigEval, OnDisconnect};
 use crate::api::{
     ApprovalDecision, ApproveCommandRequest, CreateSessionRequest, CreateSessionResponse,
     GetMessagesResponse, GetSessionResponse, ListSessionsResponse, MessageResponse,
@@ -400,7 +400,7 @@ pub async fn approve_command(
 
     // If allow_always, save pattern to policy
     if req.decision == ApprovalDecision::AllowAlways
-        && let Err(e) = crate::agent::ToolPolicy::add_pattern_and_save(
+        && let Err(e) = crate::agent::add_policy_pattern_and_save(
             state.services.policy_store.as_ref(),
             &agent_name,
             pending.tool_type,

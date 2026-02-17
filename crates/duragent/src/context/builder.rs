@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::agent::AgentSpec;
-use crate::agent::skill::SkillMetadata;
+use crate::agent::SkillMetadata;
 use crate::llm::Message;
 
 use super::template::interpolate_template_vars;
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn builder_injects_skills_block() {
-        use crate::agent::skill::SkillMetadata;
+        use crate::agent::SkillMetadata;
 
         let mut spec = test_agent_spec(None, Some("You are helpful."), None);
         spec.skills = vec![SkillMetadata {

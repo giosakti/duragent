@@ -4,7 +4,7 @@ use tracing::{debug, warn};
 
 use duragent_gateway_protocol::RoutingContext;
 
-use crate::agent::QueueConfig;
+use crate::agent::{ModelConfigEval, QueueConfig};
 use crate::config::{RoutingMatch, RoutingRule};
 use crate::session::SessionHandle;
 

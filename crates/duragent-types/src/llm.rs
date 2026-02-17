@@ -1,11 +1,6 @@
 //! Common types for LLM chat completions.
 
-use std::pin::Pin;
-
-use futures::Stream;
 use serde::{Deserialize, Serialize};
-
-use super::error::LLMError;
 
 // ============================================================================
 // Chat Types
@@ -238,9 +233,6 @@ pub enum StreamEvent {
     /// The stream was cancelled (e.g., client disconnected).
     Cancelled,
 }
-
-/// A boxed stream of streaming events.
-pub type ChatStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>;
 
 #[cfg(test)]
 mod tests {
