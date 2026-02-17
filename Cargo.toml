@@ -35,6 +35,7 @@ tokio-util = "0.7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 reedline = "0.45"
 
 # Compression / archives

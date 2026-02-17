@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 static LONG_VERSION: LazyLock<String> = LazyLock::new(duragent::build_info::version_string);
@@ -36,6 +36,12 @@ enum Commands {
     Agent {
         #[command(subcommand)]
         action: AgentAction,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
     },
 
     /// Attach to an existing session
@@ -258,6 +264,15 @@ async fn run(cli: &Cli) -> Result<()> {
                 .await
             }
         },
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                *shell,
+                &mut Cli::command(),
+                "duragent",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
         #[cfg(feature = "cli")]
         Commands::Attach {
             session_id,
