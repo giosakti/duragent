@@ -298,7 +298,7 @@ pub async fn run(
     let addr = SocketAddr::new(ip, config.server.port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    info!(addr = %addr, "Starting server");
+    info!("Listening on http://{}", addr);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

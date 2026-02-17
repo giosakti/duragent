@@ -126,6 +126,7 @@ pub(super) fn credential_hint(provider: &str) -> Option<&'static str> {
         "anthropic" => Some("Run: duragent login anthropic"),
         "openrouter" => Some("Run: export OPENROUTER_API_KEY=your-key"),
         "openai" => Some("Run: export OPENAI_API_KEY=your-key"),
+        "ollama" => Some("Ensure Ollama is running: ollama serve"),
         _ => None,
     }
 }

@@ -29,9 +29,12 @@ pub const VARIANT: &str = if cfg!(all(
 /// Note: Due to const limitations, this is built dynamically in `version_string()`.
 pub const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
 
-/// Get the full version string including commit and build date.
+/// Get the full version string including variant, commit, and build date.
 pub fn version_string() -> String {
-    format!("{} (commit: {}, built: {})", VERSION, COMMIT, BUILD_DATE)
+    format!(
+        "{} ({}, commit: {}, built: {})",
+        VERSION, VARIANT, COMMIT, BUILD_DATE
+    )
 }
 
 // ============================================================================
@@ -92,6 +95,7 @@ mod tests {
     fn test_version_string_format() {
         let vs = version_string();
         assert!(vs.contains(VERSION));
+        assert!(vs.contains(VARIANT));
         assert!(vs.contains("commit:"));
         assert!(vs.contains("built:"));
     }

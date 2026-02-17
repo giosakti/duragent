@@ -2,11 +2,13 @@ mod commands;
 
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::error;
 use tracing_subscriber::EnvFilter;
+
+static LONG_VERSION: LazyLock<String> = LazyLock::new(duragent::build_info::version_string);
 
 // ============================================================================
 // CLI Types
@@ -14,8 +16,16 @@ use tracing_subscriber::EnvFilter;
 
 /// Duragent - A minimal and fast self-hosted runtime for durable and portable AI agents
 #[derive(Parser, Debug)]
-#[command(version = duragent::build_info::VERSION, about, long_about = None)]
+#[command(version = LONG_VERSION.as_str(), about, long_about = None)]
 struct Cli {
+    /// Increase log verbosity (-v = debug, -vv = trace)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Suppress all log output (errors only)
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -216,21 +226,20 @@ enum ServeAction {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    init_tracing();
+    let cli = Cli::parse();
+    init_tracing(cli.verbose, cli.quiet);
 
-    match run().await {
+    match run(&cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            error!("{e}");
+            eprintln!("error: {e:#}");
             std::process::ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
+async fn run(cli: &Cli) -> Result<()> {
+    match &cli.command {
         Commands::Agent { action } => match action {
             AgentAction::Create {
                 name,
@@ -238,7 +247,16 @@ async fn run() -> Result<()> {
                 model,
                 config,
                 no_interactive,
-            } => commands::agent::create(&config, &name, provider, model, no_interactive).await,
+            } => {
+                commands::agent::create(
+                    config,
+                    name,
+                    provider.clone(),
+                    model.clone(),
+                    *no_interactive,
+                )
+                .await
+            }
         },
         #[cfg(feature = "cli")]
         Commands::Attach {
@@ -249,9 +267,9 @@ async fn run() -> Result<()> {
             server,
         } => match session_id {
             Some(id) if !list => {
-                commands::attach::run(&id, &config, agents_dir.as_deref(), server.as_deref()).await
+                commands::attach::run(id, config, agents_dir.as_deref(), server.as_deref()).await
             }
-            _ => commands::attach::list(&config, agents_dir.as_deref(), server.as_deref()).await,
+            _ => commands::attach::list(config, agents_dir.as_deref(), server.as_deref()).await,
         },
         #[cfg(feature = "cli")]
         Commands::Chat {
@@ -259,16 +277,25 @@ async fn run() -> Result<()> {
             config,
             agents_dir,
             server,
-        } => commands::chat::run(&agent, &config, agents_dir.as_deref(), server.as_deref()).await,
-        Commands::Doctor { config, format } => commands::doctor::run(&config, &format).await,
+        } => commands::chat::run(agent, config, agents_dir.as_deref(), server.as_deref()).await,
+        Commands::Doctor { config, format } => commands::doctor::run(config, format).await,
         Commands::Init {
             path,
             agent_name,
             provider,
             model,
             no_interactive,
-        } => commands::init::run(&path, agent_name, provider, model, no_interactive).await,
-        Commands::Login { provider } => commands::login::run(&provider).await,
+        } => {
+            commands::init::run(
+                path,
+                agent_name.clone(),
+                provider.clone(),
+                model.clone(),
+                *no_interactive,
+            )
+            .await
+        }
+        Commands::Login { provider } => commands::login::run(provider).await,
         Commands::Upgrade {
             check,
             version,
@@ -280,14 +307,14 @@ async fn run() -> Result<()> {
             format,
         } => {
             commands::upgrade::run(commands::upgrade::UpgradeOpts {
-                check_only: check,
-                target_version: version,
-                full,
-                core,
-                restart,
-                config_path: &config,
-                port,
-                format: &format,
+                check_only: *check,
+                target_version: version.clone(),
+                full: *full,
+                core: *core,
+                restart: *restart,
+                config_path: config,
+                port: *port,
+                format,
             })
             .await
         }
@@ -299,10 +326,10 @@ async fn run() -> Result<()> {
             agents_dir,
             ephemeral,
         } => match action {
-            Some(ServeAction::Stop) => commands::serve::stop(&config, port).await,
-            Some(ServeAction::ReloadAgents) => commands::serve::reload_agents(&config, port).await,
+            Some(ServeAction::Stop) => commands::serve::stop(config, *port).await,
+            Some(ServeAction::ReloadAgents) => commands::serve::reload_agents(config, *port).await,
             None => {
-                commands::serve::run(&config, host, port, agents_dir.as_deref(), ephemeral).await
+                commands::serve::run(config, *host, *port, agents_dir.as_deref(), *ephemeral).await
             }
         },
     }
@@ -312,8 +339,19 @@ async fn run() -> Result<()> {
 // Initialization
 // ============================================================================
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+fn init_tracing(verbose: u8, quiet: bool) {
+    let default_level = if quiet {
+        "error"
+    } else {
+        match verbose {
+            0 => "info",
+            1 => "debug",
+            _ => "trace",
+        }
+    };
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
