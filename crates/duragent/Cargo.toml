@@ -3,6 +3,7 @@ name = "duragent"
 description = "A minimal and fast self-hosted runtime for durable and portable AI agents"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

@@ -8,7 +8,7 @@ To make the best use of your time, consider opening an issue to discuss your ide
 
 ### Prerequisites
 
-- Rust 1.85+ (stable toolchain)
+- Rust 1.91+ (stable toolchain)
 - Git
 
 ### Getting Started

@@ -13,6 +13,7 @@ members = [
 [workspace.package]
 version = "0.5.2"
 edition = "2024"
+rust-version = "1.91"
 license = "MIT"
 repository = "https://github.com/giosakti/duragent"
 

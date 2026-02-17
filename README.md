@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/giosakti/duragent/actions/workflows/ci.yml/badge.svg)](https://github.com/giosakti/duragent/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-guide-blue)](https://giosakti.github.io/duragent/)
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.91+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **Duragent** — A durable, self-contained runtime for AI agents.

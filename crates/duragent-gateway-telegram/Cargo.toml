@@ -3,6 +3,7 @@ name = "duragent-gateway-telegram"
 description = "Telegram gateway for Duragent - can run as built-in or subprocess"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

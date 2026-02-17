@@ -3,6 +3,7 @@ name = "duragent-gateway-protocol"
 description = "Gateway protocol types for Duragent - use this to build custom gateways"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
