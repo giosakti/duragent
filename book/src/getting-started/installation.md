@@ -17,7 +17,7 @@ duragent --version
 
 ## From Source
 
-Requirements: Rust 1.85+ (stable toolchain)
+Requirements: Rust 1.91+ (stable toolchain)
 
 ```bash
 git clone https://github.com/giosakti/duragent.git

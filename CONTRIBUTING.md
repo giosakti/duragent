@@ -32,6 +32,9 @@ make test-nocapture
 
 # Run tests with coverage
 make coverage
+
+# Watch mode (requires cargo-watch)
+make watch
 ```
 
 ## Architecture Overview

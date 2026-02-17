@@ -1,5 +1,25 @@
 # CLI Commands
 
+## Global Flags
+
+These flags can be used with any command:
+
+```bash
+Flags:
+  -v, --verbose     Increase log verbosity (-v = debug, -vv = trace)
+  -q, --quiet       Suppress all log output (errors only)
+      --version     Print version info (includes variant, commit, build date)
+  -h, --help        Print help
+```
+
+**Examples:**
+```bash
+duragent -v serve              # Debug-level logging
+duragent -vv serve             # Trace-level logging
+duragent -q serve              # Only error output
+duragent --version             # e.g. "0.5.3 (core, commit: abc1234, built: 2026-02-17)"
+```
+
 ## Setup
 
 ### `duragent init`
@@ -20,27 +40,6 @@ Flags:
 ```bash
 duragent init
 duragent init --agent-name my-bot --provider anthropic
-```
-
-### `duragent agent create`
-
-Create a new agent in an existing workspace. Like `duragent init` but adds a single agent without touching the rest of the workspace.
-
-```bash
-duragent agent create <name> [flags]
-
-Flags:
-      --provider string     LLM provider (anthropic, openrouter, openai, ollama)
-      --model string        Model name
-  -c, --config string       Path to config file (default duragent.yaml)
-      --no-interactive      Skip interactive prompts; use defaults
-```
-
-**Examples:**
-```bash
-duragent agent create research-bot
-duragent agent create my-bot --provider anthropic --model claude-sonnet-4-20250514
-duragent agent create quick-bot --no-interactive
 ```
 
 ### `duragent login`
@@ -97,6 +96,66 @@ Reload agent configurations from disk without restarting the server.
 duragent serve reload-agents
 ```
 
+### `duragent serve status`
+
+Check if a server is running and show its status.
+
+```bash
+duragent serve status [flags]
+
+Flags:
+  -c, --config string     Path to config file (default duragent.yaml)
+  -p, --port int          Port override
+```
+
+**Example:**
+```bash
+duragent serve status
+duragent serve status --port 9090
+```
+
+## Agents
+
+### `duragent agent create`
+
+Create a new agent in an existing workspace. Like `duragent init` but adds a single agent without touching the rest of the workspace.
+
+```bash
+duragent agent create <name> [flags]
+
+Flags:
+      --provider string     LLM provider (anthropic, openrouter, openai, ollama)
+      --model string        Model name
+  -c, --config string       Path to config file (default duragent.yaml)
+      --no-interactive      Skip interactive prompts; use defaults
+```
+
+**Examples:**
+```bash
+duragent agent create research-bot
+duragent agent create my-bot --provider anthropic --model claude-sonnet-4-20250514
+duragent agent create quick-bot --no-interactive
+```
+
+### `duragent agent list`
+
+List all available agents on a running server.
+
+```bash
+duragent agent list [flags]
+
+Flags:
+  -c, --config string       Path to config file (default duragent.yaml)
+      --agents-dir string   Path to agents directory (overrides config)
+  -s, --server string       Connect to a specific server URL
+```
+
+**Example:**
+```bash
+duragent agent list
+duragent agent list --server http://localhost:9090
+```
+
 ## Sessions
 
 ### `duragent chat`
@@ -151,6 +210,42 @@ duragent attach SESSION_ID
 
 When attaching to a session with `on_disconnect: continue`, you'll see any output that was buffered while you were away.
 
+### `duragent session list`
+
+List all sessions on a running server.
+
+```bash
+duragent session list [flags]
+
+Flags:
+  -c, --config string       Path to config file (default duragent.yaml)
+      --agents-dir string   Path to agents directory (overrides config)
+  -s, --server string       Connect to a specific server URL
+```
+
+**Example:**
+```bash
+duragent session list
+```
+
+### `duragent session delete`
+
+Delete a session.
+
+```bash
+duragent session delete <SESSION_ID> [flags]
+
+Flags:
+  -c, --config string       Path to config file (default duragent.yaml)
+      --agents-dir string   Path to agents directory (overrides config)
+  -s, --server string       Connect to a specific server URL
+```
+
+**Example:**
+```bash
+duragent session delete 01JMABCD1234
+```
+
 ## Maintenance
 
 ### `duragent doctor`
@@ -199,3 +294,27 @@ duragent upgrade --format json
 ```
 
 With `--restart`, the command shuts down the running server gracefully, then execs the new binary with the same serve arguments. Sessions are flushed to disk before shutdown and recovered on startup.
+
+## Utilities
+
+### `duragent completions`
+
+Generate shell completions for your shell.
+
+```bash
+duragent completions <SHELL>
+```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`
+
+**Examples:**
+```bash
+# Bash
+duragent completions bash > ~/.local/share/bash-completion/completions/duragent
+
+# Zsh
+duragent completions zsh > ~/.zfunc/_duragent
+
+# Fish
+duragent completions fish > ~/.config/fish/completions/duragent.fish
+```
