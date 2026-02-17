@@ -1,7 +1,7 @@
 //! LLM provider client for chat completions.
 
-mod error;
-mod types;
+// Re-export client-side LLM types (api types, error, streaming)
+pub use duragent_client::llm::*;
 
 #[cfg(feature = "server")]
 mod anthropic;
@@ -11,12 +11,6 @@ mod openai;
 mod provider;
 #[cfg(feature = "server")]
 mod registry;
-
-pub use error::LLMError;
-pub use types::{
-    ChatRequest, ChatStream, FunctionCall, FunctionDefinition, Message, Role, StreamEvent,
-    ToolCall, ToolDefinition, Usage,
-};
 
 #[cfg(feature = "server")]
 pub use anthropic::{AnthropicAuth, AnthropicProvider};

@@ -8,7 +8,7 @@ use duragent::client::SessionStatus;
 use duragent::config::Config;
 use duragent::launcher::{LaunchOptions, ensure_server_running};
 
-use super::interactive::run_interactive_loop;
+use duragent_cli::run_interactive_loop;
 
 /// List attachable sessions from the server.
 pub async fn list(

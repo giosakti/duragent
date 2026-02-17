@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/duragent",
+    "crates/duragent-client",
+    "crates/duragent-cli",
     "crates/duragent-gateway-protocol",
     "crates/duragent-gateway-discord",
     "crates/duragent-gateway-telegram",
@@ -15,6 +17,8 @@ repository = "https://github.com/giosakti/duragent"
 
 [workspace.dependencies]
 # Workspace crates
+duragent-client = { path = "crates/duragent-client" }
+duragent-cli = { path = "crates/duragent-cli" }
 duragent-gateway-protocol = { path = "crates/duragent-gateway-protocol" }
 duragent-gateway-discord = { path = "crates/duragent-gateway-discord" }
 duragent-gateway-telegram = { path = "crates/duragent-gateway-telegram" }
@@ -29,6 +33,7 @@ tokio-util = "0.7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+reedline = "0.45"
 
 # Compression / archives
 flate2 = "1"

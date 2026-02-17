@@ -9,11 +9,9 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 
-use super::error::{LLMError, check_response_error};
-use super::provider::LLMProvider;
-use super::types::{
-    ChatRequest, ChatResponse, ChatStream, FunctionCall, Message, Role, StreamEvent, ToolCall,
-    ToolDefinition, Usage,
+use super::{
+    ChatRequest, ChatResponse, ChatStream, FunctionCall, LLMError, LLMProvider, Message, Role,
+    StreamEvent, ToolCall, ToolDefinition, Usage, check_response_error,
 };
 use crate::sse_parser::SseEventStream;
 

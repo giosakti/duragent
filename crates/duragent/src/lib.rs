@@ -4,14 +4,15 @@
 // Always Available
 // ============================================================================
 
-pub mod api;
+pub use duragent_client::api;
+pub use duragent_client::client;
+pub use duragent_client::sse_parser;
+
 pub mod auth;
 pub mod build_info;
-pub mod client;
 pub mod config;
 pub mod launcher;
 pub mod llm;
-pub mod sse_parser;
 
 // ============================================================================
 // Server-only (behind `server` feature)

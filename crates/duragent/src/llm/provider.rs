@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use futures::stream;
 use serde::Deserialize;
 
-use super::error::LLMError;
-use super::types::{ChatRequest, ChatResponse, ChatStream, StreamEvent};
+use super::{ChatRequest, ChatResponse, ChatStream, LLMError, StreamEvent};
 
 // ============================================================================
 // Provider Enum

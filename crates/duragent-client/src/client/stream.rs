@@ -9,11 +9,10 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::error::{ClientError, Result};
 use crate::api::sse as sse_events;
 use crate::llm::Usage;
 use crate::sse_parser::SseEventStream;
-
-use super::error::{ClientError, Result};
 
 /// Channel buffer size for SSE event stream.
 ///
