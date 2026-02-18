@@ -784,11 +784,11 @@ async fn handle_agentic_result(
     let session_id = handle.id();
 
     match result {
-        AgenticResult::Complete { content, usage, .. } => {
-            // Persist the final assistant message via actor
-            if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                error!(error = %e, "failed to persist assistant message");
-                return problem_details::internal_error("failed to persist assistant message")
+        AgenticResult::Complete { content, .. } => {
+            // Final response already persisted by the agentic loop — just flush.
+            if let Err(e) = handle.force_flush().await {
+                error!(error = %e, "failed to flush session events");
+                return problem_details::internal_error("failed to flush session events")
                     .into_response();
             }
 

@@ -28,9 +28,10 @@ use super::actor_types::{
 };
 #[cfg(test)]
 use super::actor_types::{DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP};
+use super::events_eval::assistant_response_to_message;
 use super::{
-    CheckpointState, PendingApproval, SessionConfig, SessionEvent, SessionEventPayload,
-    SessionSnapshot, ToolResultData,
+    CheckpointState, EventToolCall, PendingApproval, SessionConfig, SessionEvent,
+    SessionEventPayload, SessionSnapshot, ToolResultData,
 };
 
 // ============================================================================
@@ -297,6 +298,17 @@ impl SessionActor {
                 let result = self.add_assistant_message(content, usage).await;
                 let _ = reply.send(result);
             }
+            SessionCommand::AddAssistantResponse {
+                content,
+                tool_calls,
+                usage,
+                reply,
+            } => {
+                let result = self
+                    .add_assistant_response(content, tool_calls, usage)
+                    .await;
+                let _ = reply.send(result);
+            }
             SessionCommand::AddSilentMessage {
                 content,
                 sender_id,
@@ -324,6 +336,14 @@ impl SessionActor {
                 reply,
             } => {
                 let result = self.record_tool_result(call_id, success, content).await;
+                let _ = reply.send(result);
+            }
+            SessionCommand::RecordToolsAborted {
+                call_ids,
+                reason,
+                reply,
+            } => {
+                let result = self.record_tools_aborted(call_ids, reason).await;
                 let _ = reply.send(result);
             }
             SessionCommand::RecordApprovalRequired {
@@ -443,9 +463,19 @@ impl SessionActor {
         Ok(seq)
     }
 
+    // Legacy: delegates to add_assistant_response with no tool_calls.
     async fn add_assistant_message(
         &mut self,
         content: String,
+        usage: Option<Usage>,
+    ) -> Result<u64, ActorError> {
+        self.add_assistant_response(content, vec![], usage).await
+    }
+
+    async fn add_assistant_response(
+        &mut self,
+        content: String,
+        tool_calls: Vec<EventToolCall>,
         usage: Option<Usage>,
     ) -> Result<u64, ActorError> {
         self.updated_at = Utc::now();
@@ -453,14 +483,15 @@ impl SessionActor {
 
         // Add to pending messages (not checkpointed yet)
         self.pending_messages
-            .push(Message::text(Role::Assistant, &content));
+            .push(assistant_response_to_message(&content, &tool_calls));
 
         // Queue event
         self.pending_events.push_back(SessionEvent::new(
             seq,
-            SessionEventPayload::AssistantMessage {
+            SessionEventPayload::AssistantResponse {
                 agent: self.agent.clone(),
                 content,
+                tool_calls,
                 usage,
             },
         ));
@@ -512,7 +543,10 @@ impl SessionActor {
         self.updated_at = Utc::now();
         let seq = self.next_seq();
 
-        // Add tool call to conversation history
+        // Add tool call to conversation history.
+        // Merge into the previous assistant message if possible, so that
+        // text content + tool_calls from the same LLM response stay in a
+        // single message (required by the Anthropic API).
         let tool_call = crate::llm::ToolCall {
             id: call_id.clone(),
             tool_type: "function".to_string(),
@@ -521,8 +555,17 @@ impl SessionActor {
                 arguments: serde_json::to_string(&arguments).unwrap_or_default(),
             },
         };
-        self.pending_messages
-            .push(Message::assistant_tool_calls(vec![tool_call]));
+        let merged = self
+            .pending_messages
+            .last()
+            .is_some_and(|last| last.role == Role::Assistant && last.tool_call_id.is_none());
+        if merged {
+            let last = self.pending_messages.last_mut().unwrap();
+            last.tool_calls.get_or_insert_with(Vec::new).push(tool_call);
+        } else {
+            self.pending_messages
+                .push(Message::assistant_tool_calls(vec![tool_call]));
+        }
 
         self.pending_events.push_back(SessionEvent::new(
             seq,
@@ -555,6 +598,29 @@ impl SessionActor {
                 call_id,
                 result: ToolResultData { success, content },
             },
+        ));
+
+        Ok(seq)
+    }
+
+    async fn record_tools_aborted(
+        &mut self,
+        call_ids: Vec<String>,
+        reason: String,
+    ) -> Result<u64, ActorError> {
+        self.updated_at = Utc::now();
+        let seq = self.next_seq();
+
+        // Add synthetic tool results to conversation history
+        let content = format!("Skipped: {reason}");
+        for id in &call_ids {
+            self.pending_messages
+                .push(Message::tool_result(id, &content));
+        }
+
+        self.pending_events.push_back(SessionEvent::new(
+            seq,
+            SessionEventPayload::ToolsAborted { call_ids, reason },
         ));
 
         Ok(seq)

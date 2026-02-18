@@ -21,8 +21,8 @@ use tracing::{debug, warn};
 
 use thiserror::Error;
 
-use super::PendingApproval;
 use super::PendingApprovalEval;
+use super::{EventToolCall, PendingApproval};
 use crate::agent::{AgentSpec, ContextConfig, HooksConfig, ModelConfigEval};
 use crate::context::{drop_oldest_iterations, mask_tool_results, truncate_tool_result};
 use crate::llm::{ChatRequest, LLMError, LLMProvider, Message, Role, StreamEvent, ToolCall, Usage};
@@ -252,11 +252,18 @@ pub async fn run_agentic_loop(
         .await
         .map_err(|_| AgenticError::LlmTimeout(llm_timeout_secs))??;
 
+        let response_usage = usage.clone();
         // Accumulate usage
         total_usage = accumulate_usage(total_usage, usage);
 
-        // If no tool calls, we're done
+        // If no tool calls, persist final response and we're done
         if tool_calls.is_empty() {
+            if let Err(e) = handle
+                .enqueue_assistant_response(content.clone(), vec![], response_usage)
+                .await
+            {
+                warn!(error = %e, "Failed to enqueue final assistant response");
+            }
             return Ok(AgenticResult::Complete {
                 content,
                 usage: total_usage,
@@ -271,6 +278,24 @@ pub async fn run_agentic_loop(
         // Add assistant message with tool calls
         let assistant_msg = build_assistant_message(&content, &tool_calls);
         messages.push(assistant_msg);
+
+        // Build EventToolCall list for the composite event
+        let event_tool_calls: Vec<EventToolCall> = tool_calls
+            .iter()
+            .map(|tc| EventToolCall {
+                call_id: tc.id.clone(),
+                tool_name: tc.function.name.clone(),
+                arguments: parse_tool_arguments(&tc.function.name, &tc.function.arguments),
+            })
+            .collect();
+
+        // Persist composite assistant response (content + all tool calls) atomically.
+        if let Err(e) = handle
+            .enqueue_assistant_response(content.clone(), event_tool_calls, response_usage)
+            .await
+        {
+            warn!(error = %e, "Failed to enqueue assistant response");
+        }
 
         // Execute tools sequentially to catch approval requirements
         // (We process one at a time so we can pause at the first approval request)
@@ -287,7 +312,6 @@ pub async fn run_agentic_loop(
                 handle,
                 tool_call,
                 &messages,
-                &content,
                 context_config,
                 &agent_spec.hooks,
             )
@@ -303,7 +327,21 @@ pub async fn run_agentic_loop(
                         messages.push(msg);
                     }
                 }
-                ToolCallOutcome::AwaitingApproval(pending) => {
+                ToolCallOutcome::AwaitingApproval(mut pending) => {
+                    // Skip remaining tool calls with a single ToolsAborted event.
+                    let remaining_ids: Vec<String> =
+                        tool_calls[i + 1..].iter().map(|tc| tc.id.clone()).collect();
+                    if !remaining_ids.is_empty() {
+                        let reason = "approval required".to_string();
+                        let content = format!("Skipped: {reason}");
+                        for id in &remaining_ids {
+                            messages.push(Message::tool_result(id, &content));
+                            pending.messages.push(Message::tool_result(id, &content));
+                        }
+                        if let Err(e) = handle.enqueue_tools_aborted(remaining_ids, reason).await {
+                            warn!(error = %e, "Failed to enqueue tools aborted event");
+                        }
+                    }
                     return Ok(AgenticResult::AwaitingApproval {
                         pending,
                         partial_content: content,
@@ -318,32 +356,18 @@ pub async fn run_agentic_loop(
             if let Some(ref mut rx) = steering_rx {
                 let steered = drain_steering(rx);
                 if !steered.is_empty() {
-                    // Skip remaining tool calls with synthetic results
-                    for remaining in &tool_calls[i + 1..] {
-                        let arguments = parse_tool_arguments(
-                            &remaining.function.name,
-                            &remaining.function.arguments,
-                        );
-                        if let Err(e) = handle
-                            .enqueue_tool_call(
-                                remaining.id.clone(),
-                                remaining.function.name.clone(),
-                                arguments,
-                            )
-                            .await
-                        {
-                            warn!(error = %e, "Failed to enqueue tool call event");
+                    // Skip remaining tool calls with a single ToolsAborted event
+                    let remaining_ids: Vec<String> =
+                        tool_calls[i + 1..].iter().map(|tc| tc.id.clone()).collect();
+                    if !remaining_ids.is_empty() {
+                        let reason = "new user message received".to_string();
+                        let content = format!("Skipped: {reason}");
+                        for id in &remaining_ids {
+                            messages.push(Message::tool_result(id, &content));
                         }
-                        if let Err(e) = handle
-                            .enqueue_tool_result(remaining.id.clone(), false, "Skipped".into())
-                            .await
-                        {
-                            warn!(error = %e, "Failed to enqueue tool result event");
+                        if let Err(e) = handle.enqueue_tools_aborted(remaining_ids, reason).await {
+                            warn!(error = %e, "Failed to enqueue tools aborted event");
                         }
-                        messages.push(Message::tool_result(
-                            &remaining.id,
-                            "Skipped: new user message received",
-                        ));
                     }
                     // Inject steered messages
                     inject_steered_messages(handle, &mut messages, steered).await;
@@ -409,18 +433,19 @@ pub async fn resume_agentic_loop(
 ///
 /// This handles:
 /// - Running before-tool hooks (guards)
-/// - Recording the tool call event
 /// - Executing the tool
 /// - Handling approval requirements (pausing the loop)
 /// - Handling errors (converting to tool result messages)
 /// - Recording the tool result event
 /// - Running after-tool hooks (steering)
+///
+/// Note: Tool call events are recorded atomically via `enqueue_assistant_response`
+/// in the caller. This function only records tool *result* events.
 async fn execute_tool_call(
     executor: &ToolExecutor,
     handle: &SessionHandle,
     tool_call: &ToolCall,
     messages: &[Message],
-    content: &str,
     context_config: &ContextConfig,
     hooks: &HooksConfig,
 ) -> ToolCallOutcome {
@@ -444,17 +469,7 @@ async fn execute_tool_call(
             content: reason,
         };
 
-        // Record tool call + rejected result events
-        if let Err(e) = handle
-            .enqueue_tool_call(
-                tool_call.id.clone(),
-                tool_call.function.name.clone(),
-                arguments.clone(),
-            )
-            .await
-        {
-            warn!(error = %e, "Failed to enqueue tool call event");
-        }
+        // Record rejected result event (tool call already in composite event)
         if let Err(e) = handle
             .enqueue_tool_result(tool_call.id.clone(), false, result.content.clone())
             .await
@@ -466,18 +481,6 @@ async fn execute_tool_call(
             tool_result_msg: Message::tool_result(&tool_call.id, result.content),
             steering_msg: None,
         };
-    }
-
-    // Record tool call event
-    if let Err(e) = handle
-        .enqueue_tool_call(
-            tool_call.id.clone(),
-            tool_call.function.name.clone(),
-            arguments.clone(),
-        )
-        .await
-    {
-        warn!(error = %e, "Failed to enqueue tool call event");
     }
 
     // Execute the tool
@@ -499,7 +502,7 @@ async fn execute_tool_call(
                 tool_type,
                 messages.to_vec(),
             );
-            return handle_approval_required(handle, pending, content).await;
+            return handle_approval_required(handle, pending).await;
         }
         Err(ToolError::PolicyDenied(command)) => ToolResult {
             success: false,
@@ -548,20 +551,13 @@ async fn execute_tool_call(
 /// Handle a tool that requires approval.
 ///
 /// Records events and returns the pending approval state.
+/// Note: partial assistant content is already persisted by the caller
+/// (run_agentic_loop) before any tool_call events, ensuring correct
+/// event ordering for replay.
 async fn handle_approval_required(
     handle: &SessionHandle,
     pending: PendingApproval,
-    content: &str,
 ) -> ToolCallOutcome {
-    // Record partial assistant content if any (before tool call)
-    if !content.is_empty()
-        && let Err(e) = handle
-            .enqueue_assistant_message(content.to_string(), None)
-            .await
-    {
-        warn!(error = %e, "Failed to enqueue partial assistant message");
-    }
-
     // Record approval required event
     if let Err(e) = handle
         .enqueue_approval_required(pending.call_id.clone(), pending.command.clone())

@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{OnDisconnect, ToolType};
-use crate::llm::{Message, Usage};
+use crate::llm::{FunctionCall, Message, ToolCall, Usage};
 
 use super::SessionStatus;
 
@@ -60,7 +60,19 @@ pub enum SessionEventPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
     },
-    /// Agent requested a tool call.
+    /// Composite assistant response with optional tool calls (preferred for new events).
+    ///
+    /// Folds content + tool_calls into a single atomic event, eliminating the
+    /// merge heuristic needed when reading separate AssistantMessage + ToolCall events.
+    AssistantResponse {
+        agent: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<EventToolCall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+    },
+    /// Agent requested a tool call (legacy — kept for reading existing JSONL).
     ToolCall {
         call_id: String,
         tool_name: String,
@@ -70,6 +82,14 @@ pub enum SessionEventPayload {
     ToolResult {
         call_id: String,
         result: ToolResultData,
+    },
+    /// Multiple tool calls were aborted (e.g. steering or approval interrupted the iteration).
+    ///
+    /// Registry replay synthesizes N `tool_result` messages with success=false.
+    /// Replaces N individual `ToolResult` events with one record.
+    ToolsAborted {
+        call_ids: Vec<String>,
+        reason: String,
     },
     /// Tool requires human approval before execution.
     ApprovalRequired { call_id: String, command: String },
@@ -130,6 +150,28 @@ pub struct ToolResultData {
     pub success: bool,
     /// Content for LLM consumption.
     pub content: String,
+}
+
+/// A tool call within an `AssistantResponse` event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventToolCall {
+    pub call_id: String,
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl EventToolCall {
+    /// Convert to the LLM `ToolCall` type for message construction.
+    pub fn to_llm_tool_call(&self) -> ToolCall {
+        ToolCall {
+            id: self.call_id.clone(),
+            tool_type: "function".to_string(),
+            function: FunctionCall {
+                name: self.tool_name.clone(),
+                arguments: serde_json::to_string(&self.arguments).unwrap_or_default(),
+            },
+        }
+    }
 }
 
 impl SessionEvent {
@@ -309,6 +351,112 @@ mod tests {
                 assert_eq!(content, "alice: hello everyone");
                 assert_eq!(sender_id, "12345");
                 assert_eq!(sender_name, Some("alice".to_string()));
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn serialize_assistant_response_with_tool_calls() {
+        let event = SessionEvent::new(
+            10,
+            SessionEventPayload::AssistantResponse {
+                agent: "test-agent".to_string(),
+                content: "Let me search for that.".to_string(),
+                tool_calls: vec![EventToolCall {
+                    call_id: "call_abc".to_string(),
+                    tool_name: "web".to_string(),
+                    arguments: serde_json::json!({"query": "rust"}),
+                }],
+                usage: None,
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"assistant_response\""));
+        assert!(json.contains("\"call_id\":\"call_abc\""));
+
+        let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
+        match parsed.payload {
+            SessionEventPayload::AssistantResponse {
+                agent,
+                content,
+                tool_calls,
+                ..
+            } => {
+                assert_eq!(agent, "test-agent");
+                assert_eq!(content, "Let me search for that.");
+                assert_eq!(tool_calls.len(), 1);
+                assert_eq!(tool_calls[0].tool_name, "web");
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn serialize_assistant_response_without_tool_calls() {
+        let event = SessionEvent::new(
+            11,
+            SessionEventPayload::AssistantResponse {
+                agent: "test-agent".to_string(),
+                content: "Hello!".to_string(),
+                tool_calls: vec![],
+                usage: None,
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        // Empty tool_calls should be omitted
+        assert!(!json.contains("tool_calls"));
+
+        let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
+        match parsed.payload {
+            SessionEventPayload::AssistantResponse {
+                content,
+                tool_calls,
+                ..
+            } => {
+                assert_eq!(content, "Hello!");
+                assert!(tool_calls.is_empty());
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn event_tool_call_to_llm_tool_call() {
+        let etc = EventToolCall {
+            call_id: "call_123".to_string(),
+            tool_name: "bash".to_string(),
+            arguments: serde_json::json!({"command": "ls"}),
+        };
+        let tc = etc.to_llm_tool_call();
+        assert_eq!(tc.id, "call_123");
+        assert_eq!(tc.function.name, "bash");
+        assert_eq!(tc.function.arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn tools_aborted_serialization_roundtrip() {
+        let event = SessionEvent::new(
+            7,
+            SessionEventPayload::ToolsAborted {
+                call_ids: vec!["call_a".to_string(), "call_b".to_string()],
+                reason: "new user message received".to_string(),
+            },
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"tools_aborted\""));
+        assert!(json.contains("\"call_ids\""));
+        assert!(json.contains("\"reason\":\"new user message received\""));
+
+        let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.seq, 7);
+        match parsed.payload {
+            SessionEventPayload::ToolsAborted { call_ids, reason } => {
+                assert_eq!(call_ids, vec!["call_a", "call_b"]);
+                assert_eq!(reason, "new user message received");
             }
             _ => panic!("Wrong event type"),
         }

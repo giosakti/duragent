@@ -788,17 +788,18 @@ impl GatewayMessageHandler {
         match result {
             AgenticResult::Complete {
                 content,
-                usage,
                 iterations: _,
                 tool_calls_made: _,
+                ..
             } => {
+                // Final response already persisted by the agentic loop — just flush.
+                if let Err(e) = handle.force_flush().await {
+                    error!(error = %e, "Failed to flush session events");
+                }
                 // Skip empty responses (e.g. after approving interactive prompts)
                 if content.trim().is_empty() {
                     None
                 } else {
-                    if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                        error!(error = %e, "Failed to persist assistant message");
-                    }
                     Some(content)
                 }
             }

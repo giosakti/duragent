@@ -26,6 +26,7 @@ use super::actor_types::{
     ActorConfig, ActorError, DEFAULT_ACTOR_MESSAGE_LIMIT, DEFAULT_SILENT_BUFFER_CAP, RecoverConfig,
     SessionMetadata,
 };
+use super::events_eval::assistant_response_to_message;
 use super::handle::SessionHandle;
 
 // ============================================================================
@@ -327,10 +328,13 @@ impl SessionRegistry {
             .await
             .map_err(|e| ActorError::Persistence(format!("Failed to load events: {}", e)))?;
 
-        // Replay events to rebuild pending messages and status
+        // Replay events to rebuild pending messages and status.
+        // Track outstanding tool call IDs so we can synthesize missing results
+        // if the server crashed mid-iteration.
         let mut pending_messages = Vec::new();
         let mut last_seq = snapshot.last_event_seq;
         let mut status = snapshot.status;
+        let mut outstanding_call_ids: Vec<String> = Vec::new();
 
         for event in events {
             last_seq = event.seq;
@@ -346,11 +350,22 @@ impl SessionRegistry {
                         content,
                     ));
                 }
+                super::events::SessionEventPayload::AssistantResponse {
+                    content,
+                    tool_calls,
+                    ..
+                } => {
+                    pending_messages.push(assistant_response_to_message(content, tool_calls));
+                    for tc in tool_calls {
+                        outstanding_call_ids.push(tc.call_id.clone());
+                    }
+                }
                 super::events::SessionEventPayload::ToolCall {
                     call_id,
                     tool_name,
                     arguments,
                 } => {
+                    outstanding_call_ids.push(call_id.clone());
                     let tool_call = crate::llm::ToolCall {
                         id: call_id.clone(),
                         tool_type: "function".to_string(),
@@ -359,12 +374,35 @@ impl SessionRegistry {
                             arguments: serde_json::to_string(arguments).unwrap_or_default(),
                         },
                     };
-                    pending_messages
-                        .push(crate::llm::Message::assistant_tool_calls(vec![tool_call]));
+                    // Merge into the previous assistant message if it has no
+                    // tool_call_id (i.e. it's an assistant text or tool_calls
+                    // message, not a tool result). This reconstructs the
+                    // original single message that the LLM returned with both
+                    // text content and tool_use blocks.
+                    let merged = pending_messages.last_mut().is_some_and(|last| {
+                        last.role == crate::llm::Role::Assistant && last.tool_call_id.is_none()
+                    });
+                    if merged {
+                        let last = pending_messages.last_mut().unwrap();
+                        last.tool_calls.get_or_insert_with(Vec::new).push(tool_call);
+                    } else {
+                        pending_messages
+                            .push(crate::llm::Message::assistant_tool_calls(vec![tool_call]));
+                    }
                 }
                 super::events::SessionEventPayload::ToolResult { call_id, result } => {
+                    outstanding_call_ids.retain(|id| id != call_id);
                     pending_messages
                         .push(crate::llm::Message::tool_result(call_id, &result.content));
+                }
+                super::events::SessionEventPayload::ToolsAborted { call_ids, reason } => {
+                    for id in call_ids {
+                        outstanding_call_ids.retain(|oid| oid != id);
+                    }
+                    let content = format!("Skipped: {reason}");
+                    for id in call_ids {
+                        pending_messages.push(crate::llm::Message::tool_result(id, &content));
+                    }
                 }
                 super::events::SessionEventPayload::StatusChange { to, .. } => {
                     status = *to;
@@ -379,6 +417,25 @@ impl SessionRegistry {
                 }
                 // Other events don't affect conversation or status
                 _ => {}
+            }
+        }
+
+        // Crash recovery: synthesize error results for tool calls that never
+        // got a ToolResult/ToolsAborted event (server crashed mid-iteration).
+        if let Some(pending) = &snapshot.config.pending_approval {
+            outstanding_call_ids.retain(|id| id != &pending.call_id);
+        }
+        if !outstanding_call_ids.is_empty() {
+            debug!(
+                session_id = %session_id,
+                count = outstanding_call_ids.len(),
+                "Synthesizing missing tool results for crash recovery"
+            );
+            for id in &outstanding_call_ids {
+                pending_messages.push(crate::llm::Message::tool_result(
+                    id,
+                    "Error: tool execution interrupted by server restart",
+                ));
             }
         }
 

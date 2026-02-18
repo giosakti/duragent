@@ -728,10 +728,9 @@ impl ProcessRegistryHandle {
         let result = result?;
 
         match result {
-            AgenticResult::Complete { content, usage, .. } => {
-                if !content.trim().is_empty() {
-                    let _ = handle.add_assistant_message(content.clone(), usage).await;
-                }
+            AgenticResult::Complete { content, .. } => {
+                // Final response already persisted by the agentic loop — just flush.
+                let _ = handle.force_flush().await;
 
                 // Send response via gateway (skip empty)
                 let trimmed = content.trim();

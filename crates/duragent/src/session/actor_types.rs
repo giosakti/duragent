@@ -14,6 +14,7 @@ use crate::agent::OnDisconnect;
 use crate::api::SessionStatus;
 use crate::config::CompactionMode;
 use crate::llm::{Message, Usage};
+use crate::session::EventToolCall;
 use crate::store::SessionStore;
 
 use super::{ApprovalDecisionType, PendingApproval};
@@ -36,6 +37,12 @@ pub enum SessionCommand {
         usage: Option<Usage>,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
+    AddAssistantResponse {
+        content: String,
+        tool_calls: Vec<EventToolCall>,
+        usage: Option<Usage>,
+        reply: oneshot::Sender<Result<u64, ActorError>>,
+    },
     AddSilentMessage {
         content: String,
         sender_id: String,
@@ -52,6 +59,11 @@ pub enum SessionCommand {
         call_id: String,
         success: bool,
         content: String,
+        reply: oneshot::Sender<Result<u64, ActorError>>,
+    },
+    RecordToolsAborted {
+        call_ids: Vec<String>,
+        reason: String,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
     RecordApprovalRequired {

@@ -8,8 +8,8 @@ use duragent::agent::OnDisconnect;
 use duragent::api::SessionStatus;
 use duragent::llm::{Message, Role, Usage};
 use duragent::session::{
-    CheckpointState, SessionConfig, SessionEvent, SessionEventEval, SessionEventPayload,
-    SessionSnapshot, SessionSnapshotEval,
+    CheckpointState, EventToolCall, SessionConfig, SessionEvent, SessionEventEval,
+    SessionEventPayload, SessionSnapshot, SessionSnapshotEval,
 };
 use duragent::store::SessionStore;
 use duragent::store::file::FileSessionStore;
@@ -251,20 +251,40 @@ async fn all_event_types_roundtrip() {
         ),
         SessionEvent::new(
             6,
+            SessionEventPayload::AssistantResponse {
+                agent: "test-agent".to_string(),
+                content: "Let me search.".to_string(),
+                tool_calls: vec![EventToolCall {
+                    call_id: "call_resp1".to_string(),
+                    tool_name: "web".to_string(),
+                    arguments: serde_json::json!({"query": "composite"}),
+                }],
+                usage: None,
+            },
+        ),
+        SessionEvent::new(
+            7,
+            SessionEventPayload::ToolsAborted {
+                call_ids: vec!["call_skip1".to_string(), "call_skip2".to_string()],
+                reason: "new user message received".to_string(),
+            },
+        ),
+        SessionEvent::new(
+            8,
             SessionEventPayload::StatusChange {
                 from: SessionStatus::Active,
                 to: SessionStatus::Paused,
             },
         ),
         SessionEvent::new(
-            7,
+            9,
             SessionEventPayload::Error {
                 code: "rate_limit".to_string(),
                 message: "Too many requests".to_string(),
             },
         ),
         SessionEvent::new(
-            8,
+            10,
             SessionEventPayload::SessionEnd {
                 reason: SessionEndReason::Completed,
             },
@@ -275,7 +295,7 @@ async fn all_event_types_roundtrip() {
 
     let read_events = store.load_events(session_id, 0).await.unwrap();
 
-    assert_eq!(read_events.len(), 8);
+    assert_eq!(read_events.len(), 10);
 
     // Verify each event type deserialized correctly
     match &read_events[2].payload {
@@ -299,7 +319,33 @@ async fn all_event_types_roundtrip() {
         _ => panic!("expected ToolResult"),
     }
 
+    // AssistantResponse (seq 6)
     match &read_events[5].payload {
+        SessionEventPayload::AssistantResponse {
+            agent,
+            content,
+            tool_calls,
+            ..
+        } => {
+            assert_eq!(agent, "test-agent");
+            assert_eq!(content, "Let me search.");
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].call_id, "call_resp1");
+            assert_eq!(tool_calls[0].tool_name, "web");
+        }
+        _ => panic!("expected AssistantResponse"),
+    }
+
+    // ToolsAborted (seq 7)
+    match &read_events[6].payload {
+        SessionEventPayload::ToolsAborted { call_ids, reason } => {
+            assert_eq!(call_ids, &["call_skip1", "call_skip2"]);
+            assert_eq!(reason, "new user message received");
+        }
+        _ => panic!("expected ToolsAborted"),
+    }
+
+    match &read_events[7].payload {
         SessionEventPayload::StatusChange { from, to } => {
             assert_eq!(*from, SessionStatus::Active);
             assert_eq!(*to, SessionStatus::Paused);
@@ -307,7 +353,7 @@ async fn all_event_types_roundtrip() {
         _ => panic!("expected StatusChange"),
     }
 
-    match &read_events[6].payload {
+    match &read_events[8].payload {
         SessionEventPayload::Error { code, message } => {
             assert_eq!(code, "rate_limit");
             assert_eq!(message, "Too many requests");
@@ -315,7 +361,7 @@ async fn all_event_types_roundtrip() {
         _ => panic!("expected Error"),
     }
 
-    match &read_events[7].payload {
+    match &read_events[9].payload {
         SessionEventPayload::SessionEnd { reason } => {
             assert_eq!(*reason, SessionEndReason::Completed);
         }
@@ -1106,4 +1152,204 @@ async fn snapshot_overwrite_is_atomic() {
         .join(session_id)
         .join("state.json.tmp");
     assert!(!temp_path.exists());
+}
+
+// ============================================================================
+// AssistantResponse Tests
+// ============================================================================
+
+/// Test that AssistantResponse events replay correctly with subsequent ToolResults.
+#[tokio::test]
+async fn assistant_response_replay_with_tool_results() {
+    use duragent::session::ToolResultData;
+
+    let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
+    let session_id = "assistant_response_replay";
+
+    let events = vec![
+        SessionEvent::new(
+            1,
+            SessionEventPayload::SessionStart {
+                agent: "test-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
+            },
+        ),
+        SessionEvent::new(
+            2,
+            SessionEventPayload::UserMessage {
+                content: "Search for rust".to_string(),
+                sender_id: None,
+                sender_name: None,
+            },
+        ),
+        // Composite event: content + two tool calls
+        SessionEvent::new(
+            3,
+            SessionEventPayload::AssistantResponse {
+                agent: "test-agent".to_string(),
+                content: "Let me search.".to_string(),
+                tool_calls: vec![
+                    EventToolCall {
+                        call_id: "call_1".to_string(),
+                        tool_name: "web".to_string(),
+                        arguments: serde_json::json!({"query": "rust"}),
+                    },
+                    EventToolCall {
+                        call_id: "call_2".to_string(),
+                        tool_name: "bash".to_string(),
+                        arguments: serde_json::json!({"command": "ls"}),
+                    },
+                ],
+                usage: None,
+            },
+        ),
+        SessionEvent::new(
+            4,
+            SessionEventPayload::ToolResult {
+                call_id: "call_1".to_string(),
+                result: ToolResultData {
+                    success: true,
+                    content: "Rust is great.".to_string(),
+                },
+            },
+        ),
+        SessionEvent::new(
+            5,
+            SessionEventPayload::ToolResult {
+                call_id: "call_2".to_string(),
+                result: ToolResultData {
+                    success: true,
+                    content: "file1.txt".to_string(),
+                },
+            },
+        ),
+    ];
+
+    store.append_events(session_id, &events).await.unwrap();
+
+    // Replay all events
+    let read_events = store.load_events(session_id, 0).await.unwrap();
+    let mut messages: Vec<Message> = Vec::new();
+    for event in &read_events {
+        if let Some(msg) = event.to_message() {
+            messages.push(msg);
+        }
+    }
+
+    // Expected: UserMessage, AssistantResponse (1 msg with content + 2 tool_calls),
+    //           ToolResult x2 = 4 messages total
+    assert_eq!(messages.len(), 4);
+
+    // Message 0: user
+    assert_eq!(messages[0].role, Role::User);
+    assert_eq!(messages[0].content_str(), "Search for rust");
+
+    // Message 1: assistant with content + tool_calls
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(messages[1].content, Some("Let me search.".to_string()));
+    let tool_calls = messages[1].tool_calls.as_ref().unwrap();
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0].id, "call_1");
+    assert_eq!(tool_calls[1].id, "call_2");
+
+    // Message 2-3: tool results matching the call IDs
+    assert_eq!(messages[2].role, Role::Tool);
+    assert_eq!(messages[2].tool_call_id, Some("call_1".to_string()));
+    assert_eq!(messages[3].role, Role::Tool);
+    assert_eq!(messages[3].tool_call_id, Some("call_2".to_string()));
+}
+
+/// Test that ToolsAborted replays as N synthetic tool_result messages.
+#[tokio::test]
+async fn tools_aborted_replay() {
+    let temp_dir = TempDir::new().unwrap();
+    let store = create_store(&temp_dir);
+    let session_id = "tools_aborted_replay";
+
+    let events = vec![
+        SessionEvent::new(
+            1,
+            SessionEventPayload::SessionStart {
+                agent: "test-agent".to_string(),
+                on_disconnect: OnDisconnect::Pause,
+                gateway: None,
+                gateway_chat_id: None,
+            },
+        ),
+        SessionEvent::new(
+            2,
+            SessionEventPayload::UserMessage {
+                content: "Do three things".to_string(),
+                sender_id: None,
+                sender_name: None,
+            },
+        ),
+        // Assistant requests 3 tool calls
+        SessionEvent::new(
+            3,
+            SessionEventPayload::AssistantResponse {
+                agent: "test-agent".to_string(),
+                content: String::new(),
+                tool_calls: vec![
+                    EventToolCall {
+                        call_id: "c1".to_string(),
+                        tool_name: "bash".to_string(),
+                        arguments: serde_json::json!({"cmd": "a"}),
+                    },
+                    EventToolCall {
+                        call_id: "c2".to_string(),
+                        tool_name: "bash".to_string(),
+                        arguments: serde_json::json!({"cmd": "b"}),
+                    },
+                    EventToolCall {
+                        call_id: "c3".to_string(),
+                        tool_name: "bash".to_string(),
+                        arguments: serde_json::json!({"cmd": "c"}),
+                    },
+                ],
+                usage: None,
+            },
+        ),
+        // First tool executed
+        SessionEvent::new(
+            4,
+            SessionEventPayload::ToolResult {
+                call_id: "c1".to_string(),
+                result: duragent::session::ToolResultData {
+                    success: true,
+                    content: "done a".to_string(),
+                },
+            },
+        ),
+        // Remaining two aborted due to steering
+        SessionEvent::new(
+            5,
+            SessionEventPayload::ToolsAborted {
+                call_ids: vec!["c2".to_string(), "c3".to_string()],
+                reason: "new user message received".to_string(),
+            },
+        ),
+    ];
+
+    store.append_events(session_id, &events).await.unwrap();
+
+    // Replay via to_message() — ToolsAborted returns None, so only 3 messages
+    let read_events = store.load_events(session_id, 0).await.unwrap();
+    let mut messages: Vec<Message> = Vec::new();
+    for event in &read_events {
+        if let Some(msg) = event.to_message() {
+            messages.push(msg);
+        }
+    }
+
+    // to_message() returns None for ToolsAborted (it's N:1), so we get:
+    // UserMessage, AssistantResponse, ToolResult(c1) = 3 messages
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].role, Role::User);
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(messages[2].role, Role::Tool);
+    assert_eq!(messages[2].tool_call_id, Some("c1".to_string()));
 }

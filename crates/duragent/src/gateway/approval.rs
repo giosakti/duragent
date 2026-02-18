@@ -300,26 +300,26 @@ impl GatewayMessageHandler {
         match result {
             AgenticResult::Complete {
                 content,
-                usage,
                 iterations: _,
                 tool_calls_made: _,
+                ..
             } => {
+                // Final response already persisted by the agentic loop — just flush.
+                if let Err(e) = handle.force_flush().await {
+                    error!(error = %e, "Failed to flush session events");
+                }
+
                 // Set session back to Active via actor
                 let _ = handle.set_status(SessionStatus::Active).await;
 
-                // Persist and send (skip empty responses)
-                if !content.trim().is_empty() {
-                    if let Err(e) = handle.add_assistant_message(content.clone(), usage).await {
-                        error!(error = %e, "Failed to persist assistant message");
-                    }
-
-                    if let Err(e) = self
+                // Send non-empty responses via gateway
+                if !content.trim().is_empty()
+                    && let Err(e) = self
                         .gateway_sender
                         .send_message(gateway, &data.chat_id, &content, None)
                         .await
-                    {
-                        error!(error = %e, "Failed to send response");
-                    }
+                {
+                    error!(error = %e, "Failed to send response");
                 }
 
                 // Return toast to confirm the approval

@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::api::SessionStatus;
 use crate::llm::{Message, Usage};
+use crate::session::EventToolCall;
 
 use super::actor_types::{ActorError, SessionCommand, SessionMetadata, SilentMessageEntry};
 use super::{ApprovalDecisionType, PendingApproval};
@@ -134,6 +135,43 @@ impl SessionHandle {
         self.await_reply(reply_rx).await?
     }
 
+    /// Add a composite assistant response (content + tool_calls) to the session.
+    ///
+    /// Returns the event sequence number on success.
+    pub async fn add_assistant_response(
+        &self,
+        content: String,
+        tool_calls: Vec<EventToolCall>,
+        usage: Option<Usage>,
+    ) -> Result<u64, ActorError> {
+        let seq = self
+            .enqueue_assistant_response(content, tool_calls, usage)
+            .await?;
+        self.force_flush().await?;
+        Ok(seq)
+    }
+
+    /// Enqueue a composite assistant response without forcing a flush.
+    pub async fn enqueue_assistant_response(
+        &self,
+        content: String,
+        tool_calls: Vec<EventToolCall>,
+        usage: Option<Usage>,
+    ) -> Result<u64, ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SessionCommand::AddAssistantResponse {
+                content,
+                tool_calls,
+                usage,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ActorError::ActorShutdown)?;
+
+        self.await_reply(reply_rx).await?
+    }
+
     /// Add a silent message to session history, excluded from LLM conversation.
     ///
     /// Used for group messages from senders with `silent` disposition.
@@ -164,6 +202,8 @@ impl SessionHandle {
     /// Record a tool call event.
     ///
     /// Returns the event sequence number on success.
+    #[deprecated(note = "use enqueue_assistant_response to record tool calls atomically")]
+    #[allow(deprecated)]
     pub async fn record_tool_call(
         &self,
         call_id: String,
@@ -178,6 +218,7 @@ impl SessionHandle {
     }
 
     /// Enqueue a tool call event without forcing a flush.
+    #[deprecated(note = "use enqueue_assistant_response to record tool calls atomically")]
     pub async fn enqueue_tool_call(
         &self,
         call_id: String,
@@ -225,6 +266,25 @@ impl SessionHandle {
                 call_id,
                 success,
                 content,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ActorError::ActorShutdown)?;
+
+        self.await_reply(reply_rx).await?
+    }
+
+    /// Enqueue a tools-aborted event without forcing a flush.
+    pub async fn enqueue_tools_aborted(
+        &self,
+        call_ids: Vec<String>,
+        reason: String,
+    ) -> Result<u64, ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(SessionCommand::RecordToolsAborted {
+                call_ids,
+                reason,
                 reply: reply_tx,
             })
             .await

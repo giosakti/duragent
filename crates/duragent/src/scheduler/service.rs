@@ -757,9 +757,9 @@ async fn execute_task_payload(
     .map_err(|e| SchedulerError::ExecutionFailed(e.to_string()))?;
 
     let response = match result {
-        AgenticResult::Complete { content, usage, .. } => {
-            // Persist assistant message via actor
-            let _ = handle.add_assistant_message(content.clone(), usage).await;
+        AgenticResult::Complete { content, .. } => {
+            // Final response already persisted by the agentic loop — just flush.
+            let _ = handle.force_flush().await;
             content
         }
         AgenticResult::AwaitingApproval { pending, .. } => {
