@@ -48,7 +48,7 @@ impl SessionEventEval for SessionEvent {
             SessionEventPayload::ToolResult { call_id, result } => {
                 Some(Message::tool_result(call_id, &result.content))
             }
-            // ToolsAborted maps to N messages — handle directly in registry replay.
+            // ToolsSkipped maps to N messages — handle directly in registry replay.
             // to_message() is a 1:1 mapping, so we return None here.
             _ => None,
         }

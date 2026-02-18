@@ -87,7 +87,7 @@ pub enum SessionEventPayload {
     ///
     /// Registry replay synthesizes N `tool_result` messages with success=false.
     /// Replaces N individual `ToolResult` events with one record.
-    ToolsAborted {
+    ToolsSkipped {
         call_ids: Vec<String>,
         reason: String,
     },
@@ -437,24 +437,24 @@ mod tests {
     }
 
     #[test]
-    fn tools_aborted_serialization_roundtrip() {
+    fn tools_skipped_serialization_roundtrip() {
         let event = SessionEvent::new(
             7,
-            SessionEventPayload::ToolsAborted {
+            SessionEventPayload::ToolsSkipped {
                 call_ids: vec!["call_a".to_string(), "call_b".to_string()],
                 reason: "new user message received".to_string(),
             },
         );
 
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"type\":\"tools_aborted\""));
+        assert!(json.contains("\"type\":\"tools_skipped\""));
         assert!(json.contains("\"call_ids\""));
         assert!(json.contains("\"reason\":\"new user message received\""));
 
         let parsed: SessionEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.seq, 7);
         match parsed.payload {
-            SessionEventPayload::ToolsAborted { call_ids, reason } => {
+            SessionEventPayload::ToolsSkipped { call_ids, reason } => {
                 assert_eq!(call_ids, vec!["call_a", "call_b"]);
                 assert_eq!(reason, "new user message received");
             }

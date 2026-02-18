@@ -328,7 +328,7 @@ pub async fn run_agentic_loop(
                     }
                 }
                 ToolCallOutcome::AwaitingApproval(mut pending) => {
-                    // Skip remaining tool calls with a single ToolsAborted event.
+                    // Skip remaining tool calls with a single ToolsSkipped event.
                     let remaining_ids: Vec<String> =
                         tool_calls[i + 1..].iter().map(|tc| tc.id.clone()).collect();
                     if !remaining_ids.is_empty() {
@@ -338,8 +338,8 @@ pub async fn run_agentic_loop(
                             messages.push(Message::tool_result(id, &content));
                             pending.messages.push(Message::tool_result(id, &content));
                         }
-                        if let Err(e) = handle.enqueue_tools_aborted(remaining_ids, reason).await {
-                            warn!(error = %e, "Failed to enqueue tools aborted event");
+                        if let Err(e) = handle.enqueue_tools_skipped(remaining_ids, reason).await {
+                            warn!(error = %e, "Failed to enqueue tools skipped event");
                         }
                     }
                     return Ok(AgenticResult::AwaitingApproval {
@@ -356,7 +356,7 @@ pub async fn run_agentic_loop(
             if let Some(ref mut rx) = steering_rx {
                 let steered = drain_steering(rx);
                 if !steered.is_empty() {
-                    // Skip remaining tool calls with a single ToolsAborted event
+                    // Skip remaining tool calls with a single ToolsSkipped event
                     let remaining_ids: Vec<String> =
                         tool_calls[i + 1..].iter().map(|tc| tc.id.clone()).collect();
                     if !remaining_ids.is_empty() {
@@ -365,8 +365,8 @@ pub async fn run_agentic_loop(
                         for id in &remaining_ids {
                             messages.push(Message::tool_result(id, &content));
                         }
-                        if let Err(e) = handle.enqueue_tools_aborted(remaining_ids, reason).await {
-                            warn!(error = %e, "Failed to enqueue tools aborted event");
+                        if let Err(e) = handle.enqueue_tools_skipped(remaining_ids, reason).await {
+                            warn!(error = %e, "Failed to enqueue tools skipped event");
                         }
                     }
                     // Inject steered messages

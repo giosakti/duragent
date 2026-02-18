@@ -61,7 +61,7 @@ pub enum SessionCommand {
         content: String,
         reply: oneshot::Sender<Result<u64, ActorError>>,
     },
-    RecordToolsAborted {
+    RecordToolsSkipped {
         call_ids: Vec<String>,
         reason: String,
         reply: oneshot::Sender<Result<u64, ActorError>>,

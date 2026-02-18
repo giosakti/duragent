@@ -338,12 +338,12 @@ impl SessionActor {
                 let result = self.record_tool_result(call_id, success, content).await;
                 let _ = reply.send(result);
             }
-            SessionCommand::RecordToolsAborted {
+            SessionCommand::RecordToolsSkipped {
                 call_ids,
                 reason,
                 reply,
             } => {
-                let result = self.record_tools_aborted(call_ids, reason).await;
+                let result = self.record_tools_skipped(call_ids, reason).await;
                 let _ = reply.send(result);
             }
             SessionCommand::RecordApprovalRequired {
@@ -603,7 +603,7 @@ impl SessionActor {
         Ok(seq)
     }
 
-    async fn record_tools_aborted(
+    async fn record_tools_skipped(
         &mut self,
         call_ids: Vec<String>,
         reason: String,
@@ -620,7 +620,7 @@ impl SessionActor {
 
         self.pending_events.push_back(SessionEvent::new(
             seq,
-            SessionEventPayload::ToolsAborted { call_ids, reason },
+            SessionEventPayload::ToolsSkipped { call_ids, reason },
         ));
 
         Ok(seq)

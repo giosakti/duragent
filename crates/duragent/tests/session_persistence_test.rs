@@ -264,7 +264,7 @@ async fn all_event_types_roundtrip() {
         ),
         SessionEvent::new(
             7,
-            SessionEventPayload::ToolsAborted {
+            SessionEventPayload::ToolsSkipped {
                 call_ids: vec!["call_skip1".to_string(), "call_skip2".to_string()],
                 reason: "new user message received".to_string(),
             },
@@ -336,13 +336,13 @@ async fn all_event_types_roundtrip() {
         _ => panic!("expected AssistantResponse"),
     }
 
-    // ToolsAborted (seq 7)
+    // ToolsSkipped (seq 7)
     match &read_events[6].payload {
-        SessionEventPayload::ToolsAborted { call_ids, reason } => {
+        SessionEventPayload::ToolsSkipped { call_ids, reason } => {
             assert_eq!(call_ids, &["call_skip1", "call_skip2"]);
             assert_eq!(reason, "new user message received");
         }
-        _ => panic!("expected ToolsAborted"),
+        _ => panic!("expected ToolsSkipped"),
     }
 
     match &read_events[7].payload {
@@ -1262,12 +1262,12 @@ async fn assistant_response_replay_with_tool_results() {
     assert_eq!(messages[3].tool_call_id, Some("call_2".to_string()));
 }
 
-/// Test that ToolsAborted replays as N synthetic tool_result messages.
+/// Test that ToolsSkipped replays as N synthetic tool_result messages.
 #[tokio::test]
-async fn tools_aborted_replay() {
+async fn tools_skipped_replay() {
     let temp_dir = TempDir::new().unwrap();
     let store = create_store(&temp_dir);
-    let session_id = "tools_aborted_replay";
+    let session_id = "tools_skipped_replay";
 
     let events = vec![
         SessionEvent::new(
@@ -1327,7 +1327,7 @@ async fn tools_aborted_replay() {
         // Remaining two aborted due to steering
         SessionEvent::new(
             5,
-            SessionEventPayload::ToolsAborted {
+            SessionEventPayload::ToolsSkipped {
                 call_ids: vec!["c2".to_string(), "c3".to_string()],
                 reason: "new user message received".to_string(),
             },
@@ -1336,7 +1336,7 @@ async fn tools_aborted_replay() {
 
     store.append_events(session_id, &events).await.unwrap();
 
-    // Replay via to_message() — ToolsAborted returns None, so only 3 messages
+    // Replay via to_message() — ToolsSkipped returns None, so only 3 messages
     let read_events = store.load_events(session_id, 0).await.unwrap();
     let mut messages: Vec<Message> = Vec::new();
     for event in &read_events {
@@ -1345,7 +1345,7 @@ async fn tools_aborted_replay() {
         }
     }
 
-    // to_message() returns None for ToolsAborted (it's N:1), so we get:
+    // to_message() returns None for ToolsSkipped (it's N:1), so we get:
     // UserMessage, AssistantResponse, ToolResult(c1) = 3 messages
     assert_eq!(messages.len(), 3);
     assert_eq!(messages[0].role, Role::User);

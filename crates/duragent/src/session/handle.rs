@@ -274,15 +274,15 @@ impl SessionHandle {
         self.await_reply(reply_rx).await?
     }
 
-    /// Enqueue a tools-aborted event without forcing a flush.
-    pub async fn enqueue_tools_aborted(
+    /// Enqueue a tools-skipped event without forcing a flush.
+    pub async fn enqueue_tools_skipped(
         &self,
         call_ids: Vec<String>,
         reason: String,
     ) -> Result<u64, ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
-            .send(SessionCommand::RecordToolsAborted {
+            .send(SessionCommand::RecordToolsSkipped {
                 call_ids,
                 reason,
                 reply: reply_tx,

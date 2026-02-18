@@ -395,7 +395,7 @@ impl SessionRegistry {
                     pending_messages
                         .push(crate::llm::Message::tool_result(call_id, &result.content));
                 }
-                super::events::SessionEventPayload::ToolsAborted { call_ids, reason } => {
+                super::events::SessionEventPayload::ToolsSkipped { call_ids, reason } => {
                     for id in call_ids {
                         outstanding_call_ids.retain(|oid| oid != id);
                     }
@@ -421,7 +421,7 @@ impl SessionRegistry {
         }
 
         // Crash recovery: synthesize error results for tool calls that never
-        // got a ToolResult/ToolsAborted event (server crashed mid-iteration).
+        // got a ToolResult/ToolsSkipped event (server crashed mid-iteration).
         if let Some(pending) = &snapshot.config.pending_approval {
             outstanding_call_ids.retain(|id| id != &pending.call_id);
         }
