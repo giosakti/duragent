@@ -6,6 +6,9 @@
 //!
 //! Both modes use the same Gateway Protocol for communication.
 
+mod chunk;
+mod format;
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -665,9 +668,6 @@ fn extract_routing(msg: &Message) -> RoutingContext {
 // Telegram API Helpers
 // ============================================================================
 
-/// Maximum message length for Telegram messages.
-const MAX_MESSAGE_LENGTH: usize = 4096;
-
 async fn send_message(
     bot: &Bot,
     chat_id: &str,
@@ -677,7 +677,8 @@ async fn send_message(
 ) -> Result<String, String> {
     let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
 
-    let chunks = chunk_message(content);
+    let html_content = format::markdown_to_telegram_html(content);
+    let chunks = chunk::chunk_message(&html_content);
     let last_idx = chunks.len() - 1;
     let mut last_msg_id = String::new();
 
@@ -685,7 +686,9 @@ async fn send_message(
     let reply_to_id = reply_to.and_then(|id| id.parse::<i32>().ok());
 
     for (i, chunk) in chunks.iter().enumerate() {
-        let mut request = bot.send_message(ChatId(chat_id), *chunk);
+        let mut request = bot
+            .send_message(ChatId(chat_id), chunk.as_str())
+            .parse_mode(teloxide::types::ParseMode::Html);
 
         // Reply only on the first chunk
         if i == 0
@@ -711,37 +714,42 @@ async fn send_message(
     Ok(last_msg_id)
 }
 
-/// Split a message into chunks that fit within Telegram's message limit.
-///
-/// Tries to split at newline boundaries for cleaner output.
-fn chunk_message(content: &str) -> Vec<&str> {
-    if content.len() <= MAX_MESSAGE_LENGTH {
-        return vec![content];
-    }
+async fn edit_message(
+    bot: &Bot,
+    chat_id: &str,
+    message_id: &str,
+    content: &str,
+) -> Result<(), String> {
+    let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
+    let message_id: i32 = message_id
+        .parse()
+        .map_err(|_| "invalid message_id".to_string())?;
 
-    let mut chunks = Vec::new();
-    let mut remaining = content;
+    let html_content = format::markdown_to_telegram_html(content);
 
-    while !remaining.is_empty() {
-        if remaining.len() <= MAX_MESSAGE_LENGTH {
-            chunks.push(remaining);
-            break;
-        }
+    bot.edit_message_text(
+        ChatId(chat_id),
+        teloxide::types::MessageId(message_id),
+        html_content,
+    )
+    .parse_mode(teloxide::types::ParseMode::Html)
+    .await
+    .map_err(|e| e.to_string())?;
 
-        // Find a safe split point at a char boundary
-        let boundary = remaining.floor_char_boundary(MAX_MESSAGE_LENGTH);
-        let split_at = remaining[..boundary].rfind('\n').unwrap_or(boundary);
+    Ok(())
+}
 
-        let split_at = split_at.max(1);
-        let (chunk, rest) = remaining.split_at(split_at);
-        if !chunk.is_empty() {
-            chunks.push(chunk);
-        }
-        // Skip the newline if we split at one
-        remaining = rest.strip_prefix('\n').unwrap_or(rest);
-    }
+async fn delete_message(bot: &Bot, chat_id: &str, message_id: &str) -> Result<(), String> {
+    let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
+    let message_id: i32 = message_id
+        .parse()
+        .map_err(|_| "invalid message_id".to_string())?;
 
-    chunks
+    bot.delete_message(ChatId(chat_id), teloxide::types::MessageId(message_id))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Convert protocol InlineKeyboard to teloxide InlineKeyboardMarkup.
@@ -774,40 +782,5 @@ async fn answer_callback_query(
     }
 
     request.await.map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn edit_message(
-    bot: &Bot,
-    chat_id: &str,
-    message_id: &str,
-    content: &str,
-) -> Result<(), String> {
-    let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
-    let message_id: i32 = message_id
-        .parse()
-        .map_err(|_| "invalid message_id".to_string())?;
-
-    bot.edit_message_text(
-        ChatId(chat_id),
-        teloxide::types::MessageId(message_id),
-        content,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-async fn delete_message(bot: &Bot, chat_id: &str, message_id: &str) -> Result<(), String> {
-    let chat_id: i64 = chat_id.parse().map_err(|_| "invalid chat_id".to_string())?;
-    let message_id: i32 = message_id
-        .parse()
-        .map_err(|_| "invalid message_id".to_string())?;
-
-    bot.delete_message(ChatId(chat_id), teloxide::types::MessageId(message_id))
-        .await
-        .map_err(|e| e.to_string())?;
-
     Ok(())
 }

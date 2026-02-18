@@ -56,12 +56,15 @@ thiserror = "2.0"
 # HTML processing
 html-to-markdown-rs = "2"
 
+# HTTP client
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+
 # HTTP server
 axum = "0.8"
 tower-http = { version = "0.6", features = ["timeout"] }
 
-# HTTP client
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
+# Markdown processing
+pulldown-cmark = "0.13"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
